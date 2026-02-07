@@ -59,6 +59,35 @@ def get_cpg_cache_path(cache_key: str, playground_path: str) -> str:
     return os.path.join(playground_path, "cpgs", cache_key, "cpg.bin")
 
 
+def _calculate_repo_size_mb(source_path: str) -> int:
+    """Calculate total repository size in MB
+
+    Args:
+        source_path: Path to the repository directory
+
+    Returns:
+        Size in MB
+    """
+    try:
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(source_path):
+            # Skip .git directories and other common exclusions for size calculation
+            dirnames[:] = [d for d in dirnames if d not in {'.git', '.svn', '.hg', '.idea', '.vscode', 'node_modules'}]
+
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                try:
+                    total_size += os.path.getsize(filepath)
+                except OSError as e:
+                    logger.warning(f"Failed to get size of {filepath}: {e}")
+
+        size_mb = total_size / (1024 * 1024)
+        return int(size_mb)
+    except Exception as e:
+        logger.error(f"Failed to calculate repository size: {e}")
+        raise
+
+
 async def _generate_cpg_async(
     codebase_hash: str,
     codebase_dir: str,
@@ -70,18 +99,38 @@ async def _generate_cpg_async(
     """Async task to generate CPG and start Joern server"""
     import logging
     logger = logging.getLogger(__name__)
-    
+
     try:
         logger.info(f"Starting async CPG generation for {codebase_hash}")
-        
+
         # Get services
         codebase_tracker = services["codebase_tracker"]
         joern_server_manager = services.get("joern_server_manager")
-        
+        config = services.get("config")
+
+        # Validate repository size before CPG generation
+        if config:
+            repo_size_mb = _calculate_repo_size_mb(codebase_dir)
+            max_size_mb = config.cpg.max_repo_size_mb
+            logger.info(f"Repository size: {repo_size_mb}MB, max allowed: {max_size_mb}MB")
+
+            if repo_size_mb > max_size_mb:
+                error_msg = (
+                    f"Repository size ({repo_size_mb}MB) exceeds maximum allowed "
+                    f"({max_size_mb}MB). Please reduce the repository size or increase "
+                    f"the max_repo_size_mb configuration."
+                )
+                logger.error(error_msg)
+                codebase_tracker.update_codebase(
+                    codebase_hash=codebase_hash,
+                    metadata={"status": "failed", "error": error_msg}
+                )
+                return
+
         # Use Docker API to generate CPG inside container
         docker_client = docker.from_env()
         container = docker_client.containers.get("codebadger-joern-server")
-        
+
         # Get language-specific command
         language_commands = {
             "java": "/opt/joern/joern-cli/javasrc2cpg",
@@ -98,14 +147,31 @@ async def _generate_cpg_async(
             "ruby": "/opt/joern/joern-cli/rubysrc2cpg",
             "swift": "/opt/joern/joern-cli/swiftsrc2cpg.sh",
         }
-        
+
         cmd_binary = language_commands.get(language)
         if not cmd_binary:
             raise ValueError(f"Unsupported language: {language}")
-        
+
         # Build command
         cmd = [cmd_binary, f"/playground/codebases/{codebase_hash}", "-o", container_cpg_path]
-        
+
+        # Apply exclusion patterns if config is available
+        if config and language in config.cpg.languages_with_exclusions and config.cpg.exclusion_patterns:
+            import re
+            # Validate and combine exclusion patterns
+            escaped_patterns = []
+            for pattern in config.cpg.exclusion_patterns:
+                try:
+                    re.compile(pattern)
+                    escaped_patterns.append(pattern)
+                except re.error as e:
+                    logger.warning(f"Invalid regex pattern '{pattern}': {e}. Using literal match.")
+                    escaped_patterns.append(re.escape(pattern))
+
+            combined_regex = "|".join(f"({p})" for p in escaped_patterns)
+            cmd.extend(["--exclude-regex", combined_regex])
+            logger.info(f"Applied {len(config.cpg.exclusion_patterns)} exclusion patterns")
+
         logger.info(f"Executing CPG generation in container: {' '.join(cmd)}")
         
         # Execute CPG generation

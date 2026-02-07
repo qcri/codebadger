@@ -5,6 +5,7 @@ CPG Generator for creating Code Property Graphs using Joern CLI
 import asyncio
 import logging
 import os
+import re
 import subprocess
 from typing import AsyncIterator, Dict, Optional
 
@@ -50,13 +51,13 @@ class CPGGenerator:
         self, source_path: str, language: str, cpg_path: str, codebase_hash: str
     ) -> tuple[str, Optional[int]]:
         """Generate CPG from source code using Joern CLI inside Docker container
-        
+
         Args:
             source_path: Host path to source code (e.g., /home/aleks/.../playground/codebases/<hash>/)
             language: Programming language
             cpg_path: Host path where CPG should be stored (e.g., /home/aleks/.../playground/cpgs/<hash>/cpg.bin)
             codebase_hash: The codebase identifier for server management
-            
+
         Returns:
             Tuple of (host path to generated CPG file, joern server port or None)
         """
@@ -66,42 +67,57 @@ class CPGGenerator:
             # Get language-specific command
             if language not in self.LANGUAGE_COMMANDS:
                 raise CPGGenerationError(f"Unsupported language: {language}")
-            
+
             base_cmd = self.LANGUAGE_COMMANDS[language]
-            
+
             # Create CPG directory on host (we can do this from host)
             cpg_dir = os.path.dirname(cpg_path)
             os.makedirs(cpg_dir, exist_ok=True)
             logger.info(f"CPG directory created: {cpg_dir}")
-            
+
+            # Validate repository size before CPG generation
+            repo_size_mb = self._calculate_repo_size_mb(source_path)
+            max_size_mb = self.config.cpg.max_repo_size_mb
+            logger.info(f"Repository size: {repo_size_mb}MB, max allowed: {max_size_mb}MB")
+
+            if repo_size_mb > max_size_mb:
+                error_msg = (
+                    f"Repository size ({repo_size_mb}MB) exceeds maximum allowed "
+                    f"({max_size_mb}MB). Please reduce the repository size or increase "
+                    f"the max_repo_size_mb configuration."
+                )
+                logger.error(error_msg)
+                raise CPGGenerationError(error_msg)
+
             # Convert host paths to container paths for Joern to use
             # Host path like /home/aleks/.../playground/codebases/hash -> /playground/codebases/hash
             container_source_path = self._host_to_container_path(source_path)
             container_cpg_path = self._host_to_container_path(cpg_path)
-            
+
             logger.info(f"Container paths: src={container_source_path}, cpg={container_cpg_path}")
-            
+
             # Get Java opts from config
             java_opts = self.config.joern.java_opts or "-Xmx2G -Xms512M"
-            
+
             # Build command arguments (base_cmd is already the full path in container)
             cmd_args = [base_cmd, container_source_path, "-o", container_cpg_path]
-            
+
             # Add Java opts as environment variables (Joern scripts read JAVA_OPTS)
             env = os.environ.copy()
             if java_opts:
                 env["JAVA_OPTS"] = java_opts
                 logger.info(f"Using JAVA_OPTS: {java_opts}")
-            
+
             # Apply exclusions for languages that support them
             if (
                 language in self.config.cpg.languages_with_exclusions
                 and self.config.cpg.exclusion_patterns
             ):
-                combined_regex = "|".join(
-                    f"({pattern})" for pattern in self.config.cpg.exclusion_patterns
-                )
+                # Escape special regex characters in patterns and combine with OR
+                escaped_patterns = [self._escape_regex_pattern(p) for p in self.config.cpg.exclusion_patterns]
+                combined_regex = "|".join(f"({p})" for p in escaped_patterns)
                 cmd_args.extend(["--exclude-regex", combined_regex])
+                logger.info(f"Applied {len(self.config.cpg.exclusion_patterns)} exclusion patterns")
 
             logger.info(f"Executing CPG generation: {' '.join(cmd_args)}")
 
@@ -161,6 +177,53 @@ class CPGGenerator:
             error_msg = f"CPG generation failed: {str(e)}"
             logger.error(error_msg)
             raise CPGGenerationError(error_msg)
+
+    def _calculate_repo_size_mb(self, source_path: str) -> int:
+        """Calculate total repository size in MB
+
+        Args:
+            source_path: Path to the repository directory
+
+        Returns:
+            Size in MB
+        """
+        try:
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(source_path):
+                # Skip .git directories and other common exclusions for size calculation
+                dirnames[:] = [d for d in dirnames if d not in {'.git', '.svn', '.hg', '.idea', '.vscode', 'node_modules'}]
+
+                for filename in filenames:
+                    filepath = os.path.join(dirpath, filename)
+                    try:
+                        total_size += os.path.getsize(filepath)
+                    except OSError as e:
+                        logger.warning(f"Failed to get size of {filepath}: {e}")
+
+            size_mb = total_size / (1024 * 1024)
+            return int(size_mb)
+        except Exception as e:
+            logger.error(f"Failed to calculate repository size: {e}")
+            raise CPGGenerationError(f"Failed to calculate repository size: {e}")
+
+    def _escape_regex_pattern(self, pattern: str) -> str:
+        """Escape special regex characters while preserving regex patterns
+
+        Args:
+            pattern: The pattern that may contain regex
+
+        Returns:
+            Escaped pattern safe for use in regex
+        """
+        # Don't escape regex metacharacters that are likely intentional
+        # Just validate the pattern is valid regex
+        try:
+            re.compile(pattern)
+            return pattern
+        except re.error as e:
+            logger.warning(f"Invalid regex pattern '{pattern}': {e}. Using literal match.")
+            # If regex is invalid, escape it for literal matching
+            return re.escape(pattern)
 
     def _host_to_container_path(self, host_path: str) -> str:
         """Convert host path to container path
