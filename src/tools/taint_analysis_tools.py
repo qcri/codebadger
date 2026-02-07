@@ -213,6 +213,90 @@ def _cached_taint_query(
     return result
 
 
+def _find_taint_flows_auto(
+    services: dict,
+    codebase_hash: str,
+    codebase_info,
+    query_executor,
+    language: Optional[str],
+    source_patterns: Optional[list],
+    sink_patterns: Optional[list],
+    filename: Optional[str],
+    max_results: int,
+    timeout: int,
+) -> str:
+    """Run batch taint analysis: all sources against all sinks in one query.
+
+    Uses language-specific default patterns (or user overrides) to find all
+    source and sink nodes, then runs reachableByFlows() once.
+    """
+    # Resolve language
+    lang = language or codebase_info.language or "c"
+
+    # Resolve source patterns: user-provided -> config -> built-in defaults
+    cfg = services["config"]
+    taint_src_cfg = (
+        getattr(cfg.cpg, "taint_sources", {})
+        if hasattr(cfg.cpg, "taint_sources")
+        else {}
+    )
+    src_patterns = source_patterns or taint_src_cfg.get(lang, []) or DEFAULT_SOURCES.get(lang.lower(), [])
+    if not src_patterns:
+        return f"No taint source patterns available for language '{lang}'. Supported: {', '.join(DEFAULT_SOURCES.keys())}"
+
+    # Resolve sink patterns: user-provided -> config -> built-in defaults
+    taint_snk_cfg = (
+        getattr(cfg.cpg, "taint_sinks", {})
+        if hasattr(cfg.cpg, "taint_sinks")
+        else {}
+    )
+    snk_patterns = sink_patterns or taint_snk_cfg.get(lang, []) or DEFAULT_SINKS.get(lang.lower(), [])
+    if not snk_patterns:
+        return f"No taint sink patterns available for language '{lang}'. Supported: {', '.join(DEFAULT_SINKS.keys())}"
+
+    # Build Joern regex patterns
+    source_regex = _build_joern_name_pattern(src_patterns)
+    sink_regex = _build_joern_name_pattern(snk_patterns)
+
+    cache_params = {
+        "mode": "auto",
+        "lang": lang,
+        "source_patterns": sorted(set(src_patterns)),
+        "sink_patterns": sorted(set(snk_patterns)),
+        "filename": filename,
+        "max_results": max_results,
+    }
+
+    def _execute():
+        query = QueryLoader.load(
+            "taint_flows_auto",
+            source_pattern=source_regex,
+            sink_pattern=sink_regex,
+            file_filter=filename or "",
+            max_results=max_results,
+        )
+
+        result = query_executor.execute_query(
+            codebase_hash=codebase_hash,
+            cpg_path=codebase_info.cpg_path,
+            query=query,
+            timeout=timeout,
+        )
+
+        if not result.success:
+            return f"Error: {result.error}"
+
+        if isinstance(result.data, str):
+            return result.data.strip()
+        elif isinstance(result.data, list) and len(result.data) > 0:
+            output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+            return output.strip()
+        else:
+            return f"Query returned unexpected format: {type(result.data)}"
+
+    return _cached_taint_query(services, "find_taint_flows_auto", codebase_hash, cache_params, _execute)
+
+
 def register_taint_analysis_tools(mcp, services: dict):
     """Register taint analysis MCP tools with the FastMCP server"""
 
@@ -472,24 +556,32 @@ Detects data flow from a specific source node to a specific sink node.
 Uses Joern's reachableByFlows() for accurate taint tracking including pointer aliasing,
 array propagation, and struct fields.
 
-DO:
-- Use `find_taint_sources` first to get source locations/IDs.
-- Use `find_taint_sinks` first to get sink locations/IDs.
-- Provide BOTH source AND sink for every query.
+Supports two modes:
 
-DON'T:
-- Do NOT provide "patterns" here (use source_location or source_node_id).
-- Do NOT use old arguments like `source_pattern` or `sink_pattern`.
-- Do NOT guess file:line locations.
+MODE 1 - Manual (default): Provide a specific source and sink.
+  - Use `find_taint_sources` first to get source locations/IDs.
+  - Use `find_taint_sinks` first to get sink locations/IDs.
+  - Provide BOTH source AND sink for every query.
+
+MODE 2 - Auto (mode="auto"): Batch-test ALL default sources against ALL default sinks.
+  - Runs `sinks.reachableByFlows(sources)` once for all default patterns.
+  - Returns ONLY confirmed flows — no manual source/sink picking needed.
+  - Ideal for security audits: one call covers hundreds of source-sink pairs.
+  - Optionally filter by language, filename, or custom source/sink patterns.
 
 Args:
     codebase_hash: The codebase hash from generate_cpg.
-    source_location: Source at 'file:line' (e.g., 'xsltproc/xsltproc.c:818').
-    sink_location: Sink at 'file:line' (e.g., 'libxslt/numbers.c:229').
-    source_node_id: Alternative: node ID from find_taint_sources output.
-    sink_node_id: Alternative: node ID from find_taint_sinks output.
+    mode: Set to "auto" to run batch analysis with all default sources/sinks. Omit for manual mode.
+    source_location: (Manual mode) Source at 'file:line' (e.g., 'xsltproc/xsltproc.c:818').
+    sink_location: (Manual mode) Sink at 'file:line' (e.g., 'libxslt/numbers.c:229').
+    source_node_id: (Manual mode) Alternative: node ID from find_taint_sources output.
+    sink_node_id: (Manual mode) Alternative: node ID from find_taint_sinks output.
+    language: (Auto mode) Programming language for default patterns (c, cpp, java, python, etc). Auto-detected if omitted.
+    source_patterns: (Auto mode) Optional list of source function names to override defaults (e.g., ['getenv', 'read']).
+    sink_patterns: (Auto mode) Optional list of sink function names to override defaults (e.g., ['system', 'strcpy']).
+    filename: (Auto mode) Optional regex to filter sources/sinks by filename.
     max_results: Maximum flows to return (default 20).
-    timeout: Query timeout in seconds (default 60).
+    timeout: Query timeout in seconds (default 60 for manual, 120 for auto).
 
 Returns:
     Human-readable text showing:
@@ -498,33 +590,36 @@ Returns:
     - Path length
 
 Notes:
-    - BOTH source AND sink are required.
-    - Use either location (file:line) OR node_id for each.
-    - Node IDs come from find_taint_sources/find_taint_sinks output.
+    - Manual mode: BOTH source AND sink are required.
+    - Auto mode: No source/sink needed — uses language-specific default patterns.
     - Inter-procedural flows are tracked automatically.
 
 Examples:
-    # 1. Using locations (Recommended for human workflow)
+    # Auto mode — one call finds all confirmed flows
+    find_taint_flows(codebase_hash="...", mode="auto")
+    find_taint_flows(codebase_hash="...", mode="auto", language="c", filename="main.c")
+    find_taint_flows(codebase_hash="...", mode="auto", source_patterns=["getenv"], sink_patterns=["system", "strcpy"])
+
+    # Manual mode — specific source and sink
     find_taint_flows(codebase_hash="...", source_location="main.c:42", sink_location="utils.c:100")
-    
-    # 2. Using node IDs (Recommended for automated/LLM workflow)
-    # First: output = find_taint_sources(...)
-    # Then: output = find_taint_sinks(...)
-    # Finally:
     find_taint_flows(codebase_hash="...", source_node_id=12345, sink_node_id=67890)"""
     )
     def find_taint_flows(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
-        source_location: Annotated[Optional[str], Field(description="Source at 'file:line' (e.g., 'parser.c:782')")] = None,
-        sink_location: Annotated[Optional[str], Field(description="Sink at 'file:line' (e.g., 'parser.c:800')")] = None,
-        source_node_id: Annotated[Optional[int], Field(description="Node ID from find_taint_sources output")] = None,
-        sink_node_id: Annotated[Optional[int], Field(description="Node ID from find_taint_sinks output")] = None,
+        source_location: Annotated[Optional[str], Field(description="(Manual mode) Source at 'file:line' (e.g., 'parser.c:782')")] = None,
+        sink_location: Annotated[Optional[str], Field(description="(Manual mode) Sink at 'file:line' (e.g., 'parser.c:800')")] = None,
+        source_node_id: Annotated[Optional[int], Field(description="(Manual mode) Node ID from find_taint_sources output")] = None,
+        sink_node_id: Annotated[Optional[int], Field(description="(Manual mode) Node ID from find_taint_sinks output")] = None,
         max_results: Annotated[int, Field(description="Maximum flows to return")] = 20,
-        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 60,
+        timeout: Annotated[int, Field(description="Query timeout in seconds (default 60 for manual, 120 for auto)")] = 60,
+        mode: Annotated[Optional[str], Field(description="Set to 'auto' for batch analysis with all default sources/sinks. Omit for manual mode.")] = None,
+        language: Annotated[Optional[str], Field(description="(Auto mode) Programming language for default patterns. Auto-detected if omitted.")] = None,
+        source_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default source function names (e.g., ['getenv', 'read'])")] = None,
+        sink_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sink function names (e.g., ['system', 'strcpy'])")] = None,
+        filename: Annotated[Optional[str], Field(description="(Auto mode) Regex to filter sources/sinks by filename")] = None,
         # Legacy/Deprecated arguments - included to provide helpful error messages
         source_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
         sink_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
-        mode: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
         depth: Annotated[Optional[int], Field(description="DEPRECATED: Do not use")] = None,
     ) -> str:
         """Find data flow paths between source and sink using Joern's native taint analysis."""
@@ -533,14 +628,14 @@ Examples:
             legacy_args = []
             if source_pattern: legacy_args.append("source_pattern")
             if sink_pattern: legacy_args.append("sink_pattern")
-            if mode: legacy_args.append("mode")
             if depth: legacy_args.append("depth")
 
             if legacy_args:
                 raise ValidationError(
                     f"Unexpected arguments: {legacy_args}. "
                     "These arguments are deprecated. "
-                    "Use 'find_taint_sources' to find sources by pattern, then use the resulting 'node_id' here."
+                    "Use 'find_taint_sources' to find sources by pattern, then use the resulting 'node_id' here. "
+                    "Or use mode='auto' for batch analysis."
                 )
 
             validate_codebase_hash(codebase_hash)
@@ -552,6 +647,28 @@ Examples:
             codebase_info = codebase_tracker.get_codebase(codebase_hash)
             if not codebase_info or not codebase_info.cpg_path:
                 raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first.")
+
+            # --- AUTO MODE ---
+            if mode == "auto":
+                return _find_taint_flows_auto(
+                    services=services,
+                    codebase_hash=codebase_hash,
+                    codebase_info=codebase_info,
+                    query_executor=query_executor,
+                    language=language,
+                    source_patterns=source_patterns,
+                    sink_patterns=sink_patterns,
+                    filename=filename,
+                    max_results=max_results,
+                    timeout=timeout if timeout != 60 else 120,  # default to 120s for auto
+                )
+
+            # --- MANUAL MODE ---
+            if mode is not None:
+                raise ValidationError(
+                    f"Invalid mode: '{mode}'. Use mode='auto' for batch analysis, "
+                    "or omit mode for manual source/sink analysis."
+                )
 
             # Validate input - BOTH source AND sink are required
             has_source_loc = bool(source_location)
@@ -578,9 +695,12 @@ Examples:
                     f"You provided: [{provided_str}]\n"
                     f"You MISSING:  [source_location OR source_node_id]\n\n"
                     f"CORRECT USAGE WORKFLOW:\n"
-                    f"1. Call `find_taint_sources(...)` first to find valid sources.\n"
-                    f"2. Pick a source, note its `node_id` or `filename:line`.\n"
-                    f"3. Call `find_taint_flows` again providing that source.\n\n"
+                    f"Option A — Manual mode:\n"
+                    f"  1. Call `find_taint_sources(...)` first to find valid sources.\n"
+                    f"  2. Pick a source, note its `node_id` or `filename:line`.\n"
+                    f"  3. Call `find_taint_flows` again providing that source.\n\n"
+                    f"Option B — Auto mode (recommended for audits):\n"
+                    f"  find_taint_flows(codebase_hash='...', mode='auto')\n\n"
                     f"EXAMPLE:\n"
                     f"find_taint_flows(\n"
                     f"    codebase_hash='...',\n"
@@ -589,7 +709,7 @@ Examples:
                     f")\n"
                     f"================================================================================"
                 )
-            
+
             # Must have sink (either location or node_id)
             if not has_sink_loc and not has_sink_id:
                 raise ValidationError(
@@ -601,9 +721,12 @@ Examples:
                     f"You provided: [{provided_str}]\n"
                     f"You MISSING:  [sink_location OR sink_node_id]\n\n"
                     f"CORRECT USAGE WORKFLOW:\n"
-                    f"1. Call `find_taint_sinks(...)` first to find valid sinks.\n"
-                    f"2. Pick a sink, note its `node_id` or `filename:line`.\n"
-                    f"3. Call `find_taint_flows` again providing that sink.\n\n"
+                    f"Option A — Manual mode:\n"
+                    f"  1. Call `find_taint_sinks(...)` first to find valid sinks.\n"
+                    f"  2. Pick a sink, note its `node_id` or `filename:line`.\n"
+                    f"  3. Call `find_taint_flows` again providing that sink.\n\n"
+                    f"Option B — Auto mode (recommended for audits):\n"
+                    f"  find_taint_flows(codebase_hash='...', mode='auto')\n\n"
                     f"EXAMPLE:\n"
                     f"find_taint_flows(\n"
                     f"    codebase_hash='...',\n"
