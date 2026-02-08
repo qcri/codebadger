@@ -1,0 +1,432 @@
+/*
+ * main.c - Entry point for QEMU-like security test codebase
+ * 
+ * Orchestrates all modules and provides entry points for
+ * testing various vulnerability patterns.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include "../include/device.h"
+
+/* Global state for signal handling */
+static DeviceManager *g_device_manager = NULL;
+static MemoryController *g_memory_controller = NULL;
+static NetworkContext *g_network_context = NULL;
+static ConfigContext *g_config_context = NULL;
+static volatile int g_running = 1;
+
+/*
+ * Signal handler for graceful shutdown
+ */
+static void signal_handler(int sig)
+{
+    (void)sig;
+    g_running = 0;
+}
+
+/*
+ * Initialize all subsystems
+ */
+static int init_subsystems(void)
+{
+    /* Create memory controller */
+    g_memory_controller = memory_controller_create();
+    if (!g_memory_controller) {
+        log_error("Failed to create memory controller");
+        return ERR_OUT_OF_MEMORY;
+    }
+    
+    if (memory_controller_init(g_memory_controller) != ERR_SUCCESS) {
+        log_error("Failed to initialize memory controller");
+        return ERR_INVALID_STATE;
+    }
+    
+    /* Create network context */
+    g_network_context = network_create();
+    if (!g_network_context) {
+        log_error("Failed to create network context");
+        return ERR_OUT_OF_MEMORY;
+    }
+    
+    if (network_init(g_network_context) != ERR_SUCCESS) {
+        log_error("Failed to initialize network context");
+        return ERR_INVALID_STATE;
+    }
+    
+    /* Create config context */
+    g_config_context = config_create();
+    if (!g_config_context) {
+        log_error("Failed to create config context");
+        return ERR_OUT_OF_MEMORY;
+    }
+    
+    if (config_init(g_config_context) != ERR_SUCCESS) {
+        log_error("Failed to initialize config context");
+        return ERR_INVALID_STATE;
+    }
+    
+    /* Create device manager */
+    g_device_manager = device_manager_create();
+    if (!g_device_manager) {
+        log_error("Failed to create device manager");
+        return ERR_OUT_OF_MEMORY;
+    }
+    
+    /* Wire up subsystems */
+    g_device_manager->memory = g_memory_controller;
+    g_device_manager->network = g_network_context;
+    g_device_manager->config = g_config_context;
+    
+    return ERR_SUCCESS;
+}
+
+/*
+ * Clean up all subsystems
+ */
+static void cleanup_subsystems(void)
+{
+    if (g_device_manager) {
+        device_manager_destroy(g_device_manager);
+        g_device_manager = NULL;
+    }
+    
+    if (g_config_context) {
+        config_destroy(g_config_context);
+        g_config_context = NULL;
+    }
+    
+    if (g_network_context) {
+        network_destroy(g_network_context);
+        g_network_context = NULL;
+    }
+    
+    if (g_memory_controller) {
+        memory_controller_destroy(g_memory_controller);
+        g_memory_controller = NULL;
+    }
+}
+
+/*
+ * Load configuration from file or environment
+ */
+static int load_configuration(const char *config_path)
+{
+    if (config_path) {
+        return config_load_file(g_config_context, config_path);
+    }
+    
+    /* Try loading from environment */
+    return config_load_from_env(g_config_context);
+}
+
+/*
+ * Create and register default devices
+ */
+static int setup_devices(void)
+{
+    /* Create block device */
+    Device *block_dev = device_create("virtio-blk", DEVICE_TYPE_BLOCK);
+    if (block_dev) {
+        device_add(g_device_manager, block_dev);
+    }
+    
+    /* Create network device */
+    Device *net_dev = device_create("virtio-net", DEVICE_TYPE_NET);
+    if (net_dev) {
+        device_add(g_device_manager, net_dev);
+    }
+    
+    /* Create serial console */
+    Device *serial_dev = device_create("serial0", DEVICE_TYPE_SERIAL);
+    if (serial_dev) {
+        device_add(g_device_manager, serial_dev);
+    }
+    
+    /* Initialize devices through deep call chain */
+    return device_init(g_device_manager);
+}
+
+/*
+ * Process one network event - VULNERABLE ENTRY POINT
+ */
+static int process_network_event(int conn_id)
+{
+    char buffer[NETWORK_BUFFER_SIZE];
+    
+    /* TAINT SOURCE: Read from network */
+    int n = network_recv_data(g_network_context, conn_id, 
+                              buffer, sizeof(buffer));
+    if (n <= 0) {
+        return ERR_IO_ERROR;
+    }
+    
+    /* Route to appropriate handler based on prefix */
+    if (strncmp(buffer, "CONFIG:", 7) == 0) {
+        /* Parse config from network - TAINT FLOW */
+        config_parse_buffer(g_config_context, buffer + 7, n - 7);
+        
+        /* Then execute script config - COMMAND INJECTION */
+        config_execute_script(g_config_context, "startup_script");
+    }
+    else if (strncmp(buffer, "DEVICE:", 7) == 0) {
+        /* Find device and pass command */
+        Device *dev = device_find(g_device_manager, "virtio-net");
+        if (dev) {
+            /* TAINT FLOW to device handler */
+            device_process_untrusted_data(dev, buffer + 7, n - 7);
+        }
+    }
+    else if (strncmp(buffer, "EXEC:", 5) == 0) {
+        /* Direct command execution - COMMAND INJECTION */
+        system(buffer + 5);
+    }
+    else if (strncmp(buffer, "PRINT:", 6) == 0) {
+        /* Direct format string vuln */
+        printf(buffer + 6);  /* FORMAT STRING VULNERABILITY */
+    }
+    else if (strncmp(buffer, "COPY:", 5) == 0) {
+        /* Memory copy without size check - BUFFER OVERFLOW */
+        char local[SMALL_BUFFER_SIZE];
+        memcpy(local, buffer + 5, n - 5);  /* OVERFLOW if n > SMALL_BUFFER_SIZE + 5 */
+    }
+    
+    return ERR_SUCCESS;
+}
+
+/*
+ * VULNERABLE: Interactive command mode
+ * Reads commands from stdin and executes them
+ */
+static int interactive_mode(void)
+{
+    char input[MEDIUM_BUFFER_SIZE];
+    
+    printf("Entering interactive mode. Type 'quit' to exit.\n");
+    
+    while (g_running) {
+        printf("> ");
+        fflush(stdout);
+        
+        /* TAINT SOURCE: Read from stdin */
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            break;
+        }
+        
+        /* Remove newline */
+        size_t len = strlen(input);
+        if (len > 0 && input[len - 1] == '\n') {
+            input[len - 1] = '\0';
+        }
+        
+        if (strcmp(input, "quit") == 0) {
+            break;
+        }
+        
+        /* Process commands */
+        if (strncmp(input, "exec ", 5) == 0) {
+            /* VULNERABLE: Command injection */
+            system(input + 5);
+        }
+        else if (strncmp(input, "config ", 7) == 0) {
+            /* Load config file */
+            config_load_file(g_config_context, input + 7);
+        }
+        else if (strncmp(input, "run ", 4) == 0) {
+            /* Execute config script - COMMAND INJECTION */
+            config_execute_script(g_config_context, input + 4);
+        }
+        else if (strncmp(input, "print ", 6) == 0) {
+            /* VULNERABLE: Format string */
+            printf(input + 6);
+        }
+        else if (strncmp(input, "dma_alloc ", 10) == 0) {
+            size_t size = (size_t)atoi(input + 10);
+            dma_alloc_buffer(g_memory_controller, size);
+        }
+        else if (strcmp(input, "dma_free") == 0) {
+            dma_free_buffer(g_memory_controller);
+        }
+        else if (strcmp(input, "dma_use_alias") == 0) {
+            /* USE-AFTER-FREE: Use DMA alias after free */
+            char data[] = "test data";
+            dma_transfer_with_alias(g_memory_controller, data, sizeof(data));
+        }
+        else if (strcmp(input, "double_free") == 0) {
+            /* Trigger double free in memory module */
+            memory_cleanup_with_error(g_memory_controller, 1);
+        }
+        else if (strcmp(input, "uaf_demo") == 0) {
+            /* Demonstrate use-after-free */
+            void *ptr = memory_get_and_free(g_memory_controller);
+            if (ptr) {
+                /* USE-AFTER-FREE: Using returned freed pointer */
+                memset(ptr, 0, 10);  /* UAF */
+            }
+        }
+        else {
+            printf("Unknown command: %s\n", input);
+        }
+    }
+    
+    return ERR_SUCCESS;
+}
+
+/*
+ * Network server mode - listens for connections
+ */
+static int server_mode(uint16_t port)
+{
+    int listen_sock = network_listen(g_network_context, port);
+    if (listen_sock < 0) {
+        log_error("Failed to listen on port %u", port);
+        return ERR_IO_ERROR;
+    }
+    
+    log_info("Listening on port %u", port);
+    
+    while (g_running) {
+        /* Accept and process connections */
+        int conn_id = network_accept(g_network_context);
+        if (conn_id >= 0) {
+            process_network_event(conn_id);
+            network_close_connection(g_network_context, conn_id);
+        }
+    }
+    
+    return ERR_SUCCESS;
+}
+
+/*
+ * VULNERABLE: Process command from environment
+ * Complete taint flow: getenv -> system
+ */
+static void process_env_command(void)
+{
+    /* TAINT SOURCE: getenv */
+    char *cmd = getenv("STARTUP_COMMAND");
+    
+    if (cmd) {
+        log_info("Executing startup command from environment");
+        /* VULNERABLE SINK: system with env-controlled command */
+        system(cmd);  /* COMMAND INJECTION */
+    }
+}
+
+/*
+ * VULNERABLE: Log startup with format from env
+ * Taint flow: getenv -> printf (format string)
+ */
+static void log_startup_message(void)
+{
+    /* TAINT SOURCE: getenv */
+    char *format = getenv("LOG_FORMAT");
+    
+    if (format) {
+        /* VULNERABLE: Format string from environment */
+        printf(format);  /* FORMAT STRING VULNERABILITY */
+    } else {
+        printf("System starting up...\n");
+    }
+}
+
+/*
+ * Test entry point for bounds checking
+ */
+void test_bounds_checking(void)
+{
+    char buffer[100];
+    int index;
+    
+    /* Get index from somewhere (would be user input in real code) */
+    char *idx_str = getenv("ARRAY_INDEX");
+    if (idx_str) {
+        index = atoi(idx_str);
+        
+        /* VULNERABLE: No bounds check */
+        buffer[index] = 'X';  /* BUFFER OVERFLOW if index >= 100 */
+    }
+    
+    /* Compare with safe version */
+    if (idx_str) {
+        index = atoi(idx_str);
+        
+        /* SAFE: With bounds check */
+        if (index >= 0 && index < 100) {
+            buffer[index] = 'Y';  /* Safe */
+        }
+    }
+}
+
+/*
+ * Main entry point
+ */
+int main(int argc, char *argv[])
+{
+    int result = ERR_SUCCESS;
+    
+    /* Set up signal handlers */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    
+    /* Log startup (potentially vulnerable) */
+    log_startup_message();
+    
+    /* Initialize all subsystems */
+    result = init_subsystems();
+    if (result != ERR_SUCCESS) {
+        log_error("Failed to initialize subsystems: %d", result);
+        goto cleanup;
+    }
+    
+    /* Process command line arguments */
+    const char *config_path = NULL;
+    uint16_t port = 0;
+    bool interactive = false;
+    
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+            config_path = argv[++i];
+        }
+        else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            port = (uint16_t)atoi(argv[++i]);
+        }
+        else if (strcmp(argv[i], "-i") == 0) {
+            interactive = true;
+        }
+    }
+    
+    /* Load configuration */
+    if (config_path || getenv("CONFIG_FILE_PATH")) {
+        load_configuration(config_path);
+    }
+    
+    /* Process environment command (vulnerable) */
+    process_env_command();
+    
+    /* Set up devices */
+    result = setup_devices();
+    if (result != ERR_SUCCESS) {
+        log_error("Failed to set up devices: %d", result);
+        goto cleanup;
+    }
+    
+    /* Run in appropriate mode */
+    if (interactive) {
+        result = interactive_mode();
+    } else if (port > 0) {
+        result = server_mode(port);
+    } else {
+        /* Default: configure from environment and exit */
+        network_configure_from_env(g_network_context);
+        
+        /* Test bounds checking entry point */
+        test_bounds_checking();
+    }
+    
+cleanup:
+    cleanup_subsystems();
+    return result;
+}

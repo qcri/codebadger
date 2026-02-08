@@ -456,12 +456,12 @@ class TestCodeBadgerIntegration:
             if self.extract_tool_result(status_result).get("status") in ["ready", "cached"]:
                 break
 
-        # Get code snippet
+        # Get code snippet from src/main.c (multi-file codebase)
         snippet_result = await client.call_tool("get_code_snippet", {
             "codebase_hash": codebase_hash,
-            "filename": "core.c",
+            "filename": "src/main.c",
             "start_line": 1,
-            "end_line": 10
+            "end_line": 20
         })
 
         snippet_dict = self.extract_tool_result(snippet_result)
@@ -557,3 +557,361 @@ class TestCodeBadgerIntegration:
         if execution_time is not None:
             assert isinstance(execution_time, (int, float)), "execution_time should be a number"
             assert execution_time >= 0, "execution_time should be non-negative"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)
+    async def test_auto_taint_flows(self, client, codebase_path):
+        """Test auto-mode taint flow detection across multiple files
+        
+        Expected: The multi-file codebase has:
+        - Sources: getenv (9), recv (5), fgets (3+), fread (2+), fopen (2+) = ~20 sources
+        - Sinks: system (11), memcpy (10+), free (39), printf (10+), sprintf, open = ~100+ sinks
+        """
+        # Generate and wait for CPG
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Run auto taint flow detection
+        flows_result = await client.call_tool("find_taint_flows", {
+            "codebase_hash": codebase_hash,
+            "mode": "auto",
+            "language": "c",
+            "max_results": 50,
+            "timeout": 60
+        })
+
+        if hasattr(flows_result, 'content') and flows_result.content:
+            content = flows_result.content[0].text
+            
+            # Verify header is present
+            assert "Auto Taint Flow Analysis" in content, "Missing analysis header"
+            
+            # Verify sources were found (minimum expected: 15 based on grep analysis)
+            assert "Sources matched:" in content, "Missing sources count"
+            import re
+            sources_match = re.search(r"Sources matched:\s*(\d+)", content)
+            if sources_match:
+                source_count = int(sources_match.group(1))
+                assert source_count >= 15, f"Expected at least 15 taint sources, got {source_count}"
+            
+            # Verify sinks were found (minimum expected: 50 based on grep analysis)
+            assert "Sinks matched:" in content, "Missing sinks count"
+            sinks_match = re.search(r"Sinks matched:\s*(\d+)", content)
+            if sinks_match:
+                sink_count = int(sinks_match.group(1))
+                assert sink_count >= 50, f"Expected at least 50 taint sinks, got {sink_count}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(90)
+    async def test_find_use_after_free(self, client, codebase_path):
+        """Test UAF detection in multi-file codebase
+        
+        Expected UAF patterns in memory.c:
+        - dma_transfer_with_alias (~line 240-280): alias creates UAF via ptr2
+        - memory_get_and_free (~line 410-425): returns freed pointer
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Find UAF vulnerabilities
+        uaf_result = await client.call_tool("find_use_after_free", {
+            "codebase_hash": codebase_hash,
+            "timeout": 60
+        })
+
+        if hasattr(uaf_result, 'content') and uaf_result.content:
+            content = uaf_result.content[0].text
+            assert isinstance(content, str), "UAF result should be string"
+            
+            # Verify the output contains expected header
+            assert "Use-After-Free Analysis" in content or "UAF" in content or "use-after-free" in content.lower(), \
+                f"Missing UAF analysis header in output: {content[:200]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(90)
+    async def test_find_double_free(self, client, codebase_path):
+        """Test double-free detection in multi-file codebase
+        
+        Expected double-free patterns in memory.c:
+        - memory_cleanup_with_error (~line 350-369): frees buffer then mc->dma_buffer again
+        - memory_aliased_double_free (~line 428-443): ptr1 and ptr2 both free same memory
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Find double-free vulnerabilities
+        df_result = await client.call_tool("find_double_free", {
+            "codebase_hash": codebase_hash,
+            "timeout": 60
+        })
+
+        if hasattr(df_result, 'content') and df_result.content:
+            content = df_result.content[0].text
+            assert isinstance(content, str), "Double-free result should be string"
+            
+            # Verify the output contains expected header
+            assert "Double-Free Analysis" in content or "double-free" in content.lower() or "DOUBLE" in content, \
+                f"Missing double-free analysis header in output: {content[:200]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(70)
+    async def test_deep_call_graph(self, client, codebase_path):
+        """Test call graph analysis with deep call chains
+        
+        Expected: device_init has a 6-level deep chain:
+        device_init -> device_configure -> device_setup_io -> 
+        device_register_handlers -> device_start -> device_finalize_init -> 
+        device_internal_finalize
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Test call graph from device_init (has 6-level deep chain)
+        cg_result = await client.call_tool("get_call_graph", {
+            "codebase_hash": codebase_hash,
+            "method_name": "device_init",
+            "depth": 6,
+            "direction": "outgoing"
+        })
+
+        if hasattr(cg_result, 'content') and cg_result.content:
+            content = cg_result.content[0].text
+            assert isinstance(content, str), "Call graph result should be string"
+            
+            # Verify call graph header
+            assert "Call Graph" in content or "device_init" in content, \
+                f"Missing call graph header: {content[:200]}"
+            
+            # Verify at least some of the expected deep chain functions appear
+            expected_callees = ["device_configure", "device_setup_io", "device_register_handlers"]
+            found_callees = [fn for fn in expected_callees if fn in content]
+            assert len(found_callees) >= 2, \
+                f"Expected at least 2 of {expected_callees} in call graph, found: {found_callees}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(70)
+    async def test_cfg_state_machine(self, client, codebase_path):
+        """Test CFG analysis on state machine function
+        
+        Expected: device_process_state_machine has a 7-state switch with transitions:
+        DEVICE_STATE_UNINIT, DEVICE_STATE_INIT, DEVICE_STATE_CONFIGURED,
+        DEVICE_STATE_RUNNING, DEVICE_STATE_PAUSED, DEVICE_STATE_ERROR, DEVICE_STATE_SHUTDOWN
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Get CFG for state machine function
+        cfg_result = await client.call_tool("get_cfg", {
+            "codebase_hash": codebase_hash,
+            "method_name": "device_process_state_machine",
+            "max_nodes": 100
+        })
+
+        if hasattr(cfg_result, 'content') and cfg_result.content:
+            content = cfg_result.content[0].text
+            assert isinstance(content, str), "CFG result should be string"
+            
+            # Verify CFG header contains the method name
+            assert "device_process_state_machine" in content or "Control Flow Graph" in content, \
+                f"Missing CFG header: {content[:200]}"
+            
+            # Verify CFG contains nodes and edges (indicated by -> or Edges:)
+            assert "Nodes:" in content or "->" in content, \
+                f"CFG should contain nodes/edges: {content[:300]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(70)
+    async def test_list_files_multifile(self, client, codebase_path):
+        """Test list_files shows multi-file structure
+        
+        Expected structure:
+        - include/ directory with 5 header files: utils.h, memory.h, network.h, config.h, device.h
+        - src/ directory with 8 source files: main.c, device.c, memory.c, network.c, 
+          config.c, callbacks.c, cmdline.c, utils.c
+        - Makefile
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # List files
+        files_result = await client.call_tool("list_files", {
+            "codebase_hash": codebase_hash
+        })
+
+        if hasattr(files_result, 'content') and files_result.content:
+            content = files_result.content[0].text
+            assert isinstance(content, str), "list_files result should be string"
+            
+            # Verify directory structure
+            assert "src" in content, f"Should contain src/ directory: {content[:500]}"
+            assert "include" in content, f"Should contain include/ directory: {content[:500]}"
+            
+            # Verify key source files are present
+            expected_source_files = ["main.c", "device.c", "memory.c", "network.c"]
+            found_sources = [f for f in expected_source_files if f in content]
+            assert len(found_sources) >= 3, \
+                f"Expected at least 3 of {expected_source_files}, found: {found_sources}"
+            
+            # Verify key header files are present
+            expected_headers = ["device.h", "memory.h", "network.h"]
+            found_headers = [h for h in expected_headers if h in content]
+            assert len(found_headers) >= 2, \
+                f"Expected at least 2 of {expected_headers}, found: {found_headers}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(70)
+    async def test_taint_sources_multifile(self, client, codebase_path):
+        """Test finding taint sources across multiple files
+        
+        Expected sources (from grep analysis):
+        - getenv: 9 calls in config.c (1), main.c (4), network.c (4)
+        - recv: 5 calls in network.c
+        - fgets: multiple in cmdline.c, config.c
+        - fread: in cmdline.c
+        Total: ~20+ taint sources
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Find taint sources
+        sources_result = await client.call_tool("find_taint_sources", {
+            "codebase_hash": codebase_hash,
+            "language": "c",
+            "limit": 100
+        })
+
+        sources_dict = self.extract_tool_result(sources_result)
+        assert sources_dict.get("success") is True, f"Find sources failed: {sources_dict}"
+
+        sources = sources_dict.get("sources", [])
+        total = sources_dict.get("total", len(sources))
+        
+        # Verify minimum source count
+        assert total >= 15, f"Expected at least 15 taint sources, got {total}"
+        
+        # Verify source names include expected patterns
+        source_names = [s.get("name", "") for s in sources]
+        expected_source_functions = ["getenv", "recv", "fgets", "fread"]
+        found_expected = [fn for fn in expected_source_functions if fn in source_names]
+        assert len(found_expected) >= 2, \
+            f"Expected at least 2 of {expected_source_functions} in sources, found: {found_expected}"
+        
+        # Verify sources come from multiple files
+        source_files = set(s.get("filename", "") for s in sources if s.get("filename"))
+        # Should find sources in at least 3 different files
+        assert len(source_files) >= 3, \
+            f"Expected sources from at least 3 files, got {len(source_files)}: {source_files}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(70)
+    async def test_taint_sinks_multifile(self, client, codebase_path):
+        """Test finding taint sinks across multiple files
+        
+        Expected sinks (from grep analysis):
+        - system: 11 calls in device.c (2), main.c (3), network.c (1), config.c (1), cmdline.c (4)
+        - free: 39 calls across all modules
+        - memcpy: 10+ calls
+        - printf/sprintf: 10+ calls
+        Total: ~100+ taint sinks
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        # Find taint sinks
+        sinks_result = await client.call_tool("find_taint_sinks", {
+            "codebase_hash": codebase_hash,
+            "language": "c",
+            "limit": 150
+        })
+
+        sinks_dict = self.extract_tool_result(sinks_result)
+        assert sinks_dict.get("success") is True, f"Find sinks failed: {sinks_dict}"
+
+        sinks = sinks_dict.get("sinks", [])
+        total = sinks_dict.get("total", len(sinks))
+        
+        # Verify minimum sink count
+        assert total >= 50, f"Expected at least 50 taint sinks, got {total}"
+        
+        # Verify sink names include dangerous functions
+        sink_names = [s.get("name", "") for s in sinks]
+        expected_dangerous = ["system", "memcpy", "free", "printf", "sprintf", "open"]
+        found_dangerous = [fn for fn in expected_dangerous if fn in sink_names]
+        assert len(found_dangerous) >= 3, \
+            f"Expected at least 3 of {expected_dangerous} in sinks, found: {found_dangerous}"
+        
+        # Verify specific dangerous sink counts
+        system_count = sink_names.count("system")
+        assert system_count >= 5, f"Expected at least 5 system() sinks, got {system_count}"
+        
+        free_count = sink_names.count("free")
+        assert free_count >= 20, f"Expected at least 20 free() sinks, got {free_count}"
+        
+        # Verify sinks come from multiple files
+        sink_files = set(s.get("filename", "") for s in sinks if s.get("filename"))
+        assert len(sink_files) >= 5, \
+            f"Expected sinks from at least 5 files, got {len(sink_files)}: {sink_files}"
