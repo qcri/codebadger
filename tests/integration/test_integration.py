@@ -298,7 +298,7 @@ class TestCodeBadgerIntegration:
         # Verify method structure
         if methods:
             method = methods[0]
-            required_fields = ["node_id", "name"]
+            required_fields = ["node_id", "name", "cyclomaticComplexity", "numberOfLines"]
             for field in required_fields:
                 assert field in method, f"Method missing field: {field}"
 

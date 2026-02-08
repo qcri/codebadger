@@ -69,7 +69,7 @@ class CodeBrowsingService:
                 query_parts.append(f'.where(_.callOut.name("{callee_pattern}"))')
 
             query_parts.append(
-                ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.isExternal))"
+                ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.controlStructure.size + 1, m.isExternal))"
             )
             
             query_limit = min(limit, 10000)
@@ -89,14 +89,26 @@ class CodeBrowsingService:
             methods = []
             for item in result.data:
                 if isinstance(item, dict):
+                    line_number = item.get("_6", -1)
+                    line_number_end = item.get("_7", -1)
+                    
+                    # Calculate number of lines
+                    if line_number != -1 and line_number_end != -1:
+                        number_of_lines = line_number_end - line_number + 1
+                    else:
+                        number_of_lines = 0
+
                     methods.append({
-                        "node_id": str(item.get("_1", "")),
-                        "name": item.get("_2", ""),
+                        "name": item.get("_1", ""),
+                        "node_id": str(item.get("_2", "")),
                         "fullName": item.get("_3", ""),
                         "signature": item.get("_4", ""),
                         "filename": item.get("_5", ""),
-                        "lineNumber": item.get("_6", -1),
-                        "isExternal": item.get("_7", False),
+                        "lineNumber": line_number,
+                        "lineNumberEnd": line_number_end,
+                        "cyclomaticComplexity": item.get("_8", 1),
+                        "numberOfLines": number_of_lines,
+                        "isExternal": item.get("_9", False),
                     })
             return {"success": True, "methods": methods, "total": len(methods)}
 
