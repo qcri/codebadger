@@ -58,88 +58,117 @@
         )
       }
 
-      val dependencies = scala.collection.mutable.ListBuffer[(Int, String, String)]()
+      val dependencies = scala.collection.mutable.ListBuffer[(String, Int, String, String)]()
+      val visited = scala.collection.mutable.Set[String]()
 
-      if (direction == "backward") {
-        // 0. Parameters
-        method.parameter.nameExact(targetVar).l.foreach { param =>
-           dependencies += ((param.lineNumber.getOrElse(-1), s"${param.typeFullName} ${param.name}", "parameter"))
+      def trace(currMethod: io.shiftleft.codepropertygraph.generated.nodes.Method, 
+                currVar: String, 
+                scopeLine: Int, 
+                depth: Int): Unit = {
+
+        val methodId = currMethod.fullName
+        val uniqueId = s"$methodId:$currVar"
+        if (depth > 5 || visited.contains(uniqueId)) return
+        visited.add(uniqueId)
+        
+        val currFile = currMethod.file.name.headOption.getOrElse("unknown")
+
+        def isRelevantInScope(code: String): Boolean = {
+             code == currVar || 
+             code.startsWith(currVar + ".") || 
+             code.startsWith(currVar + "[") || 
+             code.startsWith("*" + currVar) || 
+             code.startsWith(currVar + "->") ||
+             code == "&" + currVar
         }
 
-        // 1. Initializations (Declarations)
-        method.local.nameExact(targetVar).l.foreach { local =>
-          dependencies += ((local.lineNumber.getOrElse(-1), s"${local.typeFullName} ${local.code}", "initialization"))
+        if (direction == "backward") {
+          // 0. Parameters (Inter-procedural)
+          currMethod.parameter.nameExact(currVar).l.foreach { param =>
+             if (depth == 0) dependencies += ((currFile, param.lineNumber.getOrElse(-1), s"${param.typeFullName} ${param.name}", "parameter"))
+             
+             currMethod.callIn.foreach { call =>
+                 val caller = call.method
+                 val callFile = call.file.name.headOption.getOrElse("unknown")
+                 call.argument.filter(_.argumentIndex == param.order).foreach { arg =>
+                     val argLine = call.lineNumber.getOrElse(-1)
+                     val argCode = arg.code
+                     val argIdentifiers = arg.ast.isIdentifier.name.l.distinct
+                     if (argIdentifiers.nonEmpty) {
+                         dependencies += ((callFile, argLine, s"Passed '$argCode' to ${currMethod.name}", "call_site_arg"))
+                         argIdentifiers.foreach(argId => trace(caller, argId, argLine, depth + 1))
+                     } else {
+                         dependencies += ((callFile, argLine, s"Passed '$argCode' to ${currMethod.name}", "call_site_const"))
+                     }
+                 }
+             }
+          }
+
+          // 1. Initializations
+          currMethod.local.nameExact(currVar).l.foreach { local =>
+            dependencies += ((currFile, local.lineNumber.getOrElse(-1), s"${local.typeFullName} ${local.code}", "initialization"))
+          }
+
+          // 2. Assignments
+          currMethod.assignment
+            .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
+            .filter(a => isRelevantInScope(a.target.code) || a.target.code == currVar) 
+            .take(maxResults)
+            .foreach { assign =>
+               dependencies += ((currFile, assign.lineNumber.getOrElse(-1), assign.code, "assignment"))
+            }
+
+          // 3. Modifications
+          currMethod.call
+            .name("<operator>.(postIncrement|preIncrement|postDecrement|preDecrement|assignmentPlus|assignmentMinus|assignmentMultiplication|assignmentDivision)")
+            .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
+            .filter(c => c.argument.code.l.exists(isRelevantInScope))
+            .take(maxResults)
+            .foreach { call =>
+              dependencies += ((currFile, call.lineNumber.getOrElse(-1), call.code, "modification"))
+            }
+            
+          // 4. Function Calls
+          currMethod.call
+            .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
+            .filter(c => c.argument.code.l.exists(arg => arg.contains(currVar))) 
+            .take(maxResults)
+            .foreach { call =>
+               if (!call.name.startsWith("<operator>"))
+                  dependencies += ((currFile, call.lineNumber.getOrElse(-1), call.code, "function_call"))
+            }
+
+        } else { // forward
+          // 1. Usages
+          currMethod.call
+            .filter(_.lineNumber.getOrElse(-1) >= scopeLine)
+            .filter(c => c.argument.code.l.exists(arg => isRelevantInScope(arg) || arg.contains(currVar)))
+            .take(maxResults)
+            .foreach { call =>
+               dependencies += ((currFile, call.lineNumber.getOrElse(-1), call.code, "usage"))
+            }
+
+          // 2. Propagations
+          currMethod.assignment
+            .filter(_.lineNumber.getOrElse(-1) >= scopeLine)
+            .filter(a => isRelevantInScope(a.source.code) || a.source.code.contains(currVar))
+            .take(maxResults)
+            .foreach { assign =>
+               dependencies += ((currFile, assign.lineNumber.getOrElse(-1), assign.code, "propagation"))
+            }
         }
-
-        // 2. Assignments
-        method.assignment
-          .filter(_.lineNumber.getOrElse(-1) <= targetLine)
-          .filter(a => isRelevant(a.target.code) || a.target.code == targetVar) 
-          .take(maxResults)
-          .foreach { assign =>
-             dependencies += ((assign.lineNumber.getOrElse(-1), assign.code, "assignment"))
-          }
-
-        // 3. Modifications (Inc/Dec)
-        method.call
-          .name("<operator>.(postIncrement|preIncrement|postDecrement|preDecrement|assignmentPlus|assignmentMinus|assignmentMultiplication|assignmentDivision)")
-          .filter(_.lineNumber.getOrElse(-1) <= targetLine)
-          .filter(c => c.argument.code.l.exists(isRelevant))
-          .take(maxResults)
-          .foreach { call =>
-            dependencies += ((call.lineNumber.getOrElse(-1), call.code, "modification"))
-          }
-          
-        // 4. Function Calls (Any usage in args, potential pass-by-ref or logic dependency)
-        method.call
-          .filter(_.lineNumber.getOrElse(-1) <= targetLine)
-          .filter(c => c.argument.code.l.exists(arg => 
-             // Argument contains variable name (relaxed from just &varName)
-               monitoredVars.exists(v => arg.contains(v))
-          ))
-          .take(maxResults)
-          .foreach { call =>
-             dependencies += ((call.lineNumber.getOrElse(-1), call.code, "function_call"))
-          }
-
-      } else { // forward
-        // 1. Usages
-        method.call
-          .filter(_.lineNumber.getOrElse(-1) >= targetLine)
-          .filter(c => c.argument.code.l.exists(arg => isRelevant(arg) || arg.contains(targetVar)))
-          .take(maxResults)
-          .foreach { call =>
-             dependencies += ((call.lineNumber.getOrElse(-1), call.code, "usage"))
-          }
-
-        // 2. Propagations (assignments where source involves var)
-        method.assignment
-          .filter(_.lineNumber.getOrElse(-1) >= targetLine)
-          .filter(a => isRelevant(a.source.code) || a.source.code.contains(targetVar))
-          .take(maxResults)
-          .foreach { assign =>
-             dependencies += ((assign.lineNumber.getOrElse(-1), assign.code, "propagation"))
-          }
-          
-        // 3. Modifications (future)
-         method.call
-          .name("<operator>.(postIncrement|preIncrement|postDecrement|preDecrement|assignmentPlus|assignmentMinus|assignmentMultiplication|assignmentDivision)")
-          .filter(_.lineNumber.getOrElse(-1) >= targetLine)
-          .filter(c => c.argument.code.l.exists(isRelevant))
-          .take(maxResults)
-          .foreach { call =>
-            dependencies += ((call.lineNumber.getOrElse(-1), call.code, "modification"))
-          }
       }
 
-      val sortedDeps = dependencies.sortBy(_._1)
+      trace(method, targetVar, targetLine, 0)
+
+      val sortedDeps = dependencies.sortBy(_._2) // Sort by line
       if (sortedDeps.isEmpty) {
         sb.append("(No dependencies found)\n")
       } else {
-        // Deduplicate output based on line and code to clean up potential overlaps
+        // Deduplicate output
         val uniqueDeps = sortedDeps.distinct
-        uniqueDeps.foreach { case (line, code, typeName) =>
-          sb.append(f"[Line $line%4d] $code ($typeName)\n")
+        uniqueDeps.foreach { case (file, line, code, typeName) =>
+          sb.append(f"[$file:$line%4d] $code ($typeName)\n")
         }
       }
       
