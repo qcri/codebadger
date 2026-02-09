@@ -172,3 +172,80 @@ class Config:
     cpg: CPGConfig = field(default_factory=CPGConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+
+
+@dataclass
+class Finding:
+    """Security finding/vulnerability"""
+
+    codebase_hash: str
+    finding_type: str  # "taint_flow", "use_after_free", "double_free"
+    severity: str  # "critical", "high", "medium", "low"
+    confidence: str  # "high", "medium", "low"
+    filename: str
+    line_number: int
+    message: str
+    description: Optional[str] = None
+    cwe_id: Optional[int] = None
+    rule_id: Optional[str] = None
+    flow_data: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert finding to dictionary"""
+        return {
+            "id": self.id,
+            "codebase_hash": self.codebase_hash,
+            "finding_type": self.finding_type,
+            "severity": self.severity,
+            "confidence": self.confidence,
+            "filename": self.filename,
+            "line_number": self.line_number,
+            "message": self.message,
+            "description": self.description,
+            "cwe_id": self.cwe_id,
+            "rule_id": self.rule_id,
+            "flow_data": json.dumps(self.flow_data) if self.flow_data else None,
+            "metadata": json.dumps(self.metadata) if self.metadata else None,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Finding":
+        """Create finding from dictionary"""
+        # Parse metadata if it's a JSON string
+        metadata = data.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        # Parse flow_data if it's a JSON string
+        flow_data = data.get("flow_data")
+        if isinstance(flow_data, str):
+            try:
+                flow_data = json.loads(flow_data)
+            except json.JSONDecodeError:
+                flow_data = {}
+
+        return cls(
+            id=data.get("id"),
+            codebase_hash=data.get("codebase_hash", ""),
+            finding_type=data.get("finding_type", ""),
+            severity=data.get("severity", "medium"),
+            confidence=data.get("confidence", "medium"),
+            filename=data.get("filename", ""),
+            line_number=data.get("line_number", 0),
+            message=data.get("message", ""),
+            description=data.get("description"),
+            cwe_id=data.get("cwe_id"),
+            rule_id=data.get("rule_id"),
+            flow_data=flow_data,
+            metadata=metadata,
+            created_at=datetime.fromisoformat(data["created_at"])
+            if data.get("created_at")
+            else datetime.now(timezone.utc),
+        )
