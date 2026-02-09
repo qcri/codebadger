@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +159,18 @@ class DBManager:
             logger.error(f"Failed to cache tool output: {e}")
             # Don't raise, just log error as caching is optional
 
-    def get_cached_tool_output(self, tool_name: str, codebase_hash: str, parameters: Dict[str, Any]) -> Optional[Any]:
-        """Get cached tool output"""
+    def get_cached_tool_output(self, tool_name: str, codebase_hash: str, parameters: Dict[str, Any], cache_ttl: int = 300) -> Optional[Any]:
+        """Get cached tool output if not expired.
+        
+        Args:
+            tool_name: Name of the tool
+            codebase_hash: Hash of the codebase
+            parameters: Tool parameters
+            cache_ttl: Time-to-live in seconds (default: 300)
+        
+        Returns:
+            Cached output if found and not expired, None otherwise
+        """
         try:
             import hashlib
             
@@ -169,14 +179,64 @@ class DBManager:
             
             with self._get_connection() as conn:
                 cursor = conn.execute("""
-                    SELECT output FROM tool_cache 
+                    SELECT output, created_at FROM tool_cache 
                     WHERE tool_name = ? AND codebase_hash = ? AND parameters_hash = ?
                 """, (tool_name, codebase_hash, param_hash))
                 
                 row = cursor.fetchone()
                 if row:
+                    # Check if entry is expired
+                    created_at = datetime.fromisoformat(row["created_at"])
+                    # Ensure created_at is timezone-aware
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    age_seconds = (now - created_at).total_seconds()
+                    if age_seconds > cache_ttl:
+                        logger.debug(f"Cache entry expired for {tool_name} (age: {age_seconds:.0f}s, ttl: {cache_ttl}s)")
+                        return None
                     return json.loads(row["output"])
                 return None
         except Exception as e:
             logger.error(f"Failed to get cached tool output: {e}")
             return None
+
+    def cleanup_expired_cache(self, max_age_seconds: int = 3600) -> int:
+        """Remove cache entries older than max_age_seconds.
+        
+        Args:
+            max_age_seconds: Maximum age of cache entries to keep (default: 3600)
+        
+        Returns:
+            Number of deleted entries
+        """
+        try:
+            with self._get_connection() as conn:
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+                cursor = conn.execute("""
+                    DELETE FROM tool_cache 
+                    WHERE created_at < ?
+                """, (cutoff.isoformat(),))
+                conn.commit()
+                deleted = cursor.rowcount
+                if deleted > 0:
+                    logger.info(f"Cleaned up {deleted} expired cache entries")
+                return deleted
+        except Exception as e:
+            logger.error(f"Failed to cleanup expired cache: {e}")
+            return 0
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics for monitoring.
+        
+        Returns:
+            Dictionary with cache statistics
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT COUNT(*) as count FROM tool_cache")
+                total = cursor.fetchone()["count"]
+                return {"total_entries": total}
+        except Exception as e:
+            logger.error(f"Failed to get cache stats: {e}")
+            return {"total_entries": 0, "error": str(e)}
