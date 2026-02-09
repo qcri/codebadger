@@ -11,7 +11,7 @@ from ..exceptions import ValidationError
 from ..models import SourceType
 
 
-def validate_source_type(source_type: str):
+def validate_source_type(source_type: str) -> None:
     """Validate source type"""
     valid_types = [e.value for e in SourceType]
     if source_type not in valid_types:
@@ -20,7 +20,7 @@ def validate_source_type(source_type: str):
         )
 
 
-def validate_language(language: str):
+def validate_language(language: str) -> None:
     """Validate programming language"""
     supported = [
         "java",
@@ -43,7 +43,7 @@ def validate_language(language: str):
         )
 
 
-def validate_codebase_hash(codebase_hash: str):
+def validate_codebase_hash(codebase_hash: str) -> None:
     """Validate codebase hash format"""
     if not codebase_hash or not isinstance(codebase_hash, str):
         raise ValidationError("codebase_hash must be a non-empty string")
@@ -54,7 +54,7 @@ def validate_codebase_hash(codebase_hash: str):
         raise ValidationError("codebase_hash must be a valid 16-character hex string")
 
 
-def validate_session_id(session_id: str):
+def validate_session_id(session_id: str) -> None:
     """Validate session ID format"""
     if not session_id or not isinstance(session_id, str):
         raise ValidationError("session_id must be a non-empty string")
@@ -102,7 +102,7 @@ def validate_local_path(path: str) -> bool:
     return True
 
 
-def validate_cpgql_query(query: str):
+def validate_cpgql_query(query: str) -> None:
     """Validate CPGQL query"""
     if not query or not isinstance(query, str):
         raise ValidationError("Query must be a non-empty string")
@@ -201,7 +201,7 @@ def sanitize_path(path: str, allowed_root: Optional[str] = None) -> str:
     return path
 
 
-def validate_timeout(timeout: int, max_timeout: int = 300):
+def validate_timeout(timeout: int, max_timeout: int = 300) -> None:
     """Validate timeout value"""
     if timeout < 1:
         raise ValidationError("Timeout must be at least 1 second")

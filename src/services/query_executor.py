@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Union
 
 from ..models import QueryResult
 from ..exceptions import QueryExecutionError
@@ -140,7 +140,7 @@ class QueryExecutor:
             logger.error(f"Error executing query via Joern client: {e}")
             return QueryResult(success=False, error=str(e))
 
-    def _parse_output(self, output: str) -> list:
+    def _parse_output(self, output: str) -> Union[list, int, float, str]:
         """Parse Joern query output"""
         if not output or not output.strip():
             return []

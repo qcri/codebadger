@@ -1,7 +1,7 @@
 """Configuration management for the CodeBadger Server."""
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -124,7 +124,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         )
 
 
-def _substitute_env_vars(data):
+def _substitute_env_vars(data: Any) -> Any:
     """Recursively substitute environment variables in config"""
     if isinstance(data, dict):
         return {k: _substitute_env_vars(v) for k, v in data.items()}

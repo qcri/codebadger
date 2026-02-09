@@ -2,6 +2,8 @@
 Data models for CodeBadger Server
 """
 
+import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -38,7 +40,6 @@ class CodebaseInfo:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert codebase info to dictionary"""
-        import json
         return {
             "hash": self.codebase_hash,
             "source_type": self.source_type,
@@ -54,8 +55,6 @@ class CodebaseInfo:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CodebaseInfo":
         """Create codebase info from dictionary"""
-        import json
-        import logging
         logger = logging.getLogger(__name__)
         # Parse metadata if it's a JSON string
         metadata = data.get("metadata", {})
