@@ -49,8 +49,9 @@ def register_prompts(mcp):
                 ),
                 "memory": (
                     "Focus specifically on memory safety: use-after-free, double-free, "
-                    "buffer overflows, and missing bounds checks. Run find_use_after_free, "
-                    "find_double_free, and find_bounds_checks."
+                    "buffer overflows, null pointer dereferences, integer overflows, "
+                    "and missing bounds checks. Run find_use_after_free, find_double_free, "
+                    "find_bounds_checks, find_null_pointer_deref, and find_integer_overflow."
                 ),
                 "authentication": (
                     "Focus specifically on authentication and authorization: look for "
@@ -73,7 +74,9 @@ def register_prompts(mcp):
 If the codebase language is C or C++, also run:
 7. `find_use_after_free(codebase_hash="{hash}")` — detect use-after-free vulnerabilities
 8. `find_double_free(codebase_hash="{hash}")` — detect double-free vulnerabilities
-9. `find_bounds_checks(codebase_hash="{hash}")` — find buffer accesses missing bounds checks""".format(hash=codebase_hash)
+9. `find_bounds_checks(codebase_hash="{hash}")` — find buffer accesses missing bounds checks
+10. `find_null_pointer_deref(codebase_hash="{hash}")` — detect null pointer dereference vulnerabilities (CWE-476)
+11. `find_integer_overflow(codebase_hash="{hash}")` — detect integer overflow/underflow before allocation or array indexing (CWE-190)""".format(hash=codebase_hash)
 
         analysis_text = f"""You are performing a comprehensive security audit on codebase `{codebase_hash}`.{lang_clause}
 {f"**Focus**: {focus_instructions}" if focus_instructions else ""}
@@ -159,11 +162,21 @@ For each dangerous buffer operation found, call `find_bounds_checks(codebase_has
 - CWE-120: Buffer Copy without Checking Size
 - CWE-787: Out-of-bounds Write
 
-## Step 5: Trace Data Origins
+## Step 5: Null Pointer Dereference Detection
+Call `find_null_pointer_deref(codebase_hash="{codebase_hash}"{file_filter})` to find cases where pointers from allocation functions (malloc, calloc, realloc, fopen, strdup, mmap, etc.) are dereferenced without NULL checks.
+- CWE-476: NULL Pointer Dereference
+- For each finding, note the allocation site and the unchecked dereference location
+
+## Step 6: Integer Overflow Detection
+Call `find_integer_overflow(codebase_hash="{codebase_hash}"{file_filter})` to find arithmetic operations (multiplication, left-shift, addition, subtraction) that could overflow before being used as allocation sizes or array indices.
+- CWE-190: Integer Overflow or Wraparound
+- For each finding, note the arithmetic expression, operation type, and risk level
+
+## Step 7: Trace Data Origins
 For each confirmed vulnerability, call `get_program_slice(codebase_hash="{codebase_hash}", ...)` with direction="backward" to trace where the data or pointer originated.
 Call `get_file_content(codebase_hash="{codebase_hash}", method_name="<function>")` to view the full function context.
 
-## Step 6: Report
+## Step 8: Report
 Produce a memory safety report grouped by category:
 
 ### Use-After-Free (CWE-416)
@@ -174,6 +187,12 @@ For each: file:line, pointer name, first free, second free, fix
 
 ### Buffer Overflows (CWE-120/CWE-787)
 For each: file:line, function called, buffer size (if determinable), bounds check present (yes/no), fix
+
+### Null Pointer Dereference (CWE-476)
+For each: file:line, pointer name, allocation function, dereference location, fix
+
+### Integer Overflow (CWE-190)
+For each: file:line, arithmetic expression, operation type, risk level (HIGH/MEDIUM), used as (allocation size / array index), fix
 
 Rate each finding: Critical / High / Medium / Low based on exploitability and impact."""
 
@@ -426,6 +445,8 @@ Call `find_taint_flows(codebase_hash="{codebase_hash}", mode="auto")` and filter
 If the codebase is C/C++:
 - Call `find_use_after_free(codebase_hash="{codebase_hash}", filename="{filename}")`
 - Call `find_double_free(codebase_hash="{codebase_hash}", filename="{filename}")`
+- Call `find_null_pointer_deref(codebase_hash="{codebase_hash}", filename="{filename}")`
+- Call `find_integer_overflow(codebase_hash="{codebase_hash}", filename="{filename}")`
 
 ## Step 7: Trace Vulnerabilities
 For each vulnerability found{f" near line {line_number}" if line_number else ""}:
