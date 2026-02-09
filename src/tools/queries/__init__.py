@@ -13,6 +13,23 @@ class QueryLoader:
 
     _cache: Dict[str, str] = {}
     _queries_dir = os.path.dirname(__file__)
+    # Sentinel used to escape {{ in user values to prevent template injection
+    _ESCAPE_SENTINEL = "\x00__ESCAPED_OPEN_BRACE__\x00"
+
+    @classmethod
+    def _sanitize_value(cls, value: str) -> str:
+        """Sanitize a value to prevent template injection.
+
+        Replaces {{ sequences in user-supplied values with a sentinel
+        that will be restored to literal {{ after template substitution.
+
+        Args:
+            value: The user-supplied value to sanitize
+
+        Returns:
+            Sanitized value with {{ escaped
+        """
+        return value.replace("{{", cls._ESCAPE_SENTINEL)
 
     @classmethod
     def load(cls, query_name: str, **kwargs) -> str:
@@ -24,6 +41,10 @@ class QueryLoader:
 
         Returns:
             The query string with variables substituted
+
+        Note:
+            User-supplied values containing {{ are automatically escaped
+            to prevent template injection attacks.
 
         Example:
             query = QueryLoader.load(
@@ -41,9 +62,14 @@ class QueryLoader:
         template = cls._cache[query_name]
 
         # Substitute placeholders like {{variable_name}}
+        # Sanitize values to prevent template injection via {{ in user input
         for key, value in kwargs.items():
             placeholder = f"{{{{{key}}}}}"  # {{key}}
-            template = template.replace(placeholder, str(value))
+            sanitized_value = cls._sanitize_value(str(value))
+            template = template.replace(placeholder, sanitized_value)
+
+        # Restore escaped {{ sequences to literal {{ in the final output
+        template = template.replace(cls._ESCAPE_SENTINEL, "{{")
 
         return template
 
