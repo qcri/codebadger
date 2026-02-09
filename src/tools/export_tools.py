@@ -29,6 +29,7 @@ CWE_MAP = {
     "double_free": 415,
     "buffer_overflow": 120,
     "null_pointer_deref": 476,
+    "integer_overflow": 190,
 }
 
 # Severity ordering for filtering
@@ -303,6 +304,85 @@ class FindingsParser:
         return findings
 
     @staticmethod
+    def parse_integer_overflow_text(text: str, codebase_hash: str) -> List[Dict[str, Any]]:
+        """Parse integer overflow/underflow analysis output.
+
+        Args:
+            text: Raw text output from find_integer_overflow
+            codebase_hash: The codebase hash
+
+        Returns:
+            List of finding dictionaries
+        """
+        findings = []
+
+        # Split by issue markers
+        issue_pattern = r"--- Issue (\d+) ---"
+        issue_blocks = re.split(issue_pattern, text)
+
+        for i in range(1, len(issue_blocks), 2):
+            issue_text = issue_blocks[i + 1] if i + 1 < len(issue_blocks) else ""
+
+            try:
+                # Extract location
+                loc_match = re.search(r"Location: ([^:]+):(\d+)", issue_text)
+                if not loc_match:
+                    continue
+
+                issue_file = loc_match.group(1).strip()
+                issue_line = int(loc_match.group(2))
+
+                # Extract risk level
+                risk_match = re.search(r"\[(HIGH|MEDIUM)\]", issue_text)
+                risk = risk_match.group(1) if risk_match else "MEDIUM"
+
+                # Extract arithmetic expression
+                arith_match = re.search(r"Arithmetic: (.+?)(?:\n|$)", issue_text)
+                arith_expr = arith_match.group(1).strip() if arith_match else "unknown arithmetic"
+
+                # Extract code
+                code_match = re.search(r"Code: (.+?)(?:\n|$)", issue_text)
+                code_expr = code_match.group(1).strip() if code_match else ""
+
+                # Determine severity from risk level
+                severity = "high" if risk == "HIGH" else "medium"
+
+                # Determine issue type
+                type_match = re.search(r"Type: (.+?)\s*\[", issue_text)
+                issue_type = type_match.group(1).strip() if type_match else "Arithmetic Overflow"
+
+                # Detect cross-function flow
+                is_cross_func = "[CROSS-FUNC]" in issue_text
+
+                # Create finding
+                finding = {
+                    "codebase_hash": codebase_hash,
+                    "finding_type": "integer_overflow",
+                    "severity": severity,
+                    "confidence": "high",
+                    "filename": issue_file,
+                    "line_number": issue_line,
+                    "message": f"Integer overflow: {arith_expr} at {issue_file}:{issue_line} ({issue_type})",
+                    "description": f"Unchecked arithmetic ({arith_expr}) may overflow before use in {issue_type.lower()}",
+                    "cwe_id": CWE_MAP["integer_overflow"],
+                    "rule_id": "integer_overflow",
+                    "flow_data": {
+                        "location": {"file": issue_file, "line": issue_line},
+                        "arithmetic": arith_expr,
+                        "code": code_expr,
+                        "risk_level": risk,
+                        "cross_function": is_cross_func,
+                    },
+                }
+                findings.append(finding)
+
+            except (ValueError, AttributeError) as e:
+                logger.debug(f"Failed to parse integer overflow issue: {e}")
+                continue
+
+        return findings
+
+    @staticmethod
     def _determine_severity_from_flow(flow_text: str, sink_file: str) -> tuple[str, str]:
         """Determine vulnerability type and severity from flow characteristics.
 
@@ -570,6 +650,7 @@ class SARIFBuilder:
             "double_free": "Track object lifetimes carefully. Use smart pointers and RAII patterns to prevent double-free.",
             "buffer_overflow": "Use bounds-checking functions and safe string operations. Avoid strcpy, sprintf, etc.",
             "null_pointer_deref": "Always check return values of malloc/calloc/realloc/fopen for NULL before dereferencing. Use wrapper functions that abort on allocation failure, or handle the error path explicitly.",
+            "integer_overflow": "Use overflow-safe allocation functions (calloc, reallocarray) instead of malloc with manual multiplication. Add explicit overflow checks before arithmetic (e.g., if (a > SIZE_MAX / b)) or use compiler builtins (__builtin_mul_overflow). For C23, use ckd_mul/ckd_add.",
         }
         return remediation_map.get(rule_id, "Review and fix the identified security issue.")
 
@@ -581,8 +662,8 @@ def register_export_tools(mcp, services: dict):
         description="""Parse and store vulnerability findings in database.
 
 Parses raw output from CodeBadger analysis tools (find_taint_flows,
-find_use_after_free, find_double_free, find_null_pointer_deref) and stores structured findings
-in the database for later export or querying.
+find_use_after_free, find_double_free, find_null_pointer_deref, find_integer_overflow)
+and stores structured findings in the database for later export or querying.
 
 Args:
     codebase_hash: The codebase hash from generate_cpg.
@@ -591,7 +672,8 @@ Args:
                        "taint_flows": "<text from find_taint_flows>",
                        "use_after_free": "<text from find_use_after_free>",
                        "double_free": "<text from find_double_free>",
-                       "null_pointer_deref": "<text from find_null_pointer_deref>"
+                       "null_pointer_deref": "<text from find_null_pointer_deref>",
+                       "integer_overflow": "<text from find_integer_overflow>"
                    }
     replace_existing: If true, delete existing findings for this codebase first.
                       Default: false (append mode)
@@ -694,6 +776,18 @@ Notes:
                 except Exception as e:
                     errors.append(f"Null pointer deref parsing error: {str(e)}")
                     logger.error(f"Error parsing null pointer deref: {e}")
+
+            # Parse integer overflow/underflow
+            if findings_data.get("integer_overflow"):
+                try:
+                    iof = FindingsParser.parse_integer_overflow_text(
+                        findings_data["integer_overflow"], codebase_hash
+                    )
+                    findings_to_store.extend(iof)
+                    logger.info(f"Parsed {len(iof)} integer overflow findings")
+                except Exception as e:
+                    errors.append(f"Integer overflow parsing error: {str(e)}")
+                    logger.error(f"Error parsing integer overflow: {e}")
 
             # Save findings to database
             if findings_to_store:

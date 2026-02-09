@@ -1296,3 +1296,101 @@ Notes:
         except Exception as e:
             logger.error(f"Unexpected error detecting null pointer dereference: {e}", exc_info=True)
             return f"Internal Error: {str(e)}"
+
+    @mcp.tool(
+        description="""Detect Integer Overflow/Underflow vulnerabilities (CWE-190) before allocation or array indexing.
+
+Analyzes the codebase for cases where arithmetic operations (multiplication, left-shift,
+addition, subtraction) could overflow/underflow before being used as:
+1. **Allocation size**: malloc(count * elem_size) where the multiplication can wrap around
+2. **Array index**: buffer[offset * stride] where the multiplication can wrap around
+
+Detection phases:
+1. **Direct arithmetic in allocation size**: Finds malloc/realloc calls where the size
+   argument contains unchecked multiplication or left-shift
+2. **Indirect arithmetic via variable**: Tracks size = a * b; malloc(size) patterns
+3. **Array index arithmetic**: Finds array indexing with unchecked multiplication/left-shift
+4. **Deep interprocedural**: Uses Joern's reachableByFlows() to track arithmetic results
+   flowing across function boundaries into allocation size arguments
+
+Filters out false positives:
+- Constant expressions (sizeof * literal, compile-time constants)
+- Arithmetic guarded by overflow checks (SIZE_MAX, __builtin_*_overflow, etc.)
+- calloc/reallocarray (handle multiplication overflow internally)
+- Single-variable + constant additions (e.g., len + 1)
+- Array indices with preceding bounds checks
+
+Args:
+    codebase_hash: The codebase hash from generate_cpg.
+    filename: Optional filename regex to filter results (e.g., 'parser.c').
+    limit: Maximum results to return (default 100).
+    timeout: Query timeout in seconds (default 120).
+
+Returns:
+    Human-readable text showing:
+    - Each potential overflow issue with location [file:line]
+    - The arithmetic expression and operation type
+    - Risk level (HIGH for mult/shift in alloc, MEDIUM for add/sub or array index)
+    - [CROSS-FUNC] tag for interprocedural flows
+
+Notes:
+    - Includes deep interprocedural analysis using Joern's dataflow engine.
+    - Use get_program_slice for deeper control-flow context around specific locations.
+    - Use find_taint_flows to check if arithmetic operands come from external input."""
+    )
+    def find_integer_overflow(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
+        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 120,
+    ) -> str:
+        """Detect potential Integer Overflow/Underflow vulnerabilities in the codebase."""
+        try:
+            validate_codebase_hash(codebase_hash)
+
+            codebase_tracker = services["codebase_tracker"]
+            query_executor = services["query_executor"]
+
+            # Verify CPG exists
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info or not codebase_info.cpg_path:
+                raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first using generate_cpg.")
+
+            cache_params = {
+                "filename": filename,
+                "limit": limit,
+            }
+
+            def _execute():
+                query = QueryLoader.load(
+                    "integer_overflow",
+                    filename=filename or "",
+                    limit=limit,
+                )
+
+                result = query_executor.execute_query(
+                    codebase_hash=codebase_hash,
+                    cpg_path=codebase_info.cpg_path,
+                    query=query,
+                    timeout=timeout,
+                )
+
+                if not result.success:
+                    return f"Error: {result.error}"
+
+                if isinstance(result.data, str):
+                    return result.data.strip()
+                elif isinstance(result.data, list) and len(result.data) > 0:
+                    output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+                    return output.strip()
+                else:
+                    return f"Query returned unexpected format: {type(result.data)}"
+
+            return _cached_taint_query(services, "find_integer_overflow", codebase_hash, cache_params, _execute)
+
+        except ValidationError as e:
+            logger.error(f"Error detecting integer overflow: {e}")
+            return f"Validation Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Unexpected error detecting integer overflow: {e}", exc_info=True)
+            return f"Internal Error: {str(e)}"
