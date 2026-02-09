@@ -18,10 +18,15 @@ logger = logging.getLogger(__name__)
 class JoernServerManager:
     """Manages individual Joern server instances running in Docker container using Docker Python API"""
 
-    def __init__(self, joern_binary_path: str = "joern", container_name: str = "codebadger-joern-server"):
+    def __init__(self, joern_binary_path: str = "joern", container_name: str = "codebadger-joern-server", config=None):
         self.joern_binary = joern_binary_path
         self.container_name = container_name
-        self.port_manager = PortManager()
+        self.config = config
+        # Initialize PortManager with config values
+        if config:
+            self.port_manager = PortManager(port_min=config.joern.port_min, port_max=config.joern.port_max)
+        else:
+            self.port_manager = PortManager()
         self.docker_client = docker.from_env()
         # _exec_ids will store the exec instance IDs for running joern servers
         self._exec_ids: Dict[str, str] = {}  # codebase_hash -> exec_id or container_id
@@ -298,7 +303,8 @@ class JoernServerManager:
                             server_responding = True
                             # Wait a bit more for Joern to fully initialize
                             logger.debug(f"Server responding on port {port}, waiting for full initialization...")
-                            time.sleep(3)  # Give Joern more time to initialize
+                            sleep_time = self.config.joern.server_init_sleep_time if self.config else 3.0
+                            time.sleep(sleep_time)  # Give Joern more time to initialize
                             return True
                     except Exception as e:
                         logger.debug(f"HTTP check failed: {e}")

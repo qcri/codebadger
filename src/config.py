@@ -89,6 +89,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 server_port=int(os.getenv("JOERN_SERVER_PORT", "8080")),
                 server_auth_username=os.getenv("JOERN_SERVER_AUTH_USERNAME"),
                 server_auth_password=os.getenv("JOERN_SERVER_AUTH_PASSWORD"),
+                port_min=int(os.getenv("JOERN_PORT_MIN", "2000")),
+                port_max=int(os.getenv("JOERN_PORT_MAX", "2999")),
+                server_init_sleep_time=float(os.getenv("JOERN_SERVER_INIT_SLEEP_TIME", "3.0")),
             ),
             cpg=CPGConfig(
                 generation_timeout=int(os.getenv("CPG_GENERATION_TIMEOUT", "600")),
@@ -103,7 +106,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
                     "kotlin", "csharp", "php", "ruby"
                 ],
                 taint_sources={},
-                taint_sinks={}
+                taint_sinks={},
+                min_cpg_file_size=int(os.getenv("MIN_CPG_FILE_SIZE", "1024")),
+                output_truncation_length=int(os.getenv("OUTPUT_TRUNCATION_LENGTH", "2000")),
             ),
             query=QueryConfig(
                 timeout=int(os.getenv("QUERY_TIMEOUT", "30")),

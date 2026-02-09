@@ -125,11 +125,13 @@ class CPGGenerator:
             try:
                 result = self._exec_command_sync(cmd_args, env, self.config.cpg.generation_timeout)
 
-                logger.info(f"CPG generation output:\n{result[:2000]}")
+                truncation_length = self.config.cpg.output_truncation_length
+                logger.info(f"CPG generation output:\n{result[:truncation_length]}")
 
                 # Check for fatal errors
                 if "ERROR:" in result or "Exception" in result:
-                    logger.error(f"CPG generation reported fatal errors:\n{result[:2000]}")
+                    truncation_length = self.config.cpg.output_truncation_length
+                    logger.error(f"CPG generation reported fatal errors:\n{result[:truncation_length]}")
                     error_msg = "Joern reported fatal errors during CPG generation"
                     raise CPGGenerationError(error_msg)
 
@@ -161,7 +163,8 @@ class CPGGenerator:
                     return cpg_path, joern_port
                 else:
                     error_msg = "CPG file was not created"
-                    logger.error(f"{error_msg}: {result[:2000]}")
+                    truncation_length = self.config.cpg.output_truncation_length
+                    logger.error(f"{error_msg}: {result[:truncation_length]}")
                     raise CPGGenerationError(error_msg)
 
             except asyncio.TimeoutError:
@@ -299,7 +302,7 @@ class CPGGenerator:
 
             # Check file size
             file_size = os.path.getsize(cpg_path)
-            min_cpg_size = 1024  # 1KB minimum
+            min_cpg_size = self.config.cpg.min_cpg_file_size
 
             if file_size < min_cpg_size:
                 logger.error(

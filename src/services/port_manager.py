@@ -10,15 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 class PortManager:
-    """Manages port allocation for Joern server instances (2000-2999)"""
+    """Manages port allocation for Joern server instances"""
 
-    PORT_MIN = 2000
-    PORT_MAX = 2999
-
-    def __init__(self):
+    def __init__(self, port_min: int = 2000, port_max: int = 2999):
+        self.port_min = port_min
+        self.port_max = port_max
         self._session_to_port: Dict[str, int] = {}  # session_id -> port
         self._port_to_session: Dict[int, str] = {}  # port -> session_id
-        self._available_ports: Set[int] = set(range(self.PORT_MIN, self.PORT_MAX + 1))
+        self._available_ports: Set[int] = set(range(self.port_min, self.port_max + 1))
         self._lock = threading.Lock()
 
     def allocate_port(self, session_id: str) -> int:
@@ -32,7 +31,7 @@ class PortManager:
 
             # Allocate a new port
             if not self._available_ports:
-                raise RuntimeError("No available ports in range 2000-2999")
+                raise RuntimeError(f"No available ports in range {self.port_min}-{self.port_max}")
 
             port = min(self._available_ports)
             self._available_ports.remove(port)

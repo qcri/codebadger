@@ -121,12 +121,16 @@ async def lifespan(mcp: FastMCP):
         services['git_manager'] = GitManager(config.storage.workspace_root)
 
         # Initialize port manager for Joern servers
-        services['port_manager'] = PortManager()
+        services['port_manager'] = PortManager(
+            port_min=config.joern.port_min,
+            port_max=config.joern.port_max
+        )
 
         # Initialize Joern server manager (runs servers inside Docker container)
         services['joern_server_manager'] = JoernServerManager(
             joern_binary_path=config.joern.binary_path,
-            container_name=os.getenv("JOERN_CONTAINER_NAME", "codebadger-joern-server")
+            container_name=os.getenv("JOERN_CONTAINER_NAME", "codebadger-joern-server"),
+            config=config
         )
 
         # Initialize CPG generator (runs Joern CLI directly in container)

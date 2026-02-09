@@ -111,6 +111,9 @@ class JoernConfig:
     server_port: int = 8080
     server_auth_username: Optional[str] = None
     server_auth_password: Optional[str] = None
+    port_min: int = 2000
+    port_max: int = 2999
+    server_init_sleep_time: float = 3.0
 
 
 @dataclass
@@ -133,6 +136,8 @@ class CPGConfig:
     languages_with_exclusions: Optional[List[str]] = None
     taint_sources: Optional[Dict[str, List[str]]] = None
     taint_sinks: Optional[Dict[str, List[str]]] = None
+    min_cpg_file_size: int = 1024  # 1KB minimum
+    output_truncation_length: int = 2000  # Max characters for output logging
 
 
 @dataclass
