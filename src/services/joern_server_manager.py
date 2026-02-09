@@ -31,6 +31,8 @@ class JoernServerManager:
         # _exec_ids will store the exec instance IDs for running joern servers
         self._exec_ids: Dict[str, str] = {}  # codebase_hash -> exec_id or container_id
         self._ports: Dict[str, int] = {}  # codebase_hash -> port
+        # _clients stores reusable JoernServerClient instances for connection pooling
+        self._clients: Dict[str, 'JoernServerClient'] = {}  # codebase_hash -> JoernServerClient
 
     def spawn_server(self, codebase_hash: str) -> int:
         """
@@ -123,6 +125,57 @@ class JoernServerManager:
             self._cleanup_server(codebase_hash)
             raise
 
+    def get_or_create_client(self, codebase_hash: str) -> 'JoernServerClient':
+        """
+        Get or create a JoernServerClient for the given codebase with connection pooling
+
+        Args:
+            codebase_hash: The codebase identifier
+
+        Returns:
+            JoernServerClient instance with reusable connection pool
+
+        Raises:
+            RuntimeError if no server is running for the codebase
+        """
+        # Return cached client if available
+        if codebase_hash in self._clients:
+            return self._clients[codebase_hash]
+
+        # Verify server is running
+        if codebase_hash not in self._ports:
+            raise RuntimeError(f"No Joern server running for codebase {codebase_hash}")
+
+        port = self._ports[codebase_hash]
+
+        # Create new client with connection pooling
+        from .joern_client import JoernServerClient
+
+        # Prepare config dict for HTTP pooling
+        http_config = {}
+        if self.config:
+            joern_cfg = self.config.joern
+            http_config = {
+                "http_pool_connections": joern_cfg.http_pool_connections,
+                "http_pool_maxsize": joern_cfg.http_pool_maxsize,
+                "http_max_retries": joern_cfg.http_max_retries,
+                "http_backoff_factor": joern_cfg.http_backoff_factor,
+            }
+
+        client = JoernServerClient(
+            host="localhost",
+            port=port,
+            username=self.config.joern.server_auth_username if self.config else None,
+            password=self.config.joern.server_auth_password if self.config else None,
+            config=http_config
+        )
+
+        # Cache the client
+        self._clients[codebase_hash] = client
+        logger.debug(f"Created and cached JoernServerClient for {codebase_hash} on port {port}")
+
+        return client
+
     def load_cpg(self, codebase_hash: str, cpg_path: str, timeout: int = 120) -> bool:
         """
         Load a CPG into the Joern server for the given codebase
@@ -141,9 +194,8 @@ class JoernServerManager:
 
             port = self._ports[codebase_hash]
 
-            # Use JoernServerClient to load the CPG
-            from .joern_client import JoernServerClient
-            client = JoernServerClient(host="localhost", port=port)
+            # Get or create cached client with connection pooling
+            client = self.get_or_create_client(codebase_hash)
 
             # Convert host path to container path for Joern running in Docker
             # Host path like /home/aleks/.../playground/cpgs/hash/cpg.bin -> /playground/cpgs/hash/cpg.bin
@@ -325,3 +377,12 @@ class JoernServerManager:
             self.port_manager.release_port(codebase_hash)
             del self._ports[codebase_hash]
             logger.debug(f"Cleaned up resources for {codebase_hash} (port {port})")
+        # Close and cleanup client session for connection pooling
+        if codebase_hash in self._clients:
+            client = self._clients[codebase_hash]
+            try:
+                client.close()
+                logger.debug(f"Closed HTTP session for {codebase_hash}")
+            except Exception as e:
+                logger.warning(f"Error closing HTTP session for {codebase_hash}: {e}")
+            del self._clients[codebase_hash]

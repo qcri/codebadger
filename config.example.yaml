@@ -12,6 +12,14 @@ joern:
   # memory_limit: ${JOERN_MEMORY_LIMIT:16g}
   # java_opts: ${JOERN_JAVA_OPTS:-Xmx16G -Xms8G -XX:+UseG1GC -Dfile.encoding=UTF-8}
 
+  # HTTP Connection Pooling for Joern Server
+  http_pool_connections: ${HTTP_POOL_CONNECTIONS:10}
+  http_pool_maxsize: ${HTTP_POOL_MAXSIZE:10}
+  http_connect_timeout: ${HTTP_CONNECT_TIMEOUT:5.0}
+  http_read_timeout: ${HTTP_READ_TIMEOUT:300.0}
+  http_max_retries: ${HTTP_MAX_RETRIES:3}
+  http_backoff_factor: ${HTTP_BACKOFF_FACTOR:0.3}
+
 sessions:
   ttl: ${SESSION_TTL:3600}
   idle_timeout: ${SESSION_IDLE_TIMEOUT:1800}

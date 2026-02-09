@@ -1,12 +1,14 @@
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from ..models import QueryResult
 from ..exceptions import QueryExecutionError
-from .joern_client import JoernServerClient
 from .joern_server_manager import JoernServerManager
+
+if TYPE_CHECKING:
+    from .joern_client import JoernServerClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,8 @@ class QueryExecutor:
                     execution_time=time.time() - start_time,
                 )
 
-            # Create a client for this specific server
-            joern_client = JoernServerClient(host="localhost", port=port)
+            # Get cached client with connection pooling instead of creating new one
+            joern_client = self.joern_server_manager.get_or_create_client(codebase_hash)
 
             # Normalize query for JSON output
             normalized_query = self._normalize_query(query, limit)
@@ -113,7 +115,7 @@ class QueryExecutor:
         # Default: return JSON output for collections
         return f"{base_query}.toJsonPretty"
 
-    def _execute_via_client(self, joern_client: JoernServerClient, query: str, timeout: int) -> QueryResult:
+    def _execute_via_client(self, joern_client: 'JoernServerClient', query: str, timeout: int) -> QueryResult:
         """Execute query using Joern server client"""
         try:
             logger.debug(f"Executing query via Joern client: {query[:100]}...")

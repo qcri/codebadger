@@ -8,27 +8,85 @@ import time
 from typing import Dict, Optional, Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
 
 class JoernServerClient:
-    """Client for Joern server HTTP API"""
+    """Client for Joern server HTTP API with connection pooling"""
 
-    def __init__(self, host: str = "localhost", port: int = 8080, username: Optional[str] = None, password: Optional[str] = None):
+    def __init__(self, host: str = "localhost", port: int = 8080, username: Optional[str] = None, password: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         """
-        Initialize Joern server client
-        
+        Initialize Joern server client with connection pooling
+
         Args:
             host: Server hostname
             port: Server port
             username: Optional authentication username
             password: Optional authentication password
+            config: Optional configuration dict with HTTP settings
         """
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.auth = (username, password) if username and password else None
+        self.config = config or {}
+
+        # Initialize session with connection pooling
+        self.session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        """Create a requests Session with connection pooling configuration"""
+        session = requests.Session()
+
+        # Get HTTP configuration from config dict (with sensible defaults)
+        pool_connections = self.config.get("http_pool_connections", 10)
+        pool_maxsize = self.config.get("http_pool_maxsize", 10)
+        max_retries = self.config.get("http_max_retries", 3)
+        backoff_factor = self.config.get("http_backoff_factor", 0.3)
+
+        # Create retry strategy
+        retry_strategy = Retry(
+            total=max_retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT", "DELETE"]
+        )
+
+        # Create HTTP adapter with connection pooling
+        adapter = HTTPAdapter(
+            pool_connections=pool_connections,
+            pool_maxsize=pool_maxsize,
+            max_retries=retry_strategy
+        )
+
+        # Mount adapters for both HTTP and HTTPS
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # Set authentication if provided
+        if self.auth:
+            session.auth = self.auth
+
+        logger.debug(f"Created session with connection pooling: pools={pool_connections}, maxsize={pool_maxsize}, retries={max_retries}")
+        return session
+
+    def close(self):
+        """Close the session and cleanup connections"""
+        if hasattr(self, 'session') and self.session:
+            self.session.close()
+            logger.debug(f"Closed session for {self.host}:{self.port}")
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - cleanup session"""
+        self.close()
+        return False
 
     # Legacy async submission methods removed: use execute_query() for synchronous API
 
@@ -39,21 +97,21 @@ class JoernServerClient:
     ) -> Dict[str, Any]:
         """
         Execute a query synchronously using the /query-sync endpoint
-        
+
         Args:
             query: The CPGQL query to execute
             timeout: Maximum time to wait for result (seconds)
-            
+
         Returns:
             Dictionary with keys: success (bool), stdout (str), stderr (str)
         """
         try:
             url = f"{self.base_url}/query-sync"
             payload = {"query": query}
-            
+
             logger.debug(f"Executing query synchronously at {url}: {query[:100]}...")
-            
-            response = requests.post(url, json=payload, timeout=timeout, auth=self.auth)
+
+            response = self.session.post(url, json=payload, timeout=timeout)
             
             if response.status_code != 200:
                 error_text = response.text

@@ -113,6 +113,13 @@ class JoernConfig:
     port_min: int = 2000
     port_max: int = 2999
     server_init_sleep_time: float = 3.0
+    # HTTP Connection Pooling
+    http_pool_connections: int = 10
+    http_pool_maxsize: int = 10
+    http_connect_timeout: float = 5.0
+    http_read_timeout: float = 300.0
+    http_max_retries: int = 3
+    http_backoff_factor: float = 0.3
 
 
 @dataclass
