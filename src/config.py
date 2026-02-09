@@ -14,6 +14,37 @@ from .models import (
     StorageConfig,
 )
 
+# Default exclusion patterns for CPG generation
+# Used by both _get_default_cpg_config() and load_config()
+DEFAULT_EXCLUSION_PATTERNS = [
+    ".*/\\..*", "\\..*", ".*/test.*", "test.*", ".*/fuzz.*", "fuzz.*",
+    ".*/Testing.*", "Testing.*", ".*/spec.*", "spec.*", ".*/__tests__/.*",
+    "__tests__/.*", ".*/e2e.*", "e2e.*", ".*/integration.*", "integration.*",
+    ".*/unit.*", "unit.*", ".*/benchmark.*", "benchmark.*", ".*/perf.*", "perf.*",
+    ".*/docs?/.*", "docs?/.*", ".*/documentation.*", "documentation.*",
+    ".*/example.*", "example.*", ".*/sample.*", "sample.*", ".*/demo.*", "demo.*",
+    ".*/tutorial.*", "tutorial.*", ".*/guide.*", "guide.*", ".*/build.*/.*",
+    ".*_build/.*", ".*/target/.*", ".*/out/.*", ".*/dist/.*", ".*/bin/.*",
+    ".*/obj/.*", ".*/Debug/.*", ".*/Release/.*", ".*/cmake/.*", ".*/m4/.*",
+    ".*/autom4te.*/.*", ".*/autotools/.*", ".*/\\.git/.*", ".*/\\.svn/.*",
+    ".*/\\.hg/.*", ".*/\\.deps/.*", ".*/node_modules/.*", ".*/vendor/.*",
+    ".*/third_party/.*", ".*/extern/.*", ".*/external/.*", ".*/packages/.*",
+    ".*/benchmark.*/.*", ".*/perf.*/.*", ".*/profile.*/.*", ".*/bench/.*",
+    ".*/tool.*/.*", ".*/script.*/.*", ".*/utils/.*", ".*/util/.*",
+    ".*/helper.*/.*", ".*/misc/.*", ".*/python/.*", ".*/java/.*",
+    ".*/ruby/.*", ".*/perl/.*", ".*/php/.*", ".*/csharp/.*", ".*/dotnet/.*",
+    ".*/go/.*", ".*/generated/.*", ".*/gen/.*", ".*/temp/.*", ".*/tmp/.*",
+    ".*/cache/.*", ".*/\\.cache/.*", ".*/log.*/.*", ".*/logs/.*",
+    ".*/result.*/.*", ".*/results/.*", ".*/output/.*", ".*\\.md$",
+    ".*\\.txt$", ".*\\.xml$", ".*\\.json$", ".*\\.yaml$", ".*\\.yml$",
+    ".*\\.toml$", ".*\\.ini$", ".*\\.cfg$", ".*\\.conf$", ".*\\.properties$",
+    ".*\\.cmake$", ".*Makefile.*", ".*makefile.*", ".*configure.*",
+    ".*\\.am$", ".*\\.in$", ".*\\.ac$", ".*\\.log$", ".*\\.cache$",
+    ".*\\.lock$", ".*\\.tmp$", ".*\\.bak$", ".*\\.orig$", ".*\\.swp$",
+    ".*~$", ".*/\\.vscode/.*", ".*/\\.idea/.*", ".*/\\.eclipse/.*",
+    ".*\\.DS_Store$", ".*Thumbs\\.db$"
+]
+
 
 def _get_default_cpg_config() -> CPGConfig:
     """Get default CPG configuration values"""
@@ -24,34 +55,7 @@ def _get_default_cpg_config() -> CPGConfig:
             "java", "c", "cpp", "javascript", "python", "go",
             "kotlin", "csharp", "ghidra", "jimple", "php", "ruby", "swift"
         ],
-        exclusion_patterns=[
-            ".*/\\..*", "\\..*", ".*/test.*", "test.*", ".*/fuzz.*", "fuzz.*",
-            ".*/Testing.*", "Testing.*", ".*/spec.*", "spec.*", ".*/__tests__/.*",
-            "__tests__/.*", ".*/e2e.*", "e2e.*", ".*/integration.*", "integration.*",
-            ".*/unit.*", "unit.*", ".*/benchmark.*", "benchmark.*", ".*/perf.*", "perf.*",
-            ".*/docs?/.*", "docs?/.*", ".*/documentation.*", "documentation.*",
-            ".*/example.*", "example.*", ".*/sample.*", "sample.*", ".*/demo.*", "demo.*",
-            ".*/tutorial.*", "tutorial.*", ".*/guide.*", "guide.*", ".*/build.*/.*",
-            ".*_build/.*", ".*/target/.*", ".*/out/.*", ".*/dist/.*", ".*/bin/.*",
-            ".*/obj/.*", ".*/Debug/.*", ".*/Release/.*", ".*/cmake/.*", ".*/m4/.*",
-            ".*/autom4te.*/.*", ".*/autotools/.*", ".*/\\.git/.*", ".*/\\.svn/.*",
-            ".*/\\.hg/.*", ".*/\\.deps/.*", ".*/node_modules/.*", ".*/vendor/.*",
-            ".*/third_party/.*", ".*/extern/.*", ".*/external/.*", ".*/packages/.*",
-            ".*/benchmark.*/.*", ".*/perf.*/.*", ".*/profile.*/.*", ".*/bench/.*",
-            ".*/tool.*/.*", ".*/script.*/.*", ".*/utils/.*", ".*/util/.*",
-            ".*/helper.*/.*", ".*/misc/.*", ".*/python/.*", ".*/java/.*",
-            ".*/ruby/.*", ".*/perl/.*", ".*/php/.*", ".*/csharp/.*", ".*/dotnet/.*",
-            ".*/go/.*", ".*/generated/.*", ".*/gen/.*", ".*/temp/.*", ".*/tmp/.*",
-            ".*/cache/.*", ".*/\\.cache/.*", ".*/log.*/.*", ".*/logs/.*",
-            ".*/result.*/.*", ".*/results/.*", ".*/output/.*", ".*\\.md$",
-            ".*\\.txt$", ".*\\.xml$", ".*\\.json$", ".*\\.yaml$", ".*\\.yml$",
-            ".*\\.toml$", ".*\\.ini$", ".*\\.cfg$", ".*\\.conf$", ".*\\.properties$",
-            ".*\\.cmake$", ".*Makefile.*", ".*makefile.*", ".*configure.*",
-            ".*\\.am$", ".*\\.in$", ".*\\.ac$", ".*\\.log$", ".*\\.cache$",
-            ".*\\.lock$", ".*\\.tmp$", ".*\\.bak$", ".*\\.orig$", ".*\\.swp$",
-            ".*~$", ".*/\\.vscode/.*", ".*/\\.idea/.*", ".*/\\.eclipse/.*",
-            ".*\\.DS_Store$", ".*Thumbs\\.db$"
-        ],
+        exclusion_patterns=DEFAULT_EXCLUSION_PATTERNS,
         languages_with_exclusions=[
             "c", "cpp", "java", "javascript", "python", "go",
             "kotlin", "csharp", "php", "ruby"
@@ -93,34 +97,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
                     "java", "c", "cpp", "javascript", "python", "go",
                     "kotlin", "csharp", "ghidra", "jimple", "php", "ruby", "swift"
                 ],
-                exclusion_patterns=[
-                    ".*/\\..*", "\\..*", ".*/test.*", "test.*", ".*/fuzz.*", "fuzz.*",
-                    ".*/Testing.*", "Testing.*", ".*/spec.*", "spec.*", ".*/__tests__/.*",
-                    "__tests__/.*", ".*/e2e.*", "e2e.*", ".*/integration.*", "integration.*",
-                    ".*/unit.*", "unit.*", ".*/benchmark.*", "benchmark.*", ".*/perf.*", "perf.*",
-                    ".*/docs?/.*", "docs?/.*", ".*/documentation.*", "documentation.*",
-                    ".*/example.*", "example.*", ".*/sample.*", "sample.*", ".*/demo.*", "demo.*",
-                    ".*/tutorial.*", "tutorial.*", ".*/guide.*", "guide.*", ".*/build.*/.*",
-                    ".*_build/.*", ".*/target/.*", ".*/out/.*", ".*/dist/.*", ".*/bin/.*",
-                    ".*/obj/.*", ".*/Debug/.*", ".*/Release/.*", ".*/cmake/.*", ".*/m4/.*",
-                    ".*/autom4te.*/.*", ".*/autotools/.*", ".*/\\.git/.*", ".*/\\.svn/.*",
-                    ".*/\\.hg/.*", ".*/\\.deps/.*", ".*/node_modules/.*", ".*/vendor/.*",
-                    ".*/third_party/.*", ".*/extern/.*", ".*/external/.*", ".*/packages/.*",
-                    ".*/benchmark.*/.*", ".*/perf.*/.*", ".*/profile.*/.*", ".*/bench/.*",
-                    ".*/tool.*/.*", ".*/script.*/.*", ".*/utils/.*", ".*/util/.*",
-                    ".*/helper.*/.*", ".*/misc/.*", ".*/python/.*", ".*/java/.*",
-                    ".*/ruby/.*", ".*/perl/.*", ".*/php/.*", ".*/csharp/.*", ".*/dotnet/.*",
-                    ".*/go/.*", ".*/generated/.*", ".*/gen/.*", ".*/temp/.*", ".*/tmp/.*",
-                    ".*/cache/.*", ".*/\\.cache/.*", ".*/log.*/.*", ".*/logs/.*",
-                    ".*/result.*/.*", ".*/results/.*", ".*/output/.*", ".*\\.md$",
-                    ".*\\.txt$", ".*\\.xml$", ".*\\.json$", ".*\\.yaml$", ".*\\.yml$",
-                    ".*\\.toml$", ".*\\.ini$", ".*\\.cfg$", ".*\\.conf$", ".*\\.properties$",
-                    ".*\\.cmake$", ".*Makefile.*", ".*makefile.*", ".*configure.*",
-                    ".*\\.am$", ".*\\.in$", ".*\\.ac$", ".*\\.log$", ".*\\.cache$",
-                    ".*\\.lock$", ".*\\.tmp$", ".*\\.bak$", ".*\\.orig$", ".*\\.swp$",
-                    ".*~$", ".*/\\.vscode/.*", ".*/\\.idea/.*", ".*/\\.eclipse/.*",
-                    ".*\\.DS_Store$", ".*Thumbs\\.db$"
-                ],
+                exclusion_patterns=DEFAULT_EXCLUSION_PATTERNS,
                 languages_with_exclusions=[
                     "c", "cpp", "java", "javascript", "python", "go",
                     "kotlin", "csharp", "php", "ruby"
