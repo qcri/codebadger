@@ -94,7 +94,10 @@
 
         // Sort by line number
         val sortedFreeCalls = methodFreeCalls.sortBy(_.lineNumber.getOrElse(0))
-        
+        // Track which free sites already have a pair to avoid redundant chains
+        // e.g., free@10, free@20, free@30 → report (10,20) only, skip (10,30)
+        val pairedFirstFrees = mutable.Set[String]()
+
         // For each free call, check if there's another free of the same pointer later
         sortedFreeCalls.zipWithIndex.foreach { case (firstFree, idx) =>
           val firstLine = firstFree.lineNumber.getOrElse(-1)
@@ -165,10 +168,12 @@
                     // Check if the two frees are in mutually exclusive if/else branches
                     val inDifferentBranches = areInMutuallyExclusiveBranches(method, firstLine, secondLine)
 
-                    // Only report if not a safe pattern
-                    if (!hasRealloc && !hasReassignment && !hasEarlyExit && !inDifferentBranches) {
+                    // Only report if not a safe pattern and first-free not already paired
+                    val pairKey = s"$firstPtr:$firstFile:$firstLine"
+                    if (!hasRealloc && !hasReassignment && !hasEarlyExit && !inDifferentBranches && !pairedFirstFrees.contains(pairKey)) {
                       val flowType = if (firstPtr == secondPtr) "same-ptr" else s"alias($secondPtr=$firstPtr)"
                       doubleFreeIssues += ((firstFile, methodName, firstPtr, firstLine, firstCode, secondLine, secondCode, flowType))
+                      pairedFirstFrees += pairKey
                     }
                   }
                 }

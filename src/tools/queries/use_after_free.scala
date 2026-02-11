@@ -83,8 +83,14 @@
     
     // Store UAF issues
     val uafIssues = mutable.ListBuffer[(String, Int, String, String, String, List[(Int, String, String, String, String)])]()
-    
-    freeCallsFiltered.foreach { freeCall =>
+
+    // Track (freedPtr, methodFullName) to only keep the earliest free per pointer per method
+    val seenPtrMethod = mutable.Set[String]()
+
+    // Process free calls sorted by line number so earliest free wins
+    val sortedFreeCallsFiltered = freeCallsFiltered.sortBy(_.lineNumber.getOrElse(0))
+
+    sortedFreeCallsFiltered.foreach { freeCall =>
       val freeFile = freeCall.file.name.headOption.getOrElse("unknown")
       val freeLine = freeCall.lineNumber.getOrElse(-1)
       val freeCode = freeCall.code
@@ -97,9 +103,14 @@
         val freedPtr = freedPtrNode.code.trim
         
         if (!freedPtr.contains("(") && !freedPtr.contains("[") && freedPtr.length < 50) {
+          // Skip if we already reported a (earlier) free for this pointer in this method
+          val ptrMethodKey = s"$freedPtr:${freeCall.method.fullName}"
+          if (!seenPtrMethod.contains(ptrMethodKey)) {
+          seenPtrMethod += ptrMethodKey
+
           val method = freeCall.method
           val postFreeUsages = mutable.ListBuffer[(Int, String, String, String, String)]()
-          
+
           // Track reassignments
           val reassignmentLines = mutable.Set[Int]()
           method.assignment.l.foreach { assign =>
@@ -240,10 +251,17 @@
             }
           }
           
-          val uniqueUsages = postFreeUsages.toList.distinct.sortBy(_._1)
+          // Dedup usages: one per line, prefer direct > alias > interproc
+          val flowPriority = Map("direct" -> 0, "alias" -> 1, "interproc" -> 2, "deep-interproc" -> 3)
+          val uniqueUsages = postFreeUsages.toList.distinct
+            .sortBy(u => flowPriority.getOrElse(u._5.takeWhile(_ != '('), 3))
+            .groupBy(_._1)  // group by line
+            .values.map(_.head).toList  // keep first (highest priority) per line
+            .sortBy(_._1)
           if (uniqueUsages.nonEmpty) {
             uafIssues += ((freeFile, freeLine, freeCode, freedPtr, methodName, uniqueUsages))
           }
+          } // end seenPtrMethod check
         }
       }
     }

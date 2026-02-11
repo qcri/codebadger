@@ -84,6 +84,29 @@
     c.matches("'.'")
   }
 
+  /** Check if a constant expression is "small" (<=4096).
+    * Small constants in addition (e.g., len + 1, size + sizeof(int)) are
+    * extremely common and virtually never cause overflow in practice.
+    * Large constants (e.g., MAX_SIZE expanded to 65536) combined with a
+    * variable ARE worth flagging since overflow is more plausible.
+    */
+  def isSmallConstant(code: String): Boolean = {
+    val c = code.trim.replaceAll("[UuLl]+$", "")
+    try {
+      if (c.startsWith("sizeof") || c.matches("'.'")) {
+        true
+      } else if (c.startsWith("0x") || c.startsWith("0X")) {
+        java.lang.Long.parseLong(c.substring(2), 16) <= 4096L
+      } else if (c.startsWith("0") && c.length > 1 && c.matches("0[0-7]+")) {
+        java.lang.Long.parseLong(c.substring(1), 8) <= 4096L
+      } else {
+        java.lang.Long.parseLong(c) <= 4096L
+      }
+    } catch {
+      case _: NumberFormatException => false
+    }
+  }
+
   def hasOverflowGuard(method: Method, fromLine: Int, toLine: Int, operandNames: List[String]): Boolean = {
     if (operandNames.isEmpty) return false
     method.controlStructure.filter(_.controlStructureType == "IF").l.exists { ifStmt =>
@@ -117,7 +140,9 @@
 
     // Issues: (file, line, accessCode, arithCode, opType, methodName, risk, issueType)
     val issues = mutable.ListBuffer[(String, Int, String, String, String, String, String, String)]()
-    val seen = mutable.Set[String]()
+    // One issue per allocation/index site — first (highest-risk) match wins
+    val seenAllocSites = mutable.Set[String]()
+    val seenIndexSites = mutable.Set[String]()
 
     allocCalls.foreach { allocCall =>
       val allocFile = allocCall.file.name.headOption.getOrElse("unknown")
@@ -132,82 +157,87 @@
       allocCall.argument.order(sizeArgIdx).l.foreach { sizeArg =>
 
         // Check high-risk operators (multiplication, left-shift)
-        sizeArg.ast.isCall.filter(c => highRiskOps.contains(c.name)).l.foreach { arithOp =>
-          val operandCodes = arithOp.argument.l.map(_.code.trim)
-          if (!operandCodes.forall(isConstantExpr) && operandCodes.size >= 2) {
-            val arithLine = arithOp.lineNumber.getOrElse(allocLine)
-            val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
-            val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
-            if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
-              val key = s"$allocFile:$allocLine:h:${arithOp.code.hashCode}"
-              if (!seen.contains(key)) {
-                seen += key
+        // Take only the first (outermost in AST) match per allocation site
+        val allocSiteKey = s"$allocFile:$allocLine"
+        if (!seenAllocSites.contains(allocSiteKey)) {
+          sizeArg.ast.isCall.filter(c => highRiskOps.contains(c.name)).l
+            .find { arithOp =>
+              val operandCodes = arithOp.argument.l.map(_.code.trim)
+              !operandCodes.forall(isConstantExpr) && operandCodes.size >= 2
+            }
+            .foreach { arithOp =>
+              val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
+              val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
+              if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
+                seenAllocSites += allocSiteKey
                 val opStr = if (arithOp.name == "<operator>.multiplication") "multiplication" else "left-shift"
                 issues += ((allocFile, allocLine, allocCall.code, arithOp.code, opStr, methodName, "HIGH", "alloc_arithmetic"))
               }
             }
-          }
         }
 
-        // Check medium-risk operators (addition/subtraction of two non-constant variables)
-        sizeArg.ast.isCall.filter(c => mediumRiskOps.contains(c.name)).l.foreach { arithOp =>
-          val operandCodes = arithOp.argument.l.map(_.code.trim)
-          val nonConstCount = operandCodes.count(c => !isConstantExpr(c))
-          // Only flag if BOTH operands are non-constant (avoids flagging "len + 1" noise)
-          if (nonConstCount >= 2) {
-            val arithLine = arithOp.lineNumber.getOrElse(allocLine)
-            val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
-            val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
-            if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
-              val key = s"$allocFile:$allocLine:m:${arithOp.code.hashCode}"
-              if (!seen.contains(key)) {
-                seen += key
+        // Check medium-risk operators (addition/subtraction) — only if no high-risk found for this site
+        if (!seenAllocSites.contains(allocSiteKey)) {
+          sizeArg.ast.isCall.filter(c => mediumRiskOps.contains(c.name)).l
+            .find { arithOp =>
+              val operandCodes = arithOp.argument.l.map(_.code.trim)
+              val nonConstCount = operandCodes.count(c => !isConstantExpr(c))
+              if (nonConstCount >= 2) true
+              else if (nonConstCount == 1) {
+                val constOperands = operandCodes.filter(isConstantExpr)
+                !constOperands.forall(isSmallConstant)
+              } else false
+            }
+            .foreach { arithOp =>
+              val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
+              val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
+              if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
+                seenAllocSites += allocSiteKey
                 val opStr = if (arithOp.name == "<operator>.addition") "addition" else "subtraction"
                 issues += ((allocFile, allocLine, allocCall.code, arithOp.code, opStr, methodName, "MEDIUM", "alloc_arithmetic"))
               }
             }
-          }
         }
       }
 
       // === PHASE 2: Indirect — variable with arithmetic result used as alloc size ===
       // Pattern: size = a * b; ... malloc(size);
-      allocCall.argument.order(sizeArgIdx).l.foreach { sizeArg =>
-        val sizeVarNames = sizeArg.ast.isIdentifier.name.l.distinct
+      // Skip if Phase 1 already reported this allocation site
+      if (!seenAllocSites.contains(s"$allocFile:$allocLine")) {
+        allocCall.argument.order(sizeArgIdx).l.foreach { sizeArg =>
+          val sizeVarNames = sizeArg.ast.isIdentifier.name.l.distinct
+          val siteKey = s"$allocFile:$allocLine"
 
-        sizeVarNames.foreach { sizeVarName =>
-          // Find the most recent assignment to this variable before the allocation
-          val assignments = method.assignment.l.filter { assign =>
-            val aLine = assign.lineNumber.getOrElse(-1)
-            aLine > 0 && aLine < allocLine && assign.target.code.trim == sizeVarName
-          }.sortBy(_.lineNumber.getOrElse(-1))
+          sizeVarNames.takeWhile(_ => !seenAllocSites.contains(siteKey)).foreach { sizeVarName =>
+            val assignments = method.assignment.l.filter { assign =>
+              val aLine = assign.lineNumber.getOrElse(-1)
+              aLine > 0 && aLine < allocLine && assign.target.code.trim == sizeVarName
+            }.sortBy(_.lineNumber.getOrElse(-1))
 
-          assignments.lastOption.foreach { assign =>
-            val assignLine = assign.lineNumber.getOrElse(-1)
+            assignments.lastOption.foreach { assign =>
+              val assignLine = assign.lineNumber.getOrElse(-1)
 
-            // Check if RHS contains high-risk arithmetic
-            assign.source.ast.isCall.filter(c => highRiskOps.contains(c.name)).l.foreach { arithOp =>
-              val operandCodes = arithOp.argument.l.map(_.code.trim)
-              if (!operandCodes.forall(isConstantExpr) && operandCodes.size >= 2) {
-                // Check no reassignment of the variable between assignment and alloc
-                val hasReassignment = method.assignment.l.exists { a =>
-                  val aLine2 = a.lineNumber.getOrElse(-1)
-                  aLine2 > assignLine && aLine2 < allocLine && a.target.code.trim == sizeVarName
+              assign.source.ast.isCall.filter(c => highRiskOps.contains(c.name)).l
+                .find { arithOp =>
+                  val operandCodes = arithOp.argument.l.map(_.code.trim)
+                  !operandCodes.forall(isConstantExpr) && operandCodes.size >= 2
                 }
+                .foreach { arithOp =>
+                  val hasReassignment = method.assignment.l.exists { a =>
+                    val aLine2 = a.lineNumber.getOrElse(-1)
+                    aLine2 > assignLine && aLine2 < allocLine && a.target.code.trim == sizeVarName
+                  }
 
-                if (!hasReassignment) {
-                  val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
-                  val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
-                  if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
-                    val key = s"$allocFile:$allocLine:i:${arithOp.code.hashCode}"
-                    if (!seen.contains(key)) {
-                      seen += key
+                  if (!hasReassignment && !seenAllocSites.contains(siteKey)) {
+                    val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
+                    val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
+                    if (!hasOverflowGuard(method, guardFrom, allocLine, operandNames)) {
+                      seenAllocSites += siteKey
                       val opStr = if (arithOp.name == "<operator>.multiplication") "multiplication" else "left-shift"
                       issues += ((allocFile, allocLine, allocCall.code, arithOp.code, opStr, methodName, "HIGH", "alloc_indirect_arithmetic"))
                     }
                   }
                 }
-              }
             }
           }
         }
@@ -228,40 +258,48 @@
       val indexLine = indexCall.lineNumber.getOrElse(-1)
       val method = indexCall.method
       val methodName = method.name
+      val indexSiteKey = s"$indexFile:$indexLine"
 
-      // Index is the second argument (first is the array/pointer)
-      indexCall.argument.order(2).l.foreach { indexArg =>
-        indexArg.ast.isCall.filter(c => highRiskOps.contains(c.name)).l.foreach { arithOp =>
-          val operandCodes = arithOp.argument.l.map(_.code.trim)
-          if (!operandCodes.forall(isConstantExpr) && operandCodes.size >= 2) {
-            val arithLine = arithOp.lineNumber.getOrElse(indexLine)
-            val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
-
-            // Check for bounds check: any IF before the index access that
-            // references an operand AND contains a comparison operator
-            val hasBoundsCheck = method.controlStructure.filter(_.controlStructureType == "IF").l.exists { ifStmt =>
-              val condLine = ifStmt.lineNumber.getOrElse(-1)
-              condLine > 0 && condLine <= indexLine && {
-                val condCode = ifStmt.condition.code.headOption.getOrElse("")
-                operandNames.exists(n => n.length > 1 && condCode.contains(n)) && (
-                  condCode.contains("<") || condCode.contains(">") ||
-                  guardKeywords.exists(kw => condCode.contains(kw))
-                )
-              }
+      // One issue per index site; skip if already reported
+      if (!seenIndexSites.contains(indexSiteKey)) {
+        indexCall.argument.order(2).l.foreach { indexArg =>
+          indexArg.ast.isCall.filter(c => highRiskOps.contains(c.name)).l
+            .find { arithOp =>
+              val operandCodes = arithOp.argument.l.map(_.code.trim)
+              !operandCodes.forall(isConstantExpr) && operandCodes.size >= 2
             }
+            .foreach { arithOp =>
+              val operandNames = arithOp.argument.ast.isIdentifier.name.l.distinct
 
-            if (!hasBoundsCheck) {
-              val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
-              if (!hasOverflowGuard(method, guardFrom, indexLine, operandNames)) {
-                val key = s"$indexFile:$indexLine:x:${arithOp.code.hashCode}"
-                if (!seen.contains(key)) {
-                  seen += key
+              val hasBoundsCheck = method.controlStructure.filter(_.controlStructureType == "IF").l.exists { ifStmt =>
+                val condLine = ifStmt.lineNumber.getOrElse(-1)
+                condLine > 0 && condLine <= indexLine && {
+                  val condCode = ifStmt.condition.code.headOption.getOrElse("")
+                  operandNames.exists(n => n.length > 1 && condCode.contains(n)) && (
+                    condCode.contains("<") || condCode.contains(">") ||
+                    guardKeywords.exists(kw => condCode.contains(kw))
+                  )
+                }
+              }
+
+              // Also suppress array index arithmetic inside FOR loops that bound the index variable
+              val isInBoundedLoop = method.controlStructure.filter(_.controlStructureType == "FOR").l.exists { forStmt =>
+                val forLine = forStmt.lineNumber.getOrElse(-1)
+                forLine > 0 && forLine <= indexLine && {
+                  val forCode = forStmt.code
+                  operandNames.exists(n => n.length > 1 && forCode.contains(n))
+                }
+              }
+
+              if (!hasBoundsCheck && !isInBoundedLoop) {
+                val guardFrom = math.max(method.lineNumber.getOrElse(1), 1)
+                if (!hasOverflowGuard(method, guardFrom, indexLine, operandNames)) {
+                  seenIndexSites += indexSiteKey
                   val opStr = if (arithOp.name == "<operator>.multiplication") "multiplication" else "left-shift"
                   issues += ((indexFile, indexLine, indexCall.code, arithOp.code, opStr, methodName, "MEDIUM", "index_arithmetic"))
                 }
               }
             }
-          }
         }
       }
     }
@@ -330,29 +368,26 @@
               }
 
               if (!hasGuard) {
-                val key = s"$sinkFile:$sinkLine:p:${source.code.hashCode}"
-                if (!seen.contains(key)) {
-                  seen += key
-                  // Also skip if we already reported this allocation site from Phase 1/2
-                  val alreadyReported = issues.exists(i => i._1 == sinkFile && i._2 == sinkLine)
-                  if (!alreadyReported) {
-                    val pathMethods = elements.flatMap { elem =>
-                      elem match {
-                        case c: Call => Some(c.method.name)
-                        case i: Identifier => Some(i.method.name)
-                        case _ => None
-                      }
-                    }.distinct.take(4)
-
-                    val opStr = source match {
-                      case c: Call if c.name == "<operator>.multiplication" => "multiplication"
-                      case _ => "left-shift"
+                val crossSiteKey = s"$sinkFile:$sinkLine"
+                // Skip if already reported this allocation site from Phase 1/2/earlier Phase 4
+                if (!seenAllocSites.contains(crossSiteKey)) {
+                  seenAllocSites += crossSiteKey
+                  val pathMethods = elements.flatMap { elem =>
+                    elem match {
+                      case c: Call => Some(c.method.name)
+                      case i: Identifier => Some(i.method.name)
+                      case _ => None
                     }
-                    val pathStr = pathMethods.mkString(" -> ")
-                    val arithCode = source.code + s" (at $sourceFile:$sourceLine) [via: $pathStr]"
-                    val sinkCode = sink.code
-                    issues += ((sinkFile, sinkLine, sinkCode, arithCode, opStr, sinkMethod, "HIGH", "interproc_arithmetic"))
+                  }.distinct.take(4)
+
+                  val opStr = source match {
+                    case c: Call if c.name == "<operator>.multiplication" => "multiplication"
+                    case _ => "left-shift"
                   }
+                  val pathStr = pathMethods.mkString(" -> ")
+                  val arithCode = source.code + s" (at $sourceFile:$sourceLine) [via: $pathStr]"
+                  val sinkCode = sink.code
+                  issues += ((sinkFile, sinkLine, sinkCode, arithCode, opStr, sinkMethod, "HIGH", "interproc_arithmetic"))
                 }
               }
             }
@@ -376,7 +411,7 @@
       output.append("  - Constant expressions (sizeof * literal, etc.)\n")
       output.append("  - Arithmetic guarded by overflow checks (SIZE_MAX, __builtin_*_overflow, etc.)\n")
       output.append("  - calloc/reallocarray (handle overflow internally)\n")
-      output.append("  - Single-variable + constant additions (e.g., len + 1)\n")
+      output.append("  - Single-variable + small constant additions (e.g., len + 1, size + 16)\n")
       output.append("  - Array indices with preceding bounds checks\n")
     } else {
       // Sort HIGH before MEDIUM
@@ -448,9 +483,7 @@
       output.append("  - [HIGH]: Multiplication or left-shift in allocation size without overflow check\n")
       output.append("  - [HIGH] [CROSS-FUNC]: Cross-function arithmetic result used in allocation size\n")
       output.append("  - [MEDIUM]: Addition/subtraction of variables in allocation size, or arithmetic in array index\n")
-      output.append("\nCWE: CWE-190 (Integer Overflow or Wraparound)\n")
-      output.append("Recommendation: Use overflow-safe functions (calloc, reallocarray) or add explicit\n")
-      output.append("overflow checks before using arithmetic results for allocation sizes or array indices.\n")
+
     }
   }
 

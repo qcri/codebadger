@@ -171,6 +171,13 @@
               }
             }
 
+            // Dedup dereferences: one per line, prefer direct deref over func-arg
+            val derefPriority = Map("member_access" -> 0, "pointer_deref" -> 1, "index_access" -> 2, "passed_to_func" -> 3)
+            val dedupedDereferences = dereferences.toList
+              .sortBy(d => derefPriority.getOrElse(d._3, 3))
+              .groupBy(_._1)  // group by line
+              .values.map(_.head).toList  // keep first (highest priority) per line
+
             // === PHASE 3: False positive filtering ===
 
             // Track reassignments of the pointer after allocation
@@ -232,8 +239,8 @@
             }
 
             // Filter intraprocedural dereferences: keep only truly unguarded ones
-            val unguardedDerefs = if (dereferences.nonEmpty) {
-              dereferences.toList.filter { case (derefLine, _, _) =>
+            val unguardedDerefs = if (dedupedDereferences.nonEmpty) {
+              dedupedDereferences.filter { case (derefLine, _, _) =>
                 // Skip if pointer was reassigned between alloc and deref
                 val reassignedBefore = reassignmentLines.exists(rl => rl > allocLine && rl < derefLine)
 
@@ -473,7 +480,6 @@
       output.append("  - [FUNC-ARG]: Pointer passed to function (potential dereference inside)\n")
       output.append("  - [CROSS-FUNC]: Dereference in directly called function\n")
       output.append("  - [DEEP]: Dereference across multiple function call levels\n")
-      output.append("\nCWE: CWE-476 (NULL Pointer Dereference)\n")
     }
   }
 
