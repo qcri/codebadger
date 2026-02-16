@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 import yaml
 
+from . import defaults
 from .models import (
     Config,
     CPGConfig,
@@ -14,59 +15,15 @@ from .models import (
     StorageConfig,
 )
 
-# Default exclusion patterns for CPG generation
-# Used by both _get_default_cpg_config() and load_config()
-DEFAULT_EXCLUSION_PATTERNS = [
-    ".*/\\..*", "\\..*", ".*/test.*", "test.*", ".*/fuzz.*", "fuzz.*",
-    ".*/Testing.*", "Testing.*", ".*/spec.*", "spec.*", ".*/__tests__/.*",
-    "__tests__/.*", ".*/e2e.*", "e2e.*", ".*/integration.*", "integration.*",
-    ".*/unit.*", "unit.*", ".*/benchmark.*", "benchmark.*", ".*/perf.*", "perf.*",
-    ".*/docs?/.*", "docs?/.*", ".*/documentation.*", "documentation.*",
-    ".*/example.*", "example.*", ".*/sample.*", "sample.*", ".*/demo.*", "demo.*",
-    ".*/tutorial.*", "tutorial.*", ".*/guide.*", "guide.*", ".*/build.*/.*",
-    ".*_build/.*", ".*/target/.*", ".*/out/.*", ".*/dist/.*", ".*/bin/.*",
-    ".*/obj/.*", ".*/Debug/.*", ".*/Release/.*", ".*/cmake/.*", ".*/m4/.*",
-    ".*/autom4te.*/.*", ".*/autotools/.*", ".*/\\.git/.*", ".*/\\.svn/.*",
-    ".*/\\.hg/.*", ".*/\\.deps/.*", ".*/node_modules/.*", ".*/vendor/.*",
-    ".*/third_party/.*", ".*/extern/.*", ".*/external/.*", ".*/packages/.*",
-    ".*/benchmark.*/.*", ".*/perf.*/.*", ".*/profile.*/.*", ".*/bench/.*",
-    ".*/tool.*/.*", ".*/script.*/.*", ".*/utils/.*", ".*/util/.*",
-    ".*/helper.*/.*", ".*/misc/.*", ".*/python/.*", ".*/java/.*",
-    ".*/ruby/.*", ".*/perl/.*", ".*/php/.*", ".*/csharp/.*", ".*/dotnet/.*",
-    ".*/go/.*", ".*/generated/.*", ".*/gen/.*", ".*/temp/.*", ".*/tmp/.*",
-    ".*/cache/.*", ".*/\\.cache/.*", ".*/log.*/.*", ".*/logs/.*",
-    ".*/result.*/.*", ".*/results/.*", ".*/output/.*", ".*\\.md$",
-    ".*\\.txt$", ".*\\.xml$", ".*\\.json$", ".*\\.yaml$", ".*\\.yml$",
-    ".*\\.toml$", ".*\\.ini$", ".*\\.cfg$", ".*\\.conf$", ".*\\.properties$",
-    ".*\\.cmake$", ".*Makefile.*", ".*makefile.*", ".*configure.*",
-    ".*\\.am$", ".*\\.in$", ".*\\.ac$", ".*\\.log$", ".*\\.cache$",
-    ".*\\.lock$", ".*\\.tmp$", ".*\\.bak$", ".*\\.orig$", ".*\\.swp$",
-    ".*~$", ".*/\\.vscode/.*", ".*/\\.idea/.*", ".*/\\.eclipse/.*",
-    ".*\\.DS_Store$", ".*Thumbs\\.db$"
-]
-
-
-def _get_default_cpg_config() -> CPGConfig:
-    """Get default CPG configuration values"""
-    return CPGConfig(
-        generation_timeout=600,
-        max_repo_size_mb=500,
-        supported_languages=[
-            "java", "c", "cpp", "javascript", "python", "go",
-            "kotlin", "csharp", "ghidra", "jimple", "php", "ruby", "swift"
-        ],
-        exclusion_patterns=DEFAULT_EXCLUSION_PATTERNS,
-        languages_with_exclusions=[
-            "c", "cpp", "java", "javascript", "python", "go",
-            "kotlin", "csharp", "php", "ruby"
-        ],
-        taint_sources={},
-        taint_sinks={}
-    )
-
 
 def load_config(config_path: Optional[str] = None) -> Config:
-    """Load configuration from file or environment variables"""
+    """Load configuration from file or environment variables
+    
+    Priority order:
+    1. Environment variables (highest priority)
+    2. Config file (YAML)
+    3. Centralized defaults in defaults.py (lowest priority)
+    """
     if config_path and os.path.exists(config_path):
         with open(config_path, "r") as f:
             config_data = yaml.safe_load(f)
@@ -74,51 +31,45 @@ def load_config(config_path: Optional[str] = None) -> Config:
             config_data = _substitute_env_vars(config_data)
         return _dict_to_config(config_data)
     else:
-        # Load from environment variables
+        # Load from environment variables with centralized defaults
         return Config(
             server=ServerConfig(
-                host=os.getenv("MCP_HOST", "0.0.0.0"),
-                port=int(os.getenv("MCP_PORT", "4242")),
-                log_level=os.getenv("MCP_LOG_LEVEL", "INFO"),
+                host=os.getenv("MCP_HOST", defaults.SERVER_HOST),
+                port=int(os.getenv("MCP_PORT", str(defaults.SERVER_PORT))),
+                log_level=os.getenv("MCP_LOG_LEVEL", defaults.SERVER_LOG_LEVEL),
             ),
             joern=JoernConfig(
-                binary_path=os.getenv("JOERN_BINARY_PATH", "joern"),
-                memory_limit=os.getenv("JOERN_MEMORY_LIMIT", "4g"),
-                java_opts=os.getenv("JOERN_JAVA_OPTS", "-Xmx4G -Xms2G -XX:+UseG1GC -Dfile.encoding=UTF-8"),
-                server_host=os.getenv("JOERN_SERVER_HOST", "localhost"),
-                server_port=int(os.getenv("JOERN_SERVER_PORT", "8080")),
+                binary_path=os.getenv("JOERN_BINARY_PATH", defaults.JOERN_BINARY_PATH),
+                memory_limit=os.getenv("JOERN_MEMORY_LIMIT", defaults.JOERN_MEMORY_LIMIT),
+                java_opts=os.getenv("JOERN_JAVA_OPTS", defaults.JOERN_JAVA_OPTS),
+                server_host=os.getenv("JOERN_SERVER_HOST", defaults.JOERN_SERVER_HOST),
+                server_port=int(os.getenv("JOERN_SERVER_PORT", str(defaults.JOERN_SERVER_PORT))),
                 server_auth_username=os.getenv("JOERN_SERVER_AUTH_USERNAME"),
                 server_auth_password=os.getenv("JOERN_SERVER_AUTH_PASSWORD"),
-                port_min=int(os.getenv("JOERN_PORT_MIN", "2000")),
-                port_max=int(os.getenv("JOERN_PORT_MAX", "2999")),
-                server_init_sleep_time=float(os.getenv("JOERN_SERVER_INIT_SLEEP_TIME", "3.0")),
+                port_min=int(os.getenv("JOERN_PORT_MIN", str(defaults.JOERN_PORT_MIN))),
+                port_max=int(os.getenv("JOERN_PORT_MAX", str(defaults.JOERN_PORT_MAX))),
+                server_init_sleep_time=float(os.getenv("JOERN_SERVER_INIT_SLEEP_TIME", str(defaults.JOERN_SERVER_INIT_SLEEP_TIME))),
             ),
             cpg=CPGConfig(
-                generation_timeout=int(os.getenv("CPG_GENERATION_TIMEOUT", "600")),
-                max_repo_size_mb=int(os.getenv("MAX_REPO_SIZE_MB", "500")),
-                supported_languages=[
-                    "java", "c", "cpp", "javascript", "python", "go",
-                    "kotlin", "csharp", "ghidra", "jimple", "php", "ruby", "swift"
-                ],
-                exclusion_patterns=DEFAULT_EXCLUSION_PATTERNS,
-                languages_with_exclusions=[
-                    "c", "cpp", "java", "javascript", "python", "go",
-                    "kotlin", "csharp", "php", "ruby"
-                ],
+                generation_timeout=int(os.getenv("CPG_GENERATION_TIMEOUT", str(defaults.CPG_GENERATION_TIMEOUT))),
+                max_repo_size_mb=int(os.getenv("MAX_REPO_SIZE_MB", str(defaults.MAX_REPO_SIZE_MB))),
+                supported_languages=defaults.SUPPORTED_LANGUAGES,
+                exclusion_patterns=defaults.EXCLUSION_PATTERNS,
+                languages_with_exclusions=defaults.LANGUAGES_WITH_EXCLUSIONS,
                 taint_sources={},
                 taint_sinks={},
-                min_cpg_file_size=int(os.getenv("MIN_CPG_FILE_SIZE", "1024")),
-                output_truncation_length=int(os.getenv("OUTPUT_TRUNCATION_LENGTH", "2000")),
+                min_cpg_file_size=int(os.getenv("MIN_CPG_FILE_SIZE", str(defaults.MIN_CPG_FILE_SIZE))),
+                output_truncation_length=int(os.getenv("OUTPUT_TRUNCATION_LENGTH", str(defaults.OUTPUT_TRUNCATION_LENGTH))),
             ),
             query=QueryConfig(
-                timeout=int(os.getenv("QUERY_TIMEOUT", "300")),
-                cache_enabled=os.getenv("QUERY_CACHE_ENABLED", "true").lower()
+                timeout=int(os.getenv("QUERY_TIMEOUT", str(defaults.QUERY_TIMEOUT))),
+                cache_enabled=os.getenv("QUERY_CACHE_ENABLED", str(defaults.QUERY_CACHE_ENABLED)).lower()
                 == "true",
-                cache_ttl=int(os.getenv("QUERY_CACHE_TTL", "300")),
+                cache_ttl=int(os.getenv("QUERY_CACHE_TTL", str(defaults.QUERY_CACHE_TTL))),
             ),
             storage=StorageConfig(
-                workspace_root=os.getenv("WORKSPACE_ROOT", "/tmp/codebadger"),
-                cleanup_on_shutdown=os.getenv("CLEANUP_ON_SHUTDOWN", "true").lower()
+                workspace_root=os.getenv("WORKSPACE_ROOT", defaults.WORKSPACE_ROOT),
+                cleanup_on_shutdown=os.getenv("CLEANUP_ON_SHUTDOWN", str(defaults.CLEANUP_ON_SHUTDOWN)).lower()
                 == "true",
             ),
         )
@@ -140,7 +91,11 @@ def _substitute_env_vars(data: Any) -> Any:
 
 
 def _dict_to_config(data: dict) -> Config:
-    """Convert dictionary to Config object with proper type conversions"""
+    """Convert dictionary to Config object with proper type conversions
+    
+    Uses centralized defaults.py as fallback for missing values in the YAML config.
+    Priority: YAML values > Environment variables > Centralized defaults
+    """
 
     # Helper function to convert values based on dataclass field types
     def convert_config_section(config_class, values):
@@ -182,10 +137,25 @@ def _dict_to_config(data: dict) -> Config:
                     converted[field_name] = value
         return config_class(**converted)
 
+    # Get config sections with environment variable substitution
+    cpg_data = data.get("cpg", {})
+    
+    # Apply centralized defaults for missing CPG values
+    if "max_repo_size_mb" not in cpg_data:
+        cpg_data = {**cpg_data, "max_repo_size_mb": defaults.MAX_REPO_SIZE_MB}
+    if "generation_timeout" not in cpg_data:
+        cpg_data = {**cpg_data, "generation_timeout": defaults.CPG_GENERATION_TIMEOUT}
+    if "supported_languages" not in cpg_data:
+        cpg_data = {**cpg_data, "supported_languages": defaults.SUPPORTED_LANGUAGES}
+    if "exclusion_patterns" not in cpg_data:
+        cpg_data = {**cpg_data, "exclusion_patterns": defaults.EXCLUSION_PATTERNS}
+    if "languages_with_exclusions" not in cpg_data:
+        cpg_data = {**cpg_data, "languages_with_exclusions": defaults.LANGUAGES_WITH_EXCLUSIONS}
+
     return Config(
         server=convert_config_section(ServerConfig, data.get("server", {})),
         joern=convert_config_section(JoernConfig, data.get("joern", {})),
-        cpg=convert_config_section(CPGConfig, data.get("cpg", {})),
+        cpg=convert_config_section(CPGConfig, cpg_data),
         query=convert_config_section(QueryConfig, data.get("query", {})),
         storage=convert_config_section(StorageConfig, data.get("storage", {})),
     )
