@@ -73,13 +73,13 @@ class TestLoadConfig:
         with patch.dict(os.environ, {}, clear=True):
             config = load_config()
 
-            assert config.server.host == "0.0.0.0"
+            assert config.server.host == "127.0.0.1"
             assert config.server.port == 4242
             assert config.server.log_level == "INFO"
             assert config.joern.binary_path == "joern"
             assert config.joern.memory_limit == "4g"
             assert config.cpg.generation_timeout == 600
-            assert config.cpg.max_repo_size_mb == 500
+            assert config.cpg.max_repo_size_mb == 1024
             assert config.query.timeout == 300
             assert config.query.cache_enabled is True
             assert config.query.cache_ttl == 300

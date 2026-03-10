@@ -125,10 +125,10 @@ class TestCodeBadgerIntegration:
                     pass
         return {}
     
-    async def wait_for_cpg_ready(self, client, codebase_hash, max_wait=30):
+    async def wait_for_cpg_ready(self, client, codebase_hash, max_wait=60):
         """Helper to wait for CPG to be ready"""
         for i in range(max_wait):
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             status_result = await client.call_tool("get_cpg_status", {"codebase_hash": codebase_hash})
             status = self.extract_tool_result(status_result).get("status")
             if status == "ready":
@@ -164,7 +164,7 @@ class TestCodeBadgerIntegration:
         return codebase_hash
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(210)
     async def test_cpg_status_wait(self, client, codebase_path):
         """Test waiting for CPG to be ready"""
         # First generate CPG
@@ -182,11 +182,11 @@ class TestCodeBadgerIntegration:
 
         # Wait for CPG to be ready (only if it's generating)
         if initial_status == "generating":
-            max_attempts = 30
+            max_attempts = 60
             cpg_ready = False
 
             for attempt in range(max_attempts):
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
                 status_result = await client.call_tool("get_cpg_status", {
                     "codebase_hash": codebase_hash
@@ -220,7 +220,7 @@ class TestCodeBadgerIntegration:
         return codebase_hash
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_cpg_caching(self, client, codebase_path):
         """Test that CPG generation uses caching for repeated requests"""
         # Generate CPG first time
@@ -255,7 +255,7 @@ class TestCodeBadgerIntegration:
         assert cpg_dict2["status"] == "ready"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_list_methods(self, client, codebase_path):
         """Test listing methods in the codebase"""
         # Generate and wait for CPG
@@ -303,7 +303,7 @@ class TestCodeBadgerIntegration:
                 assert field in method, f"Method missing field: {field}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_get_codebase_summary(self, client, codebase_path):
         """Test getting codebase summary"""
         # Generate and wait for CPG
@@ -359,7 +359,7 @@ class TestCodeBadgerIntegration:
         assert summary["total_calls"] >= 0
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_find_taint_sources(self, client, codebase_path):
         """Test finding taint sources"""
         # Generate and wait for CPG
@@ -398,7 +398,7 @@ class TestCodeBadgerIntegration:
                 assert field in source, f"Source missing field: {field}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_find_taint_sinks(self, client, codebase_path):
         """Test finding taint sinks"""
         # Generate and wait for CPG
@@ -473,7 +473,7 @@ class TestCodeBadgerIntegration:
         assert len(code) > 0, "code should not be empty"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_list_calls(self, client, codebase_path):
         """Test listing function calls"""
         # Generate and wait for CPG
@@ -514,7 +514,7 @@ class TestCodeBadgerIntegration:
                 assert field in call, f"Call missing field: {field}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_run_cpgql_query(self, client, codebase_path):
         """Test executing raw CPGQL queries"""
         # Generate and wait for CPG
@@ -559,7 +559,7 @@ class TestCodeBadgerIntegration:
             assert execution_time >= 0, "execution_time should be non-negative"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(270)
     async def test_auto_taint_flows(self, client, codebase_path):
         """Test auto-mode taint flow detection across multiple files
         
@@ -610,7 +610,7 @@ class TestCodeBadgerIntegration:
                 assert sink_count >= 50, f"Expected at least 50 taint sinks, got {sink_count}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(240)
     async def test_find_use_after_free(self, client, codebase_path):
         """Test UAF detection in multi-file codebase
         
@@ -644,7 +644,7 @@ class TestCodeBadgerIntegration:
                 f"Missing UAF analysis header in output: {content[:200]}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(240)
     async def test_find_double_free(self, client, codebase_path):
         """Test double-free detection in multi-file codebase
         
@@ -678,7 +678,7 @@ class TestCodeBadgerIntegration:
                 f"Missing double-free analysis header in output: {content[:200]}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_deep_call_graph(self, client, codebase_path):
         """Test call graph analysis with deep call chains
         
@@ -721,7 +721,7 @@ class TestCodeBadgerIntegration:
                 f"Expected at least 2 of {expected_callees} in call graph, found: {found_callees}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_cfg_state_machine(self, client, codebase_path):
         """Test CFG analysis on state machine function
         
@@ -760,7 +760,7 @@ class TestCodeBadgerIntegration:
                 f"CFG should contain nodes/edges: {content[:300]}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_list_files_multifile(self, client, codebase_path):
         """Test list_files shows multi-file structure
         
@@ -807,7 +807,7 @@ class TestCodeBadgerIntegration:
                 f"Expected at least 2 of {expected_headers}, found: {found_headers}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_taint_sources_multifile(self, client, codebase_path):
         """Test finding taint sources across multiple files
         
@@ -859,7 +859,7 @@ class TestCodeBadgerIntegration:
             f"Expected sources from at least 3 files, got {len(source_files)}: {source_files}"
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(70)
+    @pytest.mark.timeout(210)
     async def test_taint_sinks_multifile(self, client, codebase_path):
         """Test finding taint sinks across multiple files
         

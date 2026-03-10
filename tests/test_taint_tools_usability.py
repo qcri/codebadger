@@ -10,7 +10,7 @@ def taint_tools(mock_services):
     mock_mcp = MagicMock()
     tools = {}
     
-    def tool_decorator(description=None):
+    def tool_decorator(description=None, **kwargs):
         def decorator(func):
             tools[func.__name__] = func
             return func

@@ -36,14 +36,14 @@ Dependencies: ..."""]
         mcp = MagicMock()
         registered_functions = {}
         
-        def tool_decorator(description=None):
+        def tool_decorator(description=None, **kwargs):
             def decorator(func):
                 registered_functions[func.__name__] = func
                 return func
             return decorator
-            
+
         mcp.tool = tool_decorator
-        
+
         # Import and register
         from src.tools.taint_analysis_tools import register_taint_analysis_tools
         register_taint_analysis_tools(mcp, services)
@@ -96,18 +96,18 @@ Dependencies:
         mcp = MagicMock()
         registered_functions = {}
         
-        def tool_decorator(description=None):
+        def tool_decorator(description=None, **kwargs):
             def decorator(func):
                 registered_functions[func.__name__] = func
                 return func
             return decorator
-            
+
         mcp.tool = tool_decorator
-        
+
         from src.tools.taint_analysis_tools import register_taint_analysis_tools
         register_taint_analysis_tools(mcp, services)
         get_variable_flow = registered_functions["get_variable_flow"]
-        
+
         result = get_variable_flow(
              codebase_hash="1234567890abcdef",
              location="test.c:10",
@@ -155,7 +155,7 @@ Dependencies:
         # Mock MCP
         mcp = MagicMock()
         registered_functions = {}
-        def tool_decorator(description=None):
+        def tool_decorator(description=None, **kwargs):
             def decorator(func):
                 registered_functions[func.__name__] = func
                 return func

@@ -12,10 +12,6 @@ import pytest
 # Add the project root to the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Import main module
-
-lifespan = main.lifespan
-
 
 class TestLifespan:
     """Test FastMCP lifespan management"""
@@ -23,8 +19,7 @@ class TestLifespan:
     @pytest.mark.asyncio
     async def test_lifespan_success(self):
         """Test successful lifespan startup and shutdown"""
-        from fastmcp import FastMCP
-        mock_mcp = FastMCP("TestServer")
+        mock_mcp = MagicMock()
 
         # Mock all the services and dependencies
         with patch("main.load_config") as mock_load_config, patch(
@@ -39,49 +34,68 @@ class TestLifespan:
             "main.logger"
         ) as mock_logger, patch(
             "os.makedirs"
-        ) as mock_makedirs:
+        ) as mock_makedirs, patch(
+            "main._setup_telemetry"
+        ), patch(
+            "main._graceful_shutdown", new_callable=AsyncMock
+        ), patch(
+            "main.register_tools"
+        ), patch(
+            "main.DBManager"
+        ), patch(
+            "main.PortManager"
+        ), patch(
+            "main.JoernServerManager"
+        ), patch(
+            "main.QueryExecutor"
+        ), patch(
+            "main.CodeBrowsingService"
+        ):
 
             # Setup mocks
-            mock_config = AsyncMock()
+            mock_config = MagicMock()
             mock_config.server.log_level = "INFO"
             mock_config.storage.workspace_root = "/tmp/workspace"
-            mock_config.cpg = AsyncMock()
-            mock_config.query = AsyncMock()
-            mock_config.joern = AsyncMock()
+            mock_config.cpg = MagicMock()
+            mock_config.query = MagicMock()
+            mock_config.joern = MagicMock()
+            mock_config.joern.port_min = 13371
+            mock_config.joern.port_max = 13399
+            mock_config.joern.binary_path = "joern"
+            mock_config.telemetry = MagicMock()
+            mock_config.telemetry.enabled = False
 
             mock_load_config.return_value = mock_config
 
-            mock_codebase_tracker = AsyncMock()
+            mock_codebase_tracker = MagicMock()
             mock_codebase_tracker_class.return_value = mock_codebase_tracker
 
-            mock_git_manager = AsyncMock()
+            mock_git_manager = MagicMock()
             mock_git_manager_class.return_value = mock_git_manager
 
-            mock_cpg_generator = AsyncMock()
+            mock_cpg_generator = MagicMock()
             mock_cpg_generator_class.return_value = mock_cpg_generator
 
-            # Test lifespan context manager
-            async with lifespan(mock_mcp):
+            # Lifespan.__call__ returns an async context manager
+            async with main.app_lifespan(mock_mcp) as ctx:
                 # Verify initialization calls
                 mock_load_config.assert_called_with("config.yaml")
                 mock_setup_logging.assert_called_with("INFO")
                 mock_makedirs.assert_called()
 
-            # Verify shutdown calls
-            # No specific shutdown calls to verify for now
-
     @pytest.mark.asyncio
     async def test_lifespan_initialization_failure(self):
         """Test lifespan with initialization failure"""
-        from fastmcp import FastMCP
-        mock_mcp = FastMCP("TestServer")
+        mock_mcp = MagicMock()
 
         with patch(
             "main.load_config", side_effect=Exception("Config load failed")
-        ), patch("main.logger") as mock_logger:
+        ), patch("main.logger") as mock_logger, patch(
+            "main._graceful_shutdown", new_callable=AsyncMock
+        ):
 
             with pytest.raises(Exception, match="Config load failed"):
-                async with lifespan(mock_mcp):
+                async with main.app_lifespan(mock_mcp) as ctx:
                     pass
 
 
@@ -100,8 +114,15 @@ class TestEndpoints:
         # Mock request
         mock_request = AsyncMock(spec=Request)
 
-        # Call the health endpoint
-        response = await health_check(mock_request)
+        # Patch helpers that access the global services dict
+        with patch("main._check_joern_container_status", return_value={"status": "running", "running": True}), \
+             patch("main._get_active_servers", return_value={"count": 0, "servers": {}}), \
+             patch("main._get_port_utilization", return_value={"allocated_count": 0, "available_count": 29}), \
+             patch("main._get_disk_usage", return_value={"total_gb": 100, "used_gb": 50, "free_gb": 50}), \
+             patch("main._get_cache_size", return_value={"cache_path": "/tmp", "size_mb": 0, "exists": True}):
+
+            # Call the health endpoint
+            response = await health_check(mock_request)
 
         # Verify response
         assert isinstance(response, JSONResponse)
