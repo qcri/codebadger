@@ -14,6 +14,10 @@ class DBManager:
         self.db_path = db_path
         self._init_db()
 
+    def close(self):
+        """Close the database manager and clean up resources."""
+        logger.debug(f"DBManager closed for {self.db_path}")
+
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
