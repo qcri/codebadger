@@ -6,10 +6,8 @@ This is the main entry point for the CodeBadger Server that provides static code
 capabilities through the Model Context Protocol (MCP) using Joern's Code Property Graph.
 """
 
-import asyncio
 import logging
 import os
-import signal
 import shutil
 import socket
 from fastmcp import FastMCP
@@ -34,7 +32,6 @@ VERSION = "0.3.4-beta"
 
 # Global service instances
 services = {}
-shutdown_event = asyncio.Event()
 
 logger = logging.getLogger(__name__)
 
@@ -71,18 +68,6 @@ async def _graceful_shutdown():
         logger.error(f"Error during graceful shutdown: {e}", exc_info=True)
 
 
-def _setup_signal_handlers(mcp: FastMCP):
-    """Setup signal handlers for graceful shutdown"""
-    def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-        asyncio.create_task(_graceful_shutdown())
-
-    # Register handlers for SIGTERM and SIGINT
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    logger.debug("Signal handlers registered for SIGTERM and SIGINT")
-
-
 @lifespan
 async def app_lifespan(server: FastMCP):
     """Startup and shutdown logic for the FastMCP server"""
@@ -90,9 +75,6 @@ async def app_lifespan(server: FastMCP):
     config = load_config("config.yaml")
     setup_logging(config.server.log_level)
     logger.info("Starting CodeBadger Server")
-
-    # Setup signal handlers for graceful shutdown
-    _setup_signal_handlers(server)
 
     # Ensure required directories exist
     os.makedirs(config.storage.workspace_root, exist_ok=True)
