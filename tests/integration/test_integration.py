@@ -159,7 +159,7 @@ class TestCodeBadgerIntegration:
         assert len(codebase_hash) == 16, "codebase_hash should be 16 characters"
 
         status = cpg_dict.get("status")
-        assert status in ["generating", "ready"], f"Unexpected status: {status}"
+        assert status in ["generating", "loading", "ready"], f"Unexpected status: {status}"
 
         return codebase_hash
 
@@ -178,10 +178,10 @@ class TestCodeBadgerIntegration:
         
         # Initial status could be "generating" or "ready" (if cached)
         initial_status = cpg_dict.get("status")
-        assert initial_status in ["generating", "ready"], f"Unexpected initial status: {initial_status}"
+        assert initial_status in ["generating", "loading", "ready"], f"Unexpected initial status: {initial_status}"
 
-        # Wait for CPG to be ready (only if it's generating)
-        if initial_status == "generating":
+        # Wait for CPG to be ready (only if it's still in progress)
+        if initial_status in ("generating", "loading"):
             max_attempts = 60
             cpg_ready = False
 
@@ -268,15 +268,8 @@ class TestCodeBadgerIntegration:
         codebase_hash = cpg_dict["codebase_hash"]
 
         # Wait for ready (allow more time for async generation)
-        max_wait = 30
-        for i in range(max_wait):
-            await asyncio.sleep(2)
-            status_result = await client.call_tool("get_cpg_status", {"codebase_hash": codebase_hash})
-            status = self.extract_tool_result(status_result).get("status")
-            if status == "ready":
-                break
-        else:
-            pytest.fail(f"CPG not ready after {max_wait*2} seconds")
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready after waiting"
 
         # List methods
         methods_result = await client.call_tool("list_methods", {
