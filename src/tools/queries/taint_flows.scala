@@ -196,8 +196,8 @@
               val elemLine = elem.lineNumber.getOrElse(-1)
               val elemMethod = getMethodName(elem)
               val codeSnippet = elem.code.take(60).replaceAll("\n", " ")
-              output.append(s"  [L$elemLine] $codeSnippet\n")
-              output.append(s"           in $elemMethod() at $elemFile\n")
+              output.append(s"  [$elemFile:$elemLine] $codeSnippet\n")
+              output.append(s"           in $elemMethod()\n")
             }
             if (elements.size - 2 > 15) {
               output.append(s"  ... and ${elements.size - 17} more steps\n")
