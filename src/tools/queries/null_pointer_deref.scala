@@ -8,6 +8,12 @@
 
   val output = new StringBuilder()
 
+  // Helper: build path-boundary anchored regex from a filename
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+
   /** Check if two line numbers are in mutually exclusive branches of the same IF.
     * Returns true if lineA is inside the THEN block and lineB inside ELSE (or vice versa),
     * meaning they cannot both execute in the same control flow path.
@@ -80,7 +86,8 @@
   val allocCalls = cpg.call.name(allocFunctions).l
 
   val allocCallsFiltered = if (fileFilter.nonEmpty) {
-    allocCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+    val pattern = pathBoundaryRegex(fileFilter)
+    allocCalls.filter(_.file.name.headOption.exists(_.matches(pattern)))
   } else {
     allocCalls
   }
@@ -390,7 +397,8 @@
                     }
                   }
                 } catch {
-                  case _: Exception => // Ignore dataflow errors gracefully
+                  case e: Exception =>
+                    output.append(s"  Note: Interprocedural analysis skipped for $assignedPtr in $methodName() (${e.getClass.getSimpleName})\n")
                 }
               }
             }

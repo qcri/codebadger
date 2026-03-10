@@ -8,6 +8,12 @@
 
   val output = new StringBuilder()
 
+  // Helper: build path-boundary anchored regex from a filename
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+
   /** Check if two line numbers are in mutually exclusive branches of the same IF.
     * Returns true if lineA is inside the THEN block and lineB inside ELSE (or vice versa),
     * meaning they cannot both execute in the same control flow path.
@@ -71,7 +77,8 @@
   val freeCalls = cpg.call.name("free|cfree|g_free|xmlFree|xsltFree.*").l
   
   val freeCallsFiltered = if (fileFilter.nonEmpty) {
-    freeCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+    val pattern = pathBoundaryRegex(fileFilter)
+    freeCalls.filter(_.file.name.headOption.exists(_.matches(pattern)))
   } else {
     freeCalls
   }
@@ -263,7 +270,8 @@
                   }
                 }
               } catch {
-                case _: Exception => // Ignore dataflow errors
+                case e: Exception =>
+                  output.append(s"  Note: Interprocedural analysis skipped for $freedPtr in $methodName() (${e.getClass.getSimpleName})\n")
               }
             }
           }

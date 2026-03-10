@@ -173,49 +173,58 @@
         }
       }
     } else {
-      output.append(s"Found ${flows.size} taint flow(s):\n\n")
-      
-      flows.zipWithIndex.foreach { case (flow, idx) =>
-        output.append(s"--- Flow ${idx + 1} ---\n")
-        
+      // Deduplicate: track seen (source_file:line -> sink_file:line) pairs
+      val seen = mutable.Set[String]()
+
+      flows.foreach { flow =>
         val elements = flow.elements.l
         if (elements.nonEmpty) {
-          // Source (first element)
           val source = elements.head
+          val sink = elements.last
+
           val srcFile = source.file.name.headOption.getOrElse("?")
           val srcLine = source.lineNumber.getOrElse(-1)
-          val srcMethod = getMethodName(source)
-          output.append(s"Source: ${source.code}\n")
-          output.append(s"  Location: $srcFile:$srcLine in $srcMethod()\n")
-          
-          // Path elements (intermediate steps)
-          if (elements.size > 2) {
-            output.append(s"\nPath (${elements.size - 2} intermediate steps):\n")
-            elements.slice(1, elements.size - 1).take(15).foreach { elem =>
-              val elemFile = elem.file.name.headOption.getOrElse("?")
-              val elemLine = elem.lineNumber.getOrElse(-1)
-              val elemMethod = getMethodName(elem)
-              val codeSnippet = elem.code.take(60).replaceAll("\n", " ")
-              output.append(s"  [$elemFile:$elemLine] $codeSnippet\n")
-              output.append(s"           in $elemMethod()\n")
-            }
-            if (elements.size - 2 > 15) {
-              output.append(s"  ... and ${elements.size - 17} more steps\n")
-            }
-          }
-          
-          // Sink (last element)
-          val sink = elements.last
           val snkFile = sink.file.name.headOption.getOrElse("?")
           val snkLine = sink.lineNumber.getOrElse(-1)
-          val snkMethod = getMethodName(sink)
-          output.append(s"\nSink: ${sink.code}\n")
-          output.append(s"  Location: $snkFile:$snkLine in $snkMethod()\n")
-          
-          output.append(s"\nPath length: ${elements.size} nodes\n")
+
+          val key = s"$srcFile:$srcLine->$snkFile:$snkLine"
+          if (!seen.contains(key)) {
+            seen.add(key)
+
+            output.append(s"--- Flow ${seen.size} ---\n")
+
+            // Source (first element)
+            val srcMethod = getMethodName(source)
+            output.append(s"Source: ${source.code}\n")
+            output.append(s"  Location: $srcFile:$srcLine in $srcMethod()\n")
+
+            // Path elements (intermediate steps)
+            if (elements.size > 2) {
+              output.append(s"\nPath (${elements.size - 2} intermediate steps):\n")
+              elements.slice(1, elements.size - 1).take(15).foreach { elem =>
+                val elemFile = elem.file.name.headOption.getOrElse("?")
+                val elemLine = elem.lineNumber.getOrElse(-1)
+                val elemMethod = getMethodName(elem)
+                val codeSnippet = elem.code.take(60).replaceAll("\n", " ")
+                output.append(s"  [$elemFile:$elemLine] $codeSnippet\n")
+                output.append(s"           in $elemMethod()\n")
+              }
+              if (elements.size - 2 > 15) {
+                output.append(s"  ... and ${elements.size - 17} more steps\n")
+              }
+            }
+
+            // Sink (last element)
+            val snkMethod = getMethodName(sink)
+            output.append(s"\nSink: ${sink.code}\n")
+            output.append(s"  Location: $snkFile:$snkLine in $snkMethod()\n")
+
+            output.append(s"\nPath length: ${elements.size} nodes\n\n")
+          }
         }
-        output.append("\n")
       }
+
+      output.append(s"Summary: ${seen.size} unique flow(s)\n")
     }
   }
   

@@ -8,6 +8,14 @@
 
   val output = new StringBuilder()
 
+  // Helper: build path-boundary anchored regex from a filename
+  // e.g., "parser.c" -> "(^|.*/)parser\\.c$" so it matches "/path/to/parser.c"
+  // but NOT "/path/to/myparser.c"
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+
   /** Check if two line numbers are in mutually exclusive branches of the same IF.
     * Returns true if lineA is inside the THEN block and lineB inside ELSE (or vice versa),
     * meaning they cannot both execute in the same control flow path.
@@ -70,7 +78,8 @@
   val freeCalls = cpg.call.name("free|cfree|g_free|xmlFree|xsltFree.*").l
   
   val freeCallsFiltered = if (fileFilter.nonEmpty) {
-    freeCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+    val pattern = pathBoundaryRegex(fileFilter)
+    freeCalls.filter(_.file.name.headOption.exists(_.matches(pattern)))
   } else {
     freeCalls
   }

@@ -8,6 +8,12 @@
 
   val output = new StringBuilder()
 
+  // Helper: build path-boundary anchored regex from a filename
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+
   output.append("Integer Overflow/Underflow Analysis\n")
   output.append("=" * 60 + "\n\n")
 
@@ -127,8 +133,10 @@
   // --- Analysis ---
 
   val allAllocCalls = cpg.call.name(allocPattern).l
+  val filePattern = if (fileFilter.nonEmpty) pathBoundaryRegex(fileFilter) else ""
+
   val allocCalls = if (fileFilter.nonEmpty) {
-    allAllocCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+    allAllocCalls.filter(_.file.name.headOption.exists(_.matches(filePattern)))
   } else {
     allAllocCalls
   }
@@ -248,7 +256,7 @@
     // Only flag high-risk arithmetic in array indices, with no bounds check nearby.
     val allIndexCalls = cpg.call.name("<operator>.indirectIndexAccess|<operator>.indexAccess").l
     val indexCalls = if (fileFilter.nonEmpty) {
-      allIndexCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+      allIndexCalls.filter(_.file.name.headOption.exists(_.matches(filePattern)))
     } else {
       allIndexCalls
     }
@@ -316,7 +324,7 @@
         }
 
       val arithSourcesFiltered = if (fileFilter.nonEmpty) {
-        arithSourceCalls.filter(_.file.name.headOption.exists(f => f.contains(fileFilter) || f.endsWith(fileFilter)))
+        arithSourceCalls.filter(_.file.name.headOption.exists(_.matches(filePattern)))
       } else {
         arithSourceCalls
       }
@@ -395,7 +403,8 @@
         }
       }
     } catch {
-      case _: Exception => // Ignore dataflow engine errors gracefully
+      case e: Exception =>
+        output.append(s"  Note: Interprocedural arithmetic flow analysis encountered an error (${e.getClass.getSimpleName})\n")
     }
 
     // === Output results ===

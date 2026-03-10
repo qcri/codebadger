@@ -168,7 +168,7 @@
         // Deduplicate output
         val uniqueDeps = sortedDeps.distinct
         uniqueDeps.foreach { case (file, line, code, typeName) =>
-          sb.append(f"[$file:$line%4d] $code ($typeName)\n")
+          sb.append(s"[$file:$line] $code ($typeName)\n")
         }
       }
       

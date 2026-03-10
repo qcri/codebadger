@@ -123,7 +123,7 @@
               sortedDeps.groupBy(_._2).foreach { case (file, deps) =>
                  output.append(s"  File: $file\n")
                  deps.sortBy(_._1).foreach { case (line, _, varName, code, deps) =>
-                   val lineInfo = if (line != -1) s"[$line]" else "[Local]"
+                   val lineInfo = if (line != -1) s"[$file:$line]" else "[Local]"
                    output.append(s"    $lineInfo $varName: $code\n")
                    if (deps.nonEmpty) output.append(s"      <- depends on: ${deps.mkString(", ")}\n")
                  }
@@ -227,7 +227,7 @@
                sortedProps.groupBy(_._2).foreach { case (file, props) =>
                  output.append(s"  File: $file\n")
                  props.sortBy(_._1).foreach { case (line, _, propType, varName, code) =>
-                   output.append(s"    [$line] $propType ($varName): $code\n")
+                   output.append(s"    [$file:$line] $propType ($varName): $code\n")
                  }
                }
             }
