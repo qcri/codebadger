@@ -1,13 +1,13 @@
 # Core dependencies
-fastmcp>=2.14.4
+fastmcp>=3.1.0
 mcp>=1.26.0
 httpx>=0.28.1
-aiohttp>=3.13.2
-uvicorn>=0.38.0
-websockets>=15.0.1
-pydantic==2.11.10
+aiohttp>=3.13.3
+uvicorn>=0.41.0
+websockets>=16.0
+pydantic>=2.12.5
 docker==7.1.0
-gitpython==3.1.45
+gitpython==3.1.46
 PyYAML==6.0.3
 
 # Development dependencies
