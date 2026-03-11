@@ -59,9 +59,14 @@ class QueryExecutor:
                 # Get cached client with connection pooling instead of creating new one
                 joern_client = self.joern_server_manager.get_or_create_client(codebase_hash)
 
-                # Quick health check before submitting potentially expensive queries
-                if not joern_client.check_health(timeout=5):
-                    logger.warning(f"Joern server on port {port} is not responding, it may be overloaded or crashed")
+                # Health check with retry — Joern JVM may be slow after heavy queries
+                server_healthy = joern_client.check_health(timeout=10)
+                if not server_healthy:
+                    logger.warning(f"Joern server on port {port} not responding, retrying after brief wait...")
+                    time.sleep(5)
+                    server_healthy = joern_client.check_health(timeout=15)
+                if not server_healthy:
+                    logger.warning(f"Joern server on port {port} is not responding after retry, it may be overloaded or crashed")
                     return QueryResult(
                         success=False,
                         error=f"Joern server not responding (port {port}). The server may be overloaded from a previous heavy query. "

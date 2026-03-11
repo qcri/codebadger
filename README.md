@@ -166,10 +166,6 @@ Add the following:
 - `find_null_pointer_deref`: Find likely null pointer dereferences.
 - `find_integer_overflow`: Detect integer overflow patterns.
 
-### Export & reporting
-- `store_findings`: Parse and store analysis findings into the database.
-- `export_sarif`: Export high-confidence findings in SARIF format.
-
 ## Contributing & Tests
 
 Thanks for contributing! Here's a quick guide to get started with running tests and contributing code.

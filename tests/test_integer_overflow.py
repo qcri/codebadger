@@ -8,7 +8,6 @@ import pytest
 
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
 from src.tools.mcp_tools import register_tools
-from src.tools.export_tools import FindingsParser
 
 from fastmcp import FastMCP, Client
 
@@ -480,101 +479,3 @@ overflow checks before using arithmetic results for allocation sizes or array in
         assert "CWE-190" in result
 
 
-class TestIntegerOverflowParser:
-    """Tests for the FindingsParser.parse_integer_overflow_text method."""
-
-    def test_parse_basic_issues(self):
-        """Test parsing of basic integer overflow output."""
-        text = """Integer Overflow/Underflow Analysis
-============================================================
-
-Found 2 potential integer overflow/underflow issue(s):
-
---- Issue 1 ---
-Type: Arithmetic in Allocation Size [HIGH]
-  Location: parser.c:150 in parse_data()
-  Code: malloc(count * elem_size)
-  Arithmetic: count * elem_size (multiplication)
-  Risk: Unchecked multiplication may wrap around, causing undersized buffer allocation
-
---- Issue 2 ---
-Type: Arithmetic in Array Index [MEDIUM]
-  Location: utils.c:300 in process_buffer()
-  Code: buffer[offset * stride]
-  Arithmetic: offset * stride (multiplication)
-  Risk: Unchecked multiplication may wrap around, causing out-of-bounds array access
-
-Total: 2 potential integer overflow/underflow issue(s) found
-"""
-        findings = FindingsParser.parse_integer_overflow_text(text, "abc123")
-
-        assert len(findings) == 2
-
-        # Check first finding (HIGH)
-        f1 = findings[0]
-        assert f1["finding_type"] == "integer_overflow"
-        assert f1["severity"] == "high"
-        assert f1["confidence"] == "high"
-        assert f1["filename"] == "parser.c"
-        assert f1["line_number"] == 150
-        assert f1["cwe_id"] == 190
-        assert "count * elem_size" in f1["message"]
-        assert f1["flow_data"]["risk_level"] == "HIGH"
-
-        # Check second finding (MEDIUM)
-        f2 = findings[1]
-        assert f2["severity"] == "medium"
-        assert f2["filename"] == "utils.c"
-        assert f2["line_number"] == 300
-        assert f2["flow_data"]["risk_level"] == "MEDIUM"
-
-    def test_parse_no_issues(self):
-        """Test parsing when no issues are found."""
-        text = """Integer Overflow/Underflow Analysis
-============================================================
-
-No potential integer overflow/underflow issues detected.
-"""
-        findings = FindingsParser.parse_integer_overflow_text(text, "abc123")
-        assert len(findings) == 0
-
-    def test_parse_indirect_arithmetic(self):
-        """Test parsing of indirect (via variable) patterns."""
-        text = """--- Issue 1 ---
-Type: Arithmetic in Allocation Size (via variable) [HIGH]
-  Location: codec.c:80 in decode_frame()
-  Code: malloc(frame_size)
-  Arithmetic: width * height (multiplication)
-  Risk: Unchecked multiplication may wrap around, causing undersized buffer allocation
-"""
-        findings = FindingsParser.parse_integer_overflow_text(text, "abc123")
-
-        assert len(findings) == 1
-        assert findings[0]["severity"] == "high"
-        assert findings[0]["filename"] == "codec.c"
-        assert findings[0]["line_number"] == 80
-        assert "width * height" in findings[0]["message"]
-
-    def test_parse_cross_function(self):
-        """Test parsing of cross-function interprocedural patterns."""
-        text = """--- Issue 1 ---
-Type: Cross-Function Arithmetic to Allocation [HIGH] [CROSS-FUNC]
-  Location: alloc.c:50 in allocate_buffer()
-  Code: malloc(total)
-  Arithmetic: width * height (at compute.c:20) [via: compute_size -> allocate_buffer] (multiplication)
-  Risk: Unchecked multiplication may wrap around, causing undersized buffer allocation
-"""
-        findings = FindingsParser.parse_integer_overflow_text(text, "abc123")
-
-        assert len(findings) == 1
-        assert findings[0]["severity"] == "high"
-        assert findings[0]["filename"] == "alloc.c"
-        assert findings[0]["line_number"] == 50
-        assert findings[0]["flow_data"]["cross_function"] is True
-        assert findings[0]["flow_data"]["risk_level"] == "HIGH"
-        assert "Cross-Function" in findings[0]["message"]
-
-    def test_parse_empty_text(self):
-        """Test parsing of empty text."""
-        findings = FindingsParser.parse_integer_overflow_text("", "abc123")
-        assert len(findings) == 0

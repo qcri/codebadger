@@ -126,13 +126,17 @@ class TestCodeBadgerIntegration:
         return {}
     
     async def wait_for_cpg_ready(self, client, codebase_hash, max_wait=60):
-        """Helper to wait for CPG to be ready"""
+        """Helper to wait for CPG to be ready with a healthy Joern server"""
         for i in range(max_wait):
             await asyncio.sleep(3)
             status_result = await client.call_tool("get_cpg_status", {"codebase_hash": codebase_hash})
-            status = self.extract_tool_result(status_result).get("status")
-            if status == "ready":
+            status_dict = self.extract_tool_result(status_result)
+            status = status_dict.get("status")
+            if status == "ready" and status_dict.get("joern_port"):
                 return True
+            # "loading" means server restart in progress — keep waiting
+            if status in ("failed", "error"):
+                return False
         return False
 
     @pytest.mark.asyncio
