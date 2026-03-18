@@ -311,9 +311,23 @@ async def _generate_cpg_async(
                     logger.info(f"CPG loaded into Joern server on port {joern_port}")
                 else:
                     logger.warning("Failed to load CPG into Joern server")
+                    error_msg = "CPG generated but failed to load into Joern server"
+                    codebase_tracker.update_codebase(
+                        codebase_hash=codebase_hash,
+                        cpg_path=cpg_path,
+                        joern_port=None,
+                        metadata={
+                            "status": "failed",
+                            "error": error_msg,
+                            "container_codebase_path": f"/playground/codebases/{codebase_hash}",
+                            "container_cpg_path": container_cpg_path
+                        }
+                    )
+                    logger.error(f"CPG generation complete but server load failed for {codebase_hash}")
+                    return
             except Exception as e:
                 logger.error(f"Failed to start Joern server: {e}", exc_info=True)
-        
+
         # Update DB with final metadata (preserving container paths)
         codebase_tracker.update_codebase(
             codebase_hash=codebase_hash,

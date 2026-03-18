@@ -168,9 +168,14 @@ class CodeBrowsingService:
             os.path.join(os.path.dirname(__file__), "..", "..", "playground")
         )
 
-        if codebase_info.source_type == "github":
+        # Always use the playground snapshot copy — this is the exact state used for
+        # CPG generation, and avoids relying on the original path still being accessible.
+        playground_snapshot = os.path.join(playground_path, "codebases", codebase_hash)
+        if os.path.exists(playground_snapshot) and os.path.isdir(playground_snapshot):
+            source_dir = playground_snapshot
+        elif codebase_info.source_type == "github":
+            # Fallback: shouldn't normally be needed, but recalculate just in case
             from ..tools.core_tools import get_cpg_cache_key
-
             cpg_cache_key = get_cpg_cache_key(
                 codebase_info.source_type,
                 codebase_info.source_path,

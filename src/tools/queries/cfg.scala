@@ -37,8 +37,13 @@
         }
       }
 
-    case None => 
+    case None =>
       sb.append(s"Method not found: $methodName\n")
+      val similar = cpg.method.name(s".*$methodName.*").name.l.distinct.take(10)
+      if (similar.nonEmpty) {
+        sb.append(s"\nDid you mean one of these?\n")
+        similar.foreach(m => sb.append(s"  - $m\n"))
+      }
   }
   
   "<codebadger_result>\n" + sb.toString() + "</codebadger_result>"

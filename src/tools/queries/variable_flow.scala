@@ -179,6 +179,5 @@
     }
   }
 
-  // Return list containing string to be compatible with parsing logic
-  List(result)
+  "<codebadger_result>\n" + result + "\n</codebadger_result>"
 }
