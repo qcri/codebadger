@@ -1657,3 +1657,83 @@ Examples:
         except Exception as e:
             logger.error(f"Unexpected error detecting heap overflow: {e}", exc_info=True)
             return f"Internal Error: {str(e)}"
+
+    @mcp.tool(
+        description="""Detect Stack Buffer Overflow vulnerabilities (CWE-121) where a write to a fixed-size stack array may exceed its declared dimension.
+
+Analyzes the codebase for local fixed-size array declarations (e.g. char buf[64]) combined
+with write operations that can overflow them:
+1. **Unbounded writes**: strcpy, strcat, gets, sprintf, vsprintf — no size limit, always dangerous
+2. **Size-mismatched writes**: memcpy, strncpy, snprintf, read, recv — write size exceeds array
+   dimension or is a non-literal expression not statically bounded by the array size
+
+Filters out:
+- Bounded writes with a literal size <= array dimension
+- Write sizes containing sizeof or matching the array dimension constant
+- Writes guarded by a preceding bounds-check (if comparison on the size variable)
+- Writes in mutually exclusive branches from the declaration
+
+Args:
+    codebase_hash: The codebase hash from generate_cpg.
+    filename: Optional filename regex to filter results (e.g., 'parser.c').
+    limit: Maximum results to return (default 100).
+    timeout: Query timeout in seconds (default 240).
+
+Returns:
+    Human-readable text showing each potential stack overflow with:
+    - Stack buffer declaration [file:line] with variable name, type, and array size
+    - Dangerous write(s) [file:line] with write size and overflow reason
+
+Examples:
+    find_stack_overflow(codebase_hash="abc")
+    find_stack_overflow(codebase_hash="abc", filename="parser.c")""",
+    )
+    def find_stack_overflow(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
+        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
+    ) -> str:
+        """Detect potential stack buffer overflow vulnerabilities in the codebase."""
+        try:
+            validate_codebase_hash(codebase_hash)
+
+            codebase_tracker = services["codebase_tracker"]
+            query_executor = services["query_executor"]
+
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info or not codebase_info.cpg_path:
+                raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first using generate_cpg.")
+
+            cache_params = {"filename": filename, "limit": limit}
+
+            def _execute():
+                query = QueryLoader.load(
+                    "stack_overflow",
+                    filename=filename or "",
+                    limit=limit,
+                )
+                result = query_executor.execute_query(
+                    codebase_hash=codebase_hash,
+                    cpg_path=codebase_info.cpg_path,
+                    query=query,
+                    timeout=timeout,
+                )
+                if not result.success:
+                    return f"Error: {result.error}"
+                if isinstance(result.data, str):
+                    return result.data.strip()
+                elif isinstance(result.data, list) and len(result.data) > 0:
+                    output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+                    return output.strip()
+                else:
+                    return f"Query returned unexpected format: {type(result.data)}"
+
+            return _cached_taint_query(services, "find_stack_overflow", codebase_hash, cache_params, _execute)
+
+        except ValidationError as e:
+            logger.error(f"Error detecting stack overflow: {e}")
+            return f"Validation Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Unexpected error detecting stack overflow: {e}", exc_info=True)
+            return f"Internal Error: {str(e)}"

@@ -167,6 +167,7 @@ Add the following:
 - `find_integer_overflow`: Detect integer overflow patterns.
 - `find_format_string_vulns`: Detect format string vulnerabilities (CWE-134) where non-literal format arguments are passed to printf-family functions.
 - `find_heap_overflow`: Detect heap overflow vulnerabilities (CWE-122) where writes to heap buffers may exceed their allocated size.
+- `find_stack_overflow`: Detect stack buffer overflow vulnerabilities (CWE-121) where writes to fixed-size local arrays (e.g. `char buf[64]`) may exceed their declared dimension.
 
 ## Contributing & Tests
 

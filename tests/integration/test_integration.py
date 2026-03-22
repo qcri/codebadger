@@ -1074,3 +1074,93 @@ class TestCodeBadgerIntegration:
         sink_files = set(s.get("filename", "") for s in sinks if s.get("filename"))
         assert len(sink_files) >= 5, \
             f"Expected sinks from at least 5 files, got {len(sink_files)}: {sink_files}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    async def test_find_stack_overflow(self, client, codebase_path):
+        """Test stack buffer overflow detection in the core codebase.
+
+        Expected findings:
+        - main.c: char local[SMALL_BUFFER_SIZE] + memcpy(local, buffer+5, n-5)
+          The write size 'n - 5' is a non-literal expression not bounded by the
+          array dimension and has no preceding bounds check.
+
+        safe patterns (should NOT be reported):
+        - snprintf(full_cmd, sizeof(full_cmd), ...) in cmdline.c — size arg contains sizeof
+        - fgets(input, sizeof(input), stdin) in main.c — not tracked as a writeOp
+        - memcpy with literal size <= array dimension
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        so_result = await client.call_tool("find_stack_overflow", {
+            "codebase_hash": codebase_hash,
+            "timeout": 240
+        })
+
+        if hasattr(so_result, "content") and so_result.content:
+            content = so_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Stack Buffer Overflow Analysis" in content, \
+                f"Missing analysis header: {content[:200]}"
+
+            # Expect at least one finding from the vulnerable stack-array samples
+            has_finding = (
+                "potential stack buffer overflow issue" in content
+                or "Unbounded write" in content
+                or "not statically bounded" in content
+                or "exceeds stack buffer size" in content
+            )
+            assert has_finding, \
+                f"Expected stack overflow findings: {content[:500]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    async def test_find_stack_overflow_file_filter(self, client, codebase_path):
+        """Test stack overflow detection filtered to main.c.
+
+        main.c contains:
+          char local[SMALL_BUFFER_SIZE]
+          memcpy(local, buffer + 5, n - 5)   <- n-5 not bounded by SMALL_BUFFER_SIZE
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        so_result = await client.call_tool("find_stack_overflow", {
+            "codebase_hash": codebase_hash,
+            "filename": "main.c",
+            "timeout": 240
+        })
+
+        if hasattr(so_result, "content") and so_result.content:
+            content = so_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Stack Buffer Overflow Analysis" in content, \
+                f"Missing header: {content[:200]}"
+
+            has_finding = (
+                "Unbounded write" in content
+                or "not statically bounded" in content
+                or "exceeds stack buffer size" in content
+                or "potential stack buffer overflow issue" in content
+            )
+            assert has_finding, \
+                f"Expected stack overflow findings in main.c: {content[:600]}"
