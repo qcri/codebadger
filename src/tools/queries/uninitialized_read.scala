@@ -1,0 +1,151 @@
+{
+  import io.shiftleft.codepropertygraph.generated.nodes._
+  import io.shiftleft.semanticcpg.language._
+  import scala.collection.mutable
+
+  val fileFilter = "{{filename}}"
+  val maxResults = {{limit}}
+
+  val output = new StringBuilder()
+
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+
+  output.append("Uninitialized Read Analysis\n")
+  output.append("=" * 60 + "\n\n")
+
+  // Collect all methods, optionally filtered by file
+  val allMethods = if (fileFilter.nonEmpty) {
+    val pattern = pathBoundaryRegex(fileFilter)
+    cpg.method.filter(m => m.file.name.headOption.exists(_.matches(pattern))).l
+  } else {
+    cpg.method.l
+  }
+
+  // Filter out compiler-generated / library methods (no body)
+  val candidateMethods = allMethods.filter(m => m.block.nonEmpty).l
+
+  if (candidateMethods.isEmpty) {
+    output.append("No methods found in the codebase.\n")
+  } else {
+    output.append(s"Analyzing ${candidateMethods.size} method(s) for uninitialized reads...\n\n")
+
+    // (file, methodName, varName, varType, declLine, useLine, useCode, confidence, reason)
+    val issues = mutable.ListBuffer[(String, String, String, String, Int, Int, String, String, String)]()
+
+    candidateMethods.foreach { method =>
+      val methName = method.name
+      val methFile = method.file.name.headOption.getOrElse("unknown")
+
+      // Collect local variable declarations
+      val locals = method.local.l
+
+      locals.foreach { local =>
+        val varName  = local.name
+        val varType  = local.typeFullName
+        val declLine = local.lineNumber.getOrElse(-1)
+
+        // Skip: function parameters (they are always initialized by the caller)
+        // Skip: static variables (zero-initialized by the C standard)
+        // Skip: aggregate types that are typically zero-initialized with = {0} or memset
+        //   We approximate: skip anything whose type contains "*" (pointers initialised via
+        //   parameter), "[]" (array — tracked by stack_overflow), or "static" in the name.
+        val isArray = varType.matches(".*\\[\\d*\\].*")
+        if (!isArray) {
+
+          // Find the first explicit assignment to this variable within the method.
+          // An assignment is a Call node whose name is "<operator>.assignment" and
+          // whose first argument (the LHS) mentions varName.
+          val assignments = method.call
+            .nameExact("<operator>.assignment")
+            .filter(c => c.argument.order(1).l.headOption.map(_.code.trim).getOrElse("") == varName)
+            .lineNumber.l.sorted
+
+          val firstAssignLine: Option[Int] = assignments.headOption
+
+          // Find ALL reads of this variable: Identifier nodes with this name that
+          // are NOT on the LHS of an assignment.
+          val allReads = method.ast.isIdentifier
+            .nameExact(varName)
+            .filter { ident =>
+              val parent = ident.astParent
+              // Exclude if this identifier is the direct LHS of an assignment
+              val isLhs = parent.isCall &&
+                parent.asInstanceOf[Call].name == "<operator>.assignment" &&
+                parent.asInstanceOf[Call].argument.order(1).l.headOption.exists(_.id == ident.id)
+              !isLhs
+            }
+            .l
+
+          // For each read, check whether it precedes the first assignment
+          allReads.foreach { ident =>
+            val readLine = ident.lineNumber.getOrElse(-1)
+
+            if (readLine > 0 && declLine > 0) {
+              val isBeforeAssignment = firstAssignLine match {
+                case None       => true             // never assigned → always uninitialized
+                case Some(asLn) => readLine < asLn  // read before the first assignment
+              }
+
+              if (isBeforeAssignment) {
+                // Try to get the enclosing statement code for context
+                val stmtCode = {
+                  val parentCode = ident.astParent.code.trim
+                  if (parentCode.length > 80) parentCode.take(77) + "..." else parentCode
+                }
+
+                // Confidence heuristic
+                val (confidence, reason) = firstAssignLine match {
+                  case None =>
+                    // Variable declared but never explicitly assigned — HIGH confidence
+                    ("HIGH", "Variable declared but never assigned before use")
+                  case Some(asLn) =>
+                    // Read before first assignment — still HIGH if assignment is later in same block
+                    ("HIGH", s"Read at line $readLine precedes first assignment at line $asLn")
+                }
+
+                issues += ((methFile, methName, varName, varType, declLine, readLine, stmtCode, confidence, reason))
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Deduplicate and sort by file + method + read line
+    val dedupIssues = issues.toList.distinct.sortBy(i => (i._1, i._2, i._6))
+
+    if (dedupIssues.isEmpty) {
+      output.append("No uninitialized read issues detected.\n")
+      output.append("\nNote: This analysis looks for:\n")
+      output.append("  - Local variables that are read before any explicit assignment\n")
+      output.append("  - Local variables declared but never assigned (used with garbage value)\n")
+      output.append("\nFiltered out:\n")
+      output.append("  - Fixed-size array declarations (tracked by stack overflow analysis)\n")
+      output.append("  - Identifier reads that are the direct LHS of an assignment\n")
+    } else {
+      output.append(s"Found ${dedupIssues.size} potential uninitialized read issue(s):\n\n")
+
+      dedupIssues.take(maxResults).zipWithIndex.foreach { case ((file, meth, varName, varType, declLine, readLine, stmtCode, confidence, reason), idx) =>
+        output.append(s"--- Issue ${idx + 1} ---\n")
+        output.append(s"Confidence:  $confidence\n")
+        output.append(s"CWE:         CWE-457 (Use of Uninitialized Variable)\n")
+        output.append(s"Variable:    $varName  ($varType)\n")
+        output.append(s"Declared:    $file:$declLine in $meth()\n")
+        output.append(s"Read at:     $file:$readLine\n")
+        output.append(s"Context:     $stmtCode\n")
+        output.append(s"Reason:      $reason\n")
+        output.append("\n")
+      }
+
+      if (dedupIssues.size > maxResults)
+        output.append(s"(Showing $maxResults of ${dedupIssues.size} issues. Use limit parameter to see more.)\n\n")
+
+      output.append(s"Total: ${dedupIssues.size} potential uninitialized read issue(s) found\n")
+    }
+  }
+
+  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+}
