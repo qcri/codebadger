@@ -211,6 +211,58 @@
             }
           }
           
+          // === PHASE 2b: Post-Free Aliasing Detection ===
+          // Catch: free(p); q = p; use(q) — alias created AFTER the free
+          // `aliases` already contains freedPtr + all pre-free aliases, so checking
+          // aliases.contains(srcCode) covers both direct and transitive post-free aliasing.
+          val postFreeAliasAssignments = mutable.ListBuffer[(String, Int)]() // (aliasName, assignLine)
+          method.assignment.l.foreach { assign =>
+            val assignLine = assign.lineNumber.getOrElse(-1)
+            if (assignLine > freeLine) {
+              val srcCode = assign.source.code.trim
+              if (aliases.contains(srcCode)) {
+                val targetCode = assign.target.code.trim
+                if (!targetCode.contains("(") && !targetCode.contains("[") && targetCode.length < 50) {
+                  postFreeAliasAssignments += ((targetCode, assignLine))
+                }
+              }
+            }
+          }
+
+          postFreeAliasAssignments.foreach { case (alias, aliasLine) =>
+            val aliasReassignmentLines = mutable.Set[Int]()
+            method.assignment.l.foreach { assign =>
+              val assignLine = assign.lineNumber.getOrElse(-1)
+              if (assignLine > aliasLine && assign.target.code.trim == alias) {
+                aliasReassignmentLines += assignLine
+              }
+            }
+
+            method.call.l.foreach { call =>
+              val callLine = call.lineNumber.getOrElse(-1)
+              if (callLine > aliasLine && !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*")) {
+                val aliasReassignedBefore = aliasReassignmentLines.exists(rl => rl > aliasLine && rl < callLine)
+                val hasEarlyReturn = method.ast.isReturn.l.exists { ret =>
+                  val retLine = ret.lineNumber.getOrElse(-1)
+                  retLine > freeLine && retLine < callLine
+                }
+                val inDifferentBranches = areInMutuallyExclusiveBranches(method, freeLine, callLine)
+
+                if (!aliasReassignedBefore && !hasEarlyReturn && !inDifferentBranches) {
+                  val argsContainAlias = call.argument.code.l.exists { argCode =>
+                    argCode == alias ||
+                    argCode.startsWith(alias + "->") ||
+                    argCode.startsWith(alias + "[") ||
+                    argCode.startsWith("*" + alias)
+                  }
+                  if (argsContainAlias) {
+                    postFreeUsages += ((callLine, call.code, freeFile, methodName, s"post-free-alias($alias)"))
+                  }
+                }
+              }
+            }
+          }
+
           if (aliases.size > 1) {
             val aliasesWithoutOriginal = aliases - freedPtr
             aliasesWithoutOriginal.foreach { alias =>
@@ -342,7 +394,8 @@
       output.append("No potential Use-After-Free issues detected.\n")
       output.append("\nNote: This analysis includes:\n")
       output.append("  - Intraprocedural usages (same function)\n")
-      output.append("  - Pointer aliasing (p2 = ptr; free(ptr); use(p2))\n")
+      output.append("  - Pre-free aliasing (p2 = ptr; free(ptr); use(p2))\n")
+      output.append("  - Post-free aliasing (free(ptr); p2 = ptr; use(p2))\n")
       output.append("  - Deep interprocedural flow (multi-level call chains)\n")
     } else {
       output.append(s"Found ${uafIssues.size} potential UAF issue(s):\n\n")
@@ -351,7 +404,7 @@
         // Compute confidence based on flow types present
         val hasDirectDeref = usages.exists(u => u._5 == "direct")
         val hasConfirmedInterproc = usages.exists(u => u._5 == "interproc" || u._5 == "deep-interproc")
-        val hasAliasOnly = usages.forall(u => u._5.startsWith("alias"))
+        val hasAliasOnly = usages.forall(u => u._5.startsWith("alias") || u._5.startsWith("post-free-alias"))
         val baseConfidence = if (hasDirectDeref || hasConfirmedInterproc) "HIGH"
                              else if (hasAliasOnly) "MEDIUM"
                              else "MEDIUM"
@@ -374,7 +427,7 @@
             case "direct" => ""
             case "interproc" => " [CROSS-FUNC]"
             case "deep-interproc" => " [DEEP]"
-            case other if other.startsWith("alias") => s" [$other]"
+            case other if other.startsWith("alias") || other.startsWith("post-free-alias") => s" [$other]"
             case _ => ""
           }
           output.append(s"  [$file:$line] $codeSnippet$flowTag\n")
@@ -415,7 +468,8 @@
       output.append(s"Total: ${uafIssues.size} potential UAF issue(s) found\n")
       output.append("\nFlow Types:\n")
       output.append("  - direct: Same-function usage of freed pointer\n")
-      output.append("  - alias(X): Usage of pointer alias X after original freed\n")
+      output.append("  - alias(X): Usage of pre-free alias X (X = ptr before free)\n")
+      output.append("  - post-free-alias(X): Usage of X after X = ptr was assigned post-free\n")
       output.append("  - [CROSS-FUNC]: Usage in directly called function\n")
       output.append("  - [DEEP]: Usage across multiple function call levels\n")
     }
