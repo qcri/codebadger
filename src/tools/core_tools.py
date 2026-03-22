@@ -4,11 +4,13 @@ Core MCP Tools for CodeBadger Server - Simplified hash-based version
 Provides core CPG management functionality
 """
 
+import asyncio
 import docker
 import hashlib
 import io
 import logging
 import os
+import re
 import shutil
 import tarfile
 from typing import Any, Dict, Optional, Annotated
@@ -178,7 +180,6 @@ async def _restart_server_async(
         if "code_browsing_service" in services:
             logger.info(f"Async: starting cache warm-up for {codebase_hash}")
             try:
-                import asyncio
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, services["code_browsing_service"].warm_up_cache, codebase_hash)
                 logger.info(f"Async: cache warm-up complete for {codebase_hash}")
@@ -267,7 +268,6 @@ async def _generate_cpg_async(
 
         # Apply exclusion patterns if config is available
         if config and language in config.cpg.languages_with_exclusions and config.cpg.exclusion_patterns:
-            import re
             # Validate and combine exclusion patterns
             escaped_patterns = []
             for pattern in config.cpg.exclusion_patterns:
@@ -346,7 +346,6 @@ async def _generate_cpg_async(
         if "code_browsing_service" in services:
             logger.info(f"Starting cache warm-up for {codebase_hash}")
             try:
-                import asyncio
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, services["code_browsing_service"].warm_up_cache, codebase_hash)
                 logger.info(f"Cache warm-up complete for {codebase_hash}")
@@ -476,7 +475,6 @@ Examples:
                         metadata={"status": "loading", **{k: v for k, v in existing_codebase.metadata.items() if k != "status"}}
                     )
 
-                    import asyncio
                     asyncio.create_task(
                         _restart_server_async(
                             codebase_hash=codebase_hash,
@@ -582,7 +580,6 @@ Examples:
             )
 
             # Start async CPG generation task
-            import asyncio
             asyncio.create_task(
                 _generate_cpg_async(
                     codebase_hash=codebase_hash,
@@ -695,7 +692,6 @@ Examples:
                             metadata={"status": "loading", **{k: v for k, v in codebase_info.metadata.items() if k != "status"}}
                         )
 
-                        import asyncio
                         try:
                             loop = asyncio.get_running_loop()
                             loop.create_task(

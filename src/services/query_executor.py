@@ -125,16 +125,13 @@ class QueryExecutor:
             base_query = query
 
         # Add limit if specified (only for queries that return collections)
-        if limit is not None and limit > 0:
-            # Don't add .take for queries that return a size/int (e.g., cpg.method.size)
-            if not re.search(r"\.size\s*$", base_query):
-                base_query = f"{base_query}.take({limit})"
+        is_size_query = bool(re.search(r"\.size\s*$", base_query))
+        if limit is not None and limit > 0 and not is_size_query:
+            base_query = f"{base_query}.take({limit})"
 
         # Add JSON output or string conversion for size results
-        if re.search(r"\.size\s*$", base_query):
-            # Size returns Int, convert to string
+        if is_size_query:
             return f"{base_query}.toString"
-        # Default: return JSON output for collections
         return f"{base_query}.toJsonPretty"
 
     def _execute_via_client(self, joern_client: 'JoernServerClient', query: str, timeout: int) -> QueryResult:

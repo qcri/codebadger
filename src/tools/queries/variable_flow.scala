@@ -36,23 +36,23 @@
         .filter(_.source.code.contains("&" + targetVar))
         .map(_.target.code)
         .l.distinct
-        
+
       // Combined set of variables to track (target + aliases)
       val monitoredVars = (targetVar :: pointerAliases).distinct
-      
+
       if (pointerAliases.nonEmpty) {
         sb.append(s"Aliases detected: ${pointerAliases.mkString(", ")}\n")
       }
-      
+
       sb.append("\nDependencies:\n")
 
-      // Helper to match code against monitored variables
-      def isRelevant(code: String): Boolean = {
-        monitoredVars.exists(v => 
-          code == v || 
-          code.startsWith(v + ".") || 
-          code.startsWith(v + "[") || 
-          code.startsWith("*" + v) || 
+      // Helper to match code against a set of tracked variables
+      def isRelevantVar(code: String, vars: List[String]): Boolean = {
+        vars.exists(v =>
+          code == v ||
+          code.startsWith(v + ".") ||
+          code.startsWith(v + "[") ||
+          code.startsWith("*" + v) ||
           code.startsWith(v + "->") ||
           code == "&" + v
         )
@@ -61,32 +61,24 @@
       val dependencies = scala.collection.mutable.ListBuffer[(String, Int, String, String)]()
       val visited = scala.collection.mutable.Set[String]()
 
-      def trace(currMethod: io.shiftleft.codepropertygraph.generated.nodes.Method, 
-                currVar: String, 
-                scopeLine: Int, 
+      def trace(currMethod: io.shiftleft.codepropertygraph.generated.nodes.Method,
+                currVar: String,
+                trackedVars: List[String],
+                scopeLine: Int,
                 depth: Int): Unit = {
 
         val methodId = currMethod.fullName
         val uniqueId = s"$methodId:$currVar"
         if (depth > 5 || visited.contains(uniqueId)) return
         visited.add(uniqueId)
-        
-        val currFile = currMethod.file.name.headOption.getOrElse("unknown")
 
-        def isRelevantInScope(code: String): Boolean = {
-             code == currVar || 
-             code.startsWith(currVar + ".") || 
-             code.startsWith(currVar + "[") || 
-             code.startsWith("*" + currVar) || 
-             code.startsWith(currVar + "->") ||
-             code == "&" + currVar
-        }
+        val currFile = currMethod.file.name.headOption.getOrElse("unknown")
 
         if (direction == "backward") {
           // 0. Parameters (Inter-procedural)
           currMethod.parameter.nameExact(currVar).l.foreach { param =>
              if (depth == 0) dependencies += ((currFile, param.lineNumber.getOrElse(-1), s"${param.typeFullName} ${param.name}", "parameter"))
-             
+
              currMethod.callIn.foreach { call =>
                  val caller = call.method
                  val callFile = call.file.name.headOption.getOrElse("unknown")
@@ -96,7 +88,7 @@
                      val argIdentifiers = arg.ast.isIdentifier.name.l.distinct
                      if (argIdentifiers.nonEmpty) {
                          dependencies += ((callFile, argLine, s"Passed '$argCode' to ${currMethod.name}", "call_site_arg"))
-                         argIdentifiers.foreach(argId => trace(caller, argId, argLine, depth + 1))
+                         argIdentifiers.foreach(argId => trace(caller, argId, List(argId), argLine, depth + 1))
                      } else {
                          dependencies += ((callFile, argLine, s"Passed '$argCode' to ${currMethod.name}", "call_site_const"))
                      }
@@ -112,7 +104,7 @@
           // 2. Assignments
           currMethod.assignment
             .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
-            .filter(a => isRelevantInScope(a.target.code) || a.target.code == currVar) 
+            .filter(a => isRelevantVar(a.target.code, trackedVars))
             .take(maxResults)
             .foreach { assign =>
                dependencies += ((currFile, assign.lineNumber.getOrElse(-1), assign.code, "assignment"))
@@ -122,16 +114,16 @@
           currMethod.call
             .name("<operator>.(postIncrement|preIncrement|postDecrement|preDecrement|assignmentPlus|assignmentMinus|assignmentMultiplication|assignmentDivision)")
             .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
-            .filter(c => c.argument.code.l.exists(isRelevantInScope))
+            .filter(c => c.argument.code.l.exists(arg => isRelevantVar(arg, trackedVars)))
             .take(maxResults)
             .foreach { call =>
               dependencies += ((currFile, call.lineNumber.getOrElse(-1), call.code, "modification"))
             }
-            
+
           // 4. Function Calls
           currMethod.call
             .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
-            .filter(c => c.argument.code.l.exists(arg => arg.contains(currVar))) 
+            .filter(c => c.argument.code.l.exists(arg => trackedVars.exists(v => arg.contains(v))))
             .take(maxResults)
             .foreach { call =>
                if (!call.name.startsWith("<operator>"))
@@ -142,7 +134,7 @@
           // 1. Usages
           currMethod.call
             .filter(_.lineNumber.getOrElse(-1) >= scopeLine)
-            .filter(c => c.argument.code.l.exists(arg => isRelevantInScope(arg) || arg.contains(currVar)))
+            .filter(c => c.argument.code.l.exists(arg => isRelevantVar(arg, trackedVars) || trackedVars.exists(v => arg.contains(v))))
             .take(maxResults)
             .foreach { call =>
                dependencies += ((currFile, call.lineNumber.getOrElse(-1), call.code, "usage"))
@@ -151,7 +143,7 @@
           // 2. Propagations
           currMethod.assignment
             .filter(_.lineNumber.getOrElse(-1) >= scopeLine)
-            .filter(a => isRelevantInScope(a.source.code) || a.source.code.contains(currVar))
+            .filter(a => isRelevantVar(a.source.code, trackedVars) || trackedVars.exists(v => a.source.code.contains(v)))
             .take(maxResults)
             .foreach { assign =>
                dependencies += ((currFile, assign.lineNumber.getOrElse(-1), assign.code, "propagation"))
@@ -159,7 +151,7 @@
         }
       }
 
-      trace(method, targetVar, targetLine, 0)
+      trace(method, targetVar, monitoredVars, targetLine, 0)
 
       val sortedDeps = dependencies.sortBy(_._2) // Sort by line
       if (sortedDeps.isEmpty) {

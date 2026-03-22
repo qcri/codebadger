@@ -19,14 +19,22 @@
       output.append("=" * 60 + "\n")
       output.append(s"Root: $rootName at $rootFile:$rootLine\n")
       
-      if (direction == "outgoing") {
-        // BFS for outgoing calls (callees)
-        var toVisit = scala.collection.mutable.Queue[(io.shiftleft.codepropertygraph.generated.nodes.Method, Int)]()
-        var visited = Set[String]()
-        var edgesVisited = Set[(String, String)]()
-        val edgesByDepth = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
+      // BFS helper: returns (edgesByDepth, totalEdges)
+      // Each edge is (fromName, toName, toFile, toLine, isCycle)
+      def bfsEdges(
+        seed: io.shiftleft.codepropertygraph.generated.nodes.Method,
+        seedDepth: Int,
+        nextNodes: io.shiftleft.codepropertygraph.generated.nodes.Method =>
+                   List[io.shiftleft.codepropertygraph.generated.nodes.Method],
+        edgeDir: (String, String) => (String, String)   // (from, to) ordering
+      ): (scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]], Int) = {
 
-        toVisit.enqueue((rootMethod, 0))
+        val toVisit     = scala.collection.mutable.Queue[(io.shiftleft.codepropertygraph.generated.nodes.Method, Int)]()
+        var visited     = Set[String](rootName)
+        var edgesVisited= Set[(String, String)]()
+        val edgesByDepth= scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
+
+        toVisit.enqueue((seed, seedDepth))
         var totalEdges = 0
 
         while (toVisit.nonEmpty && totalEdges < maxResults) {
@@ -36,36 +44,35 @@
           if (!visited.contains(currentName) && currentDepth < maxDepth) {
             visited = visited + currentName
 
-            val callees = current.call.callee.l
-              .filterNot(_.name.startsWith("<operator>"))
-              .take(50)
-
-            for (callee <- callees) {
-              val calleeName = callee.name
-              val calleeFile = callee.file.name.headOption.getOrElse("unknown")
-              val calleeLine = callee.lineNumber.getOrElse(-1)
-              val depth = currentDepth + 1
-              val edgeKey = (currentName, calleeName)
-              val isCycle = visited.contains(calleeName)
+            for (neighbor <- nextNodes(current).take(50)) {
+              val neighborName = neighbor.name
+              val neighborFile = neighbor.file.name.headOption.getOrElse("unknown")
+              val neighborLine = neighbor.lineNumber.getOrElse(-1)
+              val depth        = currentDepth + 1
+              val (eFrom, eTo) = edgeDir(currentName, neighborName)
+              val edgeKey      = (eFrom, eTo)
+              val isCycle      = visited.contains(neighborName)
 
               if (!edgesVisited.contains(edgeKey)) {
                 edgesVisited = edgesVisited + edgeKey
-                totalEdges += 1
-
-                if (!edgesByDepth.contains(depth)) {
+                totalEdges  += 1
+                if (!edgesByDepth.contains(depth))
                   edgesByDepth(depth) = scala.collection.mutable.ListBuffer()
-                }
-                edgesByDepth(depth) += ((currentName, calleeName, calleeFile, calleeLine, isCycle))
-
-                if (!isCycle && depth < maxDepth) {
-                  toVisit.enqueue((callee, depth))
-                }
+                // Store (from, to) always as caller->callee for display
+                edgesByDepth(depth) += ((eFrom, eTo, neighborFile, neighborLine, isCycle))
+                if (!isCycle && depth < maxDepth)
+                  toVisit.enqueue((neighbor, depth))
               }
             }
           }
         }
+        (edgesByDepth, totalEdges)
+      }
 
-        // Output edges grouped by depth
+      def printEdges(
+        edgesByDepth: scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]],
+        totalEdges: Int
+      ): Unit = {
         val cycleCount = edgesByDepth.values.flatten.count(_._5)
         for (depth <- edgesByDepth.keys.toList.sorted) {
           output.append(s"\n[DEPTH $depth]\n")
@@ -75,95 +82,29 @@
             output.append(s"  $from → $to ($location)$tag\n")
           }
         }
-
         output.append(s"\nTotal: $totalEdges edges")
         if (cycleCount > 0) output.append(s" ($cycleCount cyclic)")
         output.append("\n")
-        
+      }
+
+      if (direction == "outgoing") {
+        val (edgesByDepth, totalEdges) = bfsEdges(
+          rootMethod,
+          0,
+          m => m.call.callee.l.filterNot(_.name.startsWith("<operator>")),
+          (cur, nei) => (cur, nei)   // from=caller, to=callee
+        )
+        printEdges(edgesByDepth, totalEdges)
+
       } else if (direction == "incoming") {
-        // BFS for incoming calls (callers)
-        var toVisit = scala.collection.mutable.Queue[(io.shiftleft.codepropertygraph.generated.nodes.Method, Int)]()
-        var visited = Set[String]()
-        var edgesVisited = Set[(String, String)]()
-        val edgesByDepth = scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
+        val (edgesByDepth, totalEdges) = bfsEdges(
+          rootMethod,
+          0,
+          m => m.caller.l.filterNot(_.name.startsWith("<operator>")),
+          (cur, nei) => (nei, cur)   // from=caller(neighbor), to=callee(current)
+        )
+        printEdges(edgesByDepth, totalEdges)
 
-        // Initial: find direct callers of root method
-        visited = visited + rootName
-        val directCallers = rootMethod.caller.l.filterNot(_.name.startsWith("<operator>"))
-        for (caller <- directCallers) {
-          val callerName = caller.name
-          val callerFile = caller.file.name.headOption.getOrElse("unknown")
-          val callerLine = caller.lineNumber.getOrElse(-1)
-          val edgeKey = (callerName, rootName)
-          val isCycle = visited.contains(callerName)
-
-          if (!edgesVisited.contains(edgeKey)) {
-            edgesVisited = edgesVisited + edgeKey
-
-            if (!edgesByDepth.contains(1)) {
-              edgesByDepth(1) = scala.collection.mutable.ListBuffer()
-            }
-            edgesByDepth(1) += ((callerName, rootName, callerFile, callerLine, isCycle))
-
-            if (!isCycle) {
-              toVisit.enqueue((caller, 1))
-            }
-          }
-        }
-
-        var totalEdges = edgesVisited.size
-
-        while (toVisit.nonEmpty && totalEdges < maxResults) {
-          val (current, currentDepth) = toVisit.dequeue()
-          val currentName = current.name
-
-          if (!visited.contains(currentName) && currentDepth < maxDepth) {
-            visited = visited + currentName
-
-            val incomingCallers = current.caller.l
-              .filterNot(_.name.startsWith("<operator>"))
-              .take(50)
-
-            for (caller <- incomingCallers) {
-              val callerName = caller.name
-              val callerFile = caller.file.name.headOption.getOrElse("unknown")
-              val callerLine = caller.lineNumber.getOrElse(-1)
-              val depth = currentDepth + 1
-              val edgeKey = (callerName, currentName)
-              val isCycle = visited.contains(callerName)
-
-              if (!edgesVisited.contains(edgeKey)) {
-                edgesVisited = edgesVisited + edgeKey
-                totalEdges += 1
-
-                if (!edgesByDepth.contains(depth)) {
-                  edgesByDepth(depth) = scala.collection.mutable.ListBuffer()
-                }
-                edgesByDepth(depth) += ((callerName, currentName, callerFile, callerLine, isCycle))
-
-                if (!isCycle && depth < maxDepth) {
-                  toVisit.enqueue((caller, depth))
-                }
-              }
-            }
-          }
-        }
-
-        // Output edges grouped by depth
-        val cycleCount = edgesByDepth.values.flatten.count(_._5)
-        for (depth <- edgesByDepth.keys.toList.sorted) {
-          output.append(s"\n[DEPTH $depth]\n")
-          for ((from, to, file, line, isCycle) <- edgesByDepth(depth)) {
-            val location = if (line > 0) s"$file:$line" else file
-            val tag = if (isCycle) " [CYCLE]" else ""
-            output.append(s"  $from → $to ($location)$tag\n")
-          }
-        }
-
-        output.append(s"\nTotal: $totalEdges edges")
-        if (cycleCount > 0) output.append(s" ($cycleCount cyclic)")
-        output.append("\n")
-        
       } else {
         output.append(s"ERROR: Direction must be 'outgoing' or 'incoming', got: '$direction'\n")
       }
