@@ -144,7 +144,7 @@
                           val condLine = ifStmt.lineNumber.getOrElse(-1)
                           condLine > allocLine && condLine < writeLine && {
                             val condCode = ifStmt.condition.code.headOption.getOrElse("")
-                            condCode.contains(writeSizeVar) && (condCode.contains("<") || condCode.contains(">") || condCode.contains("<=") || condCode.contains(">="))
+                            condCode.matches(s".*\\b${java.util.regex.Pattern.quote(writeSizeVar)}\\b.*") && (condCode.contains("<") || condCode.contains(">") || condCode.contains("<=") || condCode.contains(">="))
                           }
                         }
                       if (!hasBoundsCheck)

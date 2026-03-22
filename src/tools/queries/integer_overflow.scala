@@ -130,7 +130,7 @@
         // Check 1: Condition contains overflow-check keywords (SIZE_MAX, __builtin_*_overflow, etc.)
         val hasKeyword = guardKeywords.exists(kw => condCode.contains(kw))
         // Check 2: Condition contains division with an operand name (pattern: a > MAX / b)
-        val hasDivCheck = condCode.contains("/") && operandNames.exists(n => n.length > 1 && condCode.contains(n))
+        val hasDivCheck = condCode.contains("/") && operandNames.exists(n => condCode.matches(s".*\\b${java.util.regex.Pattern.quote(n)}\\b.*"))
         // Check 3: Uses GCC/Clang builtin overflow checking
         val hasBuiltin = condCode.contains("__builtin_") && condCode.contains("overflow")
         hasKeyword || hasDivCheck || hasBuiltin
@@ -291,7 +291,7 @@
                 val condLine = ifStmt.lineNumber.getOrElse(-1)
                 condLine > 0 && condLine <= indexLine && {
                   val condCode = ifStmt.condition.code.headOption.getOrElse("")
-                  operandNames.exists(n => n.length > 1 && condCode.contains(n)) && (
+                  operandNames.exists(n => condCode.matches(s".*\\b${java.util.regex.Pattern.quote(n)}\\b.*")) && (
                     condCode.contains("<") || condCode.contains(">") ||
                     guardKeywords.exists(kw => condCode.contains(kw))
                   )
