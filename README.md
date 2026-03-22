@@ -165,6 +165,8 @@ Add the following:
 - `find_double_free`: Detect potential double-free issues.
 - `find_null_pointer_deref`: Find likely null pointer dereferences.
 - `find_integer_overflow`: Detect integer overflow patterns.
+- `find_format_string_vulns`: Detect format string vulnerabilities (CWE-134) where non-literal format arguments are passed to printf-family functions.
+- `find_heap_overflow`: Detect heap overflow vulnerabilities (CWE-122) where writes to heap buffers may exceed their allocated size.
 
 ## Contributing & Tests
 
