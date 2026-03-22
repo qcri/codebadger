@@ -1737,3 +1737,81 @@ Examples:
         except Exception as e:
             logger.error(f"Unexpected error detecting stack overflow: {e}", exc_info=True)
             return f"Internal Error: {str(e)}"
+
+    @mcp.tool(
+        description="""Detect TOCTOU (Time-of-Check-Time-of-Use) race condition vulnerabilities (CWE-367) where a file is checked with access()/stat()/lstat() and then opened or operated on in a separate step.
+
+Analyzes the codebase for the classic TOCTOU pattern:
+1. A check call (access, stat, lstat, faccessat, euidaccess, statx, …) inspects a path
+2. A subsequent use call (open, fopen, creat, openat, rename, unlink, chmod, execve, …) acts on the same path
+3. Both calls appear in the same function with the check preceding the use
+
+Between the check and the use an attacker may replace the file or swap it for a symlink, bypassing the access-control decision made at check time.
+
+Args:
+    codebase_hash: The codebase hash from generate_cpg.
+    filename: Optional filename regex to filter results (e.g., 'fs_utils.c').
+    limit: Maximum results to return (default 100).
+    timeout: Query timeout in seconds (default 240).
+
+Returns:
+    Human-readable text showing each potential TOCTOU issue with:
+    - Function name and file
+    - CHECK call [file:line] — the access/stat call
+    - USE call [file:line] — the open/fopen/… call on the same path
+    - The window (line distance) between check and use
+    - Exploitation description
+
+Examples:
+    find_toctou(codebase_hash="abc")
+    find_toctou(codebase_hash="abc", filename="fs_utils.c")""",
+    )
+    def find_toctou(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
+        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
+    ) -> str:
+        """Detect TOCTOU race condition vulnerabilities (CWE-367) in the codebase."""
+        try:
+            validate_codebase_hash(codebase_hash)
+
+            codebase_tracker = services["codebase_tracker"]
+            query_executor = services["query_executor"]
+
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info or not codebase_info.cpg_path:
+                raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first using generate_cpg.")
+
+            cache_params = {"filename": filename, "limit": limit}
+
+            def _execute():
+                query = QueryLoader.load(
+                    "toctou",
+                    filename=filename or "",
+                    limit=limit,
+                )
+                result = query_executor.execute_query(
+                    codebase_hash=codebase_hash,
+                    cpg_path=codebase_info.cpg_path,
+                    query=query,
+                    timeout=timeout,
+                )
+                if not result.success:
+                    return f"Error: {result.error}"
+                if isinstance(result.data, str):
+                    return result.data.strip()
+                elif isinstance(result.data, list) and len(result.data) > 0:
+                    output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+                    return output.strip()
+                else:
+                    return f"Query returned unexpected format: {type(result.data)}"
+
+            return _cached_taint_query(services, "find_toctou", codebase_hash, cache_params, _execute)
+
+        except ValidationError as e:
+            logger.error(f"Error detecting TOCTOU: {e}")
+            return f"Validation Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Unexpected error detecting TOCTOU: {e}", exc_info=True)
+            return f"Internal Error: {str(e)}"

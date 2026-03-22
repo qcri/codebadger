@@ -57,8 +57,9 @@ def register_prompts(mcp):
                 "memory": (
                     "Focus specifically on memory safety: use-after-free, double-free, "
                     "buffer overflows, null pointer dereferences, integer overflows, "
-                    "and missing bounds checks. Run find_use_after_free, find_double_free, "
-                    "find_bounds_checks, find_null_pointer_deref, and find_integer_overflow."
+                    "missing bounds checks, and TOCTOU race conditions. Run find_use_after_free, "
+                    "find_double_free, find_bounds_checks, find_null_pointer_deref, "
+                    "find_integer_overflow, and find_toctou."
                 ),
                 "authentication": (
                     "Focus specifically on authentication and authorization: look for "
@@ -83,7 +84,8 @@ If the codebase language is C or C++, also run:
 8. `find_double_free(codebase_hash="{hash}")` — detect double-free vulnerabilities
 9. `find_bounds_checks(codebase_hash="{hash}")` — find buffer accesses missing bounds checks
 10. `find_null_pointer_deref(codebase_hash="{hash}")` — detect null pointer dereference vulnerabilities (CWE-476)
-11. `find_integer_overflow(codebase_hash="{hash}")` — detect integer overflow/underflow before allocation or array indexing (CWE-190)""".format(hash=codebase_hash)
+11. `find_integer_overflow(codebase_hash="{hash}")` — detect integer overflow/underflow before allocation or array indexing (CWE-190)
+12. `find_toctou(codebase_hash="{hash}")` — detect TOCTOU race conditions (CWE-367) where access()/stat() is followed by open() on the same path""".format(hash=codebase_hash)
 
         analysis_text = f"""You are performing a comprehensive security audit on codebase `{codebase_hash}`.{lang_clause}
 {f"**Focus**: {focus_instructions}" if focus_instructions else ""}
@@ -179,11 +181,16 @@ Call `find_integer_overflow(codebase_hash="{codebase_hash}"{file_filter})` to fi
 - CWE-190: Integer Overflow or Wraparound
 - For each finding, note the arithmetic expression, operation type, and risk level
 
-## Step 7: Trace Data Origins
+## Step 7: TOCTOU Detection
+Call `find_toctou(codebase_hash="{codebase_hash}"{file_filter})` to find cases where a file is checked with access()/stat()/lstat() and then opened or acted on in a separate step.
+- CWE-367: Use of Device File in Sensitive Operation
+- For each finding, note the CHECK call location, the USE call location, and the path argument shared between them
+
+## Step 8: Trace Data Origins
 For each confirmed vulnerability, call `get_program_slice(codebase_hash="{codebase_hash}", ...)` with direction="backward" to trace where the data or pointer originated.
 Call `get_file_content(codebase_hash="{codebase_hash}", method_name="<function>")` to view the full function context.
 
-## Step 8: Report
+## Step 9: Report
 Produce a memory safety report grouped by category:
 
 ### Use-After-Free (CWE-416)
@@ -200,6 +207,9 @@ For each: file:line, pointer name, allocation function, dereference location, fi
 
 ### Integer Overflow (CWE-190)
 For each: file:line, arithmetic expression, operation type, risk level (HIGH/MEDIUM), used as (allocation size / array index), fix
+
+### TOCTOU Race Condition (CWE-367)
+For each: file:line, check function (access/stat/…), use function (open/unlink/…), shared path argument, window (lines between check and use), fix
 
 Rate each finding: Critical / High / Medium / Low based on exploitability and impact."""
 
