@@ -1,8 +1,8 @@
 /*
  * config.c - Configuration parsing implementation
  * 
- * Contains format string vulnerabilities and path traversal patterns.
- * Also demonstrates deep call chains for call graph testing.
+ * Parses INI-style configuration files and environment overrides.
+ * Exposes get/set accessors and script execution for subsystem startup.
  */
 
 #include <stdio.h>
@@ -187,8 +187,9 @@ int config_finalize_loading(ConfigContext *ctx)
 }
 
 /*
- * Load configuration from file - TAINT SOURCE
- * Deep call chain: load_file -> parse_line -> validate -> process -> apply -> finalize
+ * Load configuration from a file.  Each key=value line is parsed,
+ * validated, and applied.  The call chain:
+ *   load_file -> parse_line -> validate_entry -> process_entry -> finalize
  */
 int config_load_file(ConfigContext *ctx, const char *filepath)
 {
@@ -196,7 +197,6 @@ int config_load_file(ConfigContext *ctx, const char *filepath)
         return ERR_INVALID_PARAM;
     }
     
-    /* TAINT SOURCE: file content is untrusted */
     FILE *fp = fopen(filepath, "r");
     if (!fp) {
         return ERR_IO_ERROR;
@@ -208,7 +208,6 @@ int config_load_file(ConfigContext *ctx, const char *filepath)
     char key[MAX_KEY_LENGTH];
     char value[MAX_VALUE_LENGTH];
     
-    /* Read lines from file - tainted data */
     while (fgets(line, sizeof(line), fp)) {
         /* Skip comments and empty lines */
         if (line[0] == '#' || line[0] == '\n') {
@@ -236,7 +235,7 @@ int config_load_file(ConfigContext *ctx, const char *filepath)
 }
 
 /*
- * Load from environment - TAINT SOURCE
+ * Load configuration from the path given by CONFIG_FILE_PATH, if set.
  */
 int config_load_from_env(ConfigContext *ctx)
 {
@@ -244,7 +243,6 @@ int config_load_from_env(ConfigContext *ctx)
         return ERR_INVALID_PARAM;
     }
     
-    /* TAINT SOURCE: getenv returns untrusted data */
     char *config_path = getenv("CONFIG_FILE_PATH");
     if (config_path) {
         return config_load_file(ctx, config_path);
@@ -254,7 +252,7 @@ int config_load_from_env(ConfigContext *ctx)
 }
 
 /*
- * Parse buffer - TAINT SOURCE
+ * Parse a configuration block held in an in-memory buffer.
  */
 int config_parse_buffer(ConfigContext *ctx, const char *buffer, size_t size)
 {
@@ -384,18 +382,16 @@ int config_set_int(ConfigContext *ctx, const char *key, int value)
 }
 
 /*
- * FORMAT STRING VULNERABILITY HELPER
- * Directly prints untrusted string as format
+ * Emit a configuration log line using the supplied format string.
  */
 void config_log_entry(const char *format)
 {
-    /* VULNERABLE SINK: printf with user-controlled format */
-    printf(format);  /* FORMAT STRING VULNERABILITY */
+    printf(format);
 }
 
 /*
- * VULNERABLE: Print config value as format string
- * Taint flow: file content -> printf format (format string vuln)
+ * Print the value stored under key, using it as a printf format string
+ * to support %-style message templates in configuration.
  */
 int config_print_value(ConfigContext *ctx, const char *key)
 {
@@ -408,8 +404,7 @@ int config_print_value(ConfigContext *ctx, const char *key)
         return ERR_NOT_FOUND;
     }
     
-    /* VULNERABLE: Using config value as printf format string */
-    printf(value);  /* FORMAT STRING VULNERABILITY */
+    printf(value);
     
     /* Also through helper */
     config_log_entry(value);
@@ -418,8 +413,8 @@ int config_print_value(ConfigContext *ctx, const char *key)
 }
 
 /*
- * VULNERABLE: Open file path from config
- * Taint flow: config value -> open() (path traversal)
+ * Open the file whose path is stored under key in the configuration.
+ * Returns the file descriptor, or a negative error code.
  */
 int config_open_path(ConfigContext *ctx, const char *key)
 {
@@ -432,15 +427,13 @@ int config_open_path(ConfigContext *ctx, const char *key)
         return ERR_NOT_FOUND;
     }
     
-    /* VULNERABLE SINK: open() with config-controlled path */
-    int fd = open(path, O_RDONLY);  /* PATH TRAVERSAL */
+    int fd = open(path, O_RDONLY);
     
     return fd;
 }
 
 /*
- * VULNERABLE: Execute script from config
- * Taint flow: config value -> system() (command injection)
+ * Invoke the script whose name is stored under key in the configuration.
  */
 int config_execute_script(ConfigContext *ctx, const char *key)
 {
@@ -453,6 +446,5 @@ int config_execute_script(ConfigContext *ctx, const char *key)
         return ERR_NOT_FOUND;
     }
     
-    /* VULNERABLE SINK: system() with config-controlled command */
-    return system(script);  /* COMMAND INJECTION */
+    return system(script);
 }

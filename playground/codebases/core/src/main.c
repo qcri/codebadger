@@ -150,14 +150,13 @@ static int setup_devices(void)
 }
 
 /*
- * Process one network event - VULNERABLE ENTRY POINT
+ * Dispatch a single network event on the given connection.
  */
 static int process_network_event(int conn_id)
 {
     char buffer[NETWORK_BUFFER_SIZE];
     
-    /* TAINT SOURCE: Read from network */
-    int n = network_recv_data(g_network_context, conn_id, 
+    int n = network_recv_data(g_network_context, conn_id,
                               buffer, sizeof(buffer));
     if (n <= 0) {
         return ERR_IO_ERROR;
@@ -165,40 +164,33 @@ static int process_network_event(int conn_id)
     
     /* Route to appropriate handler based on prefix */
     if (strncmp(buffer, "CONFIG:", 7) == 0) {
-        /* Parse config from network - TAINT FLOW */
         config_parse_buffer(g_config_context, buffer + 7, n - 7);
         
-        /* Then execute script config - COMMAND INJECTION */
         config_execute_script(g_config_context, "startup_script");
     }
     else if (strncmp(buffer, "DEVICE:", 7) == 0) {
         /* Find device and pass command */
         Device *dev = device_find(g_device_manager, "virtio-net");
         if (dev) {
-            /* TAINT FLOW to device handler */
-            device_process_untrusted_data(dev, buffer + 7, n - 7);
+                device_process_untrusted_data(dev, buffer + 7, n - 7);
         }
     }
     else if (strncmp(buffer, "EXEC:", 5) == 0) {
-        /* Direct command execution - COMMAND INJECTION */
         system(buffer + 5);
     }
     else if (strncmp(buffer, "PRINT:", 6) == 0) {
-        /* Direct format string vuln */
-        printf(buffer + 6);  /* FORMAT STRING VULNERABILITY */
+        printf(buffer + 6);
     }
     else if (strncmp(buffer, "COPY:", 5) == 0) {
-        /* Memory copy without size check - BUFFER OVERFLOW */
         char local[SMALL_BUFFER_SIZE];
-        memcpy(local, buffer + 5, n - 5);  /* OVERFLOW if n > SMALL_BUFFER_SIZE + 5 */
+        memcpy(local, buffer + 5, n - 5);
     }
     
     return ERR_SUCCESS;
 }
 
 /*
- * VULNERABLE: Interactive command mode
- * Reads commands from stdin and executes them
+ * Interactive shell for runtime device inspection and control.
  */
 static int interactive_mode(void)
 {
@@ -210,7 +202,6 @@ static int interactive_mode(void)
         printf("> ");
         fflush(stdout);
         
-        /* TAINT SOURCE: Read from stdin */
         if (fgets(input, sizeof(input), stdin) == NULL) {
             break;
         }
@@ -227,7 +218,6 @@ static int interactive_mode(void)
         
         /* Process commands */
         if (strncmp(input, "exec ", 5) == 0) {
-            /* VULNERABLE: Command injection */
             system(input + 5);
         }
         else if (strncmp(input, "config ", 7) == 0) {
@@ -235,11 +225,9 @@ static int interactive_mode(void)
             config_load_file(g_config_context, input + 7);
         }
         else if (strncmp(input, "run ", 4) == 0) {
-            /* Execute config script - COMMAND INJECTION */
             config_execute_script(g_config_context, input + 4);
         }
         else if (strncmp(input, "print ", 6) == 0) {
-            /* VULNERABLE: Format string */
             printf(input + 6);
         }
         else if (strncmp(input, "dma_alloc ", 10) == 0) {
@@ -250,20 +238,16 @@ static int interactive_mode(void)
             dma_free_buffer(g_memory_controller);
         }
         else if (strcmp(input, "dma_use_alias") == 0) {
-            /* USE-AFTER-FREE: Use DMA alias after free */
             char data[] = "test data";
             dma_transfer_with_alias(g_memory_controller, data, sizeof(data));
         }
         else if (strcmp(input, "double_free") == 0) {
-            /* Trigger double free in memory module */
             memory_cleanup_with_error(g_memory_controller, 1);
         }
         else if (strcmp(input, "uaf_demo") == 0) {
-            /* Demonstrate use-after-free */
             void *ptr = memory_get_and_free(g_memory_controller);
             if (ptr) {
-                /* USE-AFTER-FREE: Using returned freed pointer */
-                memset(ptr, 0, 10);  /* UAF */
+                memset(ptr, 0, 10);
             }
         }
         else {
@@ -300,33 +284,27 @@ static int server_mode(uint16_t port)
 }
 
 /*
- * VULNERABLE: Process command from environment
- * Complete taint flow: getenv -> system
+ * Execute the startup command specified in the environment, if any.
  */
 static void process_env_command(void)
 {
-    /* TAINT SOURCE: getenv */
     char *cmd = getenv("STARTUP_COMMAND");
     
     if (cmd) {
-        log_info("Executing startup command from environment");
-        /* VULNERABLE SINK: system with env-controlled command */
-        system(cmd);  /* COMMAND INJECTION */
+        system(cmd);
     }
 }
 
 /*
- * VULNERABLE: Log startup with format from env
- * Taint flow: getenv -> printf (format string)
+ * Print the startup banner.  If LOG_FORMAT is set in the environment,
+ * it is used as the output template; otherwise a default message is shown.
  */
 static void log_startup_message(void)
 {
-    /* TAINT SOURCE: getenv */
     char *format = getenv("LOG_FORMAT");
     
     if (format) {
-        /* VULNERABLE: Format string from environment */
-        printf(format);  /* FORMAT STRING VULNERABILITY */
+        printf(format);
     } else {
         printf("System starting up...\n");
     }
@@ -345,17 +323,15 @@ void test_bounds_checking(void)
     if (idx_str) {
         index = atoi(idx_str);
         
-        /* VULNERABLE: No bounds check */
-        buffer[index] = 'X';  /* BUFFER OVERFLOW if index >= 100 */
+        buffer[index] = 'X';
     }
     
     /* Compare with safe version */
     if (idx_str) {
         index = atoi(idx_str);
         
-        /* SAFE: With bounds check */
         if (index >= 0 && index < 100) {
-            buffer[index] = 'Y';  /* Safe */
+            buffer[index] = 'Y';
         }
     }
 }
@@ -371,7 +347,7 @@ int main(int argc, char *argv[])
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    /* Log startup (potentially vulnerable) */
+    /* Print startup banner */
     log_startup_message();
     
     /* Initialize all subsystems */
@@ -403,7 +379,6 @@ int main(int argc, char *argv[])
         load_configuration(config_path);
     }
     
-    /* Process environment command (vulnerable) */
     process_env_command();
     
     /* Set up devices */

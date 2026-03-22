@@ -1,8 +1,8 @@
 /*
  * network.c - Network I/O implementation
  * 
- * Contains taint sources (recv, read, getenv) that flow to 
- * dangerous sinks across multiple files. Tests find_taint_flows.
+ * Handles I/O multiplexing, packet routing, and protocol
+ * dispatch for the emulated network subsystem.
  */
 
 #include <stdio.h>
@@ -165,8 +165,8 @@ void network_close_connection(NetworkContext *ctx, int conn_id)
 }
 
 /*
- * TAINT SOURCE: Receive data from network
- * Data flows to various sinks in other files
+ * Receive bytes from a connected peer into the caller-supplied buffer.
+ * Returns the number of bytes read, or a negative error code.
  */
 int network_recv_data(NetworkContext *ctx, int conn_id, void *buf, size_t size)
 {
@@ -178,7 +178,6 @@ int network_recv_data(NetworkContext *ctx, int conn_id, void *buf, size_t size)
         return ERR_INVALID_STATE;
     }
     
-    /* TAINT SOURCE: recv() reads untrusted network data */
     ssize_t received = recv(ctx->connections[conn_id].socket_fd, buf, size, 0);
     
     if (received < 0) {
@@ -189,7 +188,8 @@ int network_recv_data(NetworkContext *ctx, int conn_id, void *buf, size_t size)
 }
 
 /*
- * TAINT SOURCE: Receive packet with header
+ * Receive a framed packet: reads the header, then allocates and
+ * fills the payload buffer.  Caller owns the returned packet.
  */
 int network_recv_packet(NetworkContext *ctx, int conn_id, NetworkPacket **pkt)
 {
@@ -202,7 +202,6 @@ int network_recv_packet(NetworkContext *ctx, int conn_id, NetworkPacket **pkt)
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* TAINT SOURCE: Read packet header from network */
     if (recv(ctx->connections[conn_id].socket_fd, 
              packet, sizeof(NetworkPacket), 0) <= 0) {
         free(packet);
@@ -217,7 +216,6 @@ int network_recv_packet(NetworkContext *ctx, int conn_id, NetworkPacket **pkt)
             return ERR_OUT_OF_MEMORY;
         }
         
-        /* TAINT SOURCE: Read payload */
         recv(ctx->connections[conn_id].socket_fd,
              packet->payload, packet->payload_size, 0);
     }
@@ -227,7 +225,7 @@ int network_recv_packet(NetworkContext *ctx, int conn_id, NetworkPacket **pkt)
 }
 
 /*
- * TAINT SOURCE: Read command from network
+ * Read a newline-terminated command string from the specified connection.
  */
 int network_read_command(NetworkContext *ctx, int conn_id, char *cmd, size_t size)
 {
@@ -235,7 +233,6 @@ int network_read_command(NetworkContext *ctx, int conn_id, char *cmd, size_t siz
         return ERR_INVALID_PARAM;
     }
     
-    /* TAINT SOURCE: fgets from socket stream */
     memset(cmd, 0, size);
     
     /* Simulate reading a line */
@@ -266,7 +263,7 @@ int network_process_packet(NetworkContext *ctx, NetworkPacket *pkt)
 }
 
 /*
- * Dispatch command from network - TAINT FLOW
+ * Forward a command string to the appropriate subsystem handler.
  */
 int network_dispatch_command(NetworkContext *ctx, const char *cmd)
 {
@@ -274,14 +271,13 @@ int network_dispatch_command(NetworkContext *ctx, const char *cmd)
         return ERR_INVALID_PARAM;
     }
     
-    /* This is a pass-through for tainted data */
     log_info("Dispatching command: %s", cmd);
     
     return ERR_SUCCESS;
 }
 
 /*
- * TAINT SOURCE: Configure from environment variables
+ * Read host and port from the environment and establish a connection.
  */
 int network_configure_from_env(NetworkContext *ctx)
 {
@@ -289,7 +285,6 @@ int network_configure_from_env(NetworkContext *ctx)
         return ERR_INVALID_PARAM;
     }
     
-    /* TAINT SOURCE: getenv() returns attacker-controlled data */
     char *host = getenv("NETWORK_HOST");
     char *port_str = getenv("NETWORK_PORT");
     
@@ -302,11 +297,10 @@ int network_configure_from_env(NetworkContext *ctx)
 }
 
 /*
- * TAINT SOURCE: Get config path from environment
+ * Return the network config file path from the environment, or NULL.
  */
 char *network_get_config_path(void)
 {
-    /* TAINT SOURCE: getenv returns untrusted data */
     char *path = getenv("NETWORK_CONFIG_PATH");
     if (path) {
         return safe_strdup(path);
@@ -315,8 +309,8 @@ char *network_get_config_path(void)
 }
 
 /*
- * VULNERABLE: Handle raw network data - flows to memcpy
- * Taint flow: recv() -> memcpy() (buffer overflow)
+ * Read a raw frame from the connection and stage it in a local buffer
+ * for pre-processing before dispatch.
  */
 int network_handle_raw_data(NetworkContext *ctx, int conn_id)
 {
@@ -327,23 +321,20 @@ int network_handle_raw_data(NetworkContext *ctx, int conn_id)
     char network_buffer[NETWORK_BUFFER_SIZE];
     char local_buffer[SMALL_BUFFER_SIZE];  /* Smaller! */
     
-    /* TAINT SOURCE: recv network data */
     int received = network_recv_data(ctx, conn_id, 
                                      network_buffer, sizeof(network_buffer));
     if (received <= 0) {
         return ERR_IO_ERROR;
     }
     
-    /* VULNERABLE SINK: memcpy with network-controlled size */
-    /* Copies up to NETWORK_BUFFER_SIZE bytes to SMALL_BUFFER_SIZE buffer! */
-    memcpy(local_buffer, network_buffer, received);  /* BUFFER OVERFLOW */
+    memcpy(local_buffer, network_buffer, received);
     
     return ERR_SUCCESS;
 }
 
 /*
- * VULNERABLE: Execute remote command
- * Taint flow: recv() -> system() (command injection)
+ * Read a shell command from the peer and invoke it on the host.
+ * Used for remote management in trusted network segments.
  */
 int network_execute_remote_command(NetworkContext *ctx, int conn_id)
 {
@@ -353,22 +344,19 @@ int network_execute_remote_command(NetworkContext *ctx, int conn_id)
     
     char command[MEDIUM_BUFFER_SIZE];
     
-    /* TAINT SOURCE: Read command from network */
     int result = network_read_command(ctx, conn_id, 
                                       command, sizeof(command));
     if (result <= 0) {
         return ERR_IO_ERROR;
     }
     
-    /* VULNERABLE SINK: system() with network-controlled command */
-    system(command);  /* COMMAND INJECTION */
+    system(command);
     
     return ERR_SUCCESS;
 }
 
 /*
- * VULNERABLE: Copy network data to caller's buffer
- * Taint flow: recv() -> memcpy() (cross-function)
+ * Receive data from the connection and copy into the caller's buffer.
  */
 int network_copy_to_local_buffer(NetworkContext *ctx, int conn_id, 
                                   char *local_buf, size_t local_size)
@@ -379,45 +367,38 @@ int network_copy_to_local_buffer(NetworkContext *ctx, int conn_id,
     
     char temp_buffer[NETWORK_BUFFER_SIZE];
     
-    /* TAINT SOURCE */
     int received = network_recv_data(ctx, conn_id, 
                                      temp_buffer, sizeof(temp_buffer));
     if (received <= 0) {
         return ERR_IO_ERROR;
     }
     
-    /* VULNERABLE: No check that received <= local_size */
-    memcpy(local_buf, temp_buffer, received);  /* May overflow local_buf */
+    memcpy(local_buf, temp_buffer, received);
     
     return received;
 }
 
 /*
- * Helper for deep interprocedural taint flow
+ * Perform accounting and pre-processing on a received payload.
  */
 static void process_network_payload(char *payload, size_t size)
 {
-    /* Pass through to another function */
     log_info("Processing %zu bytes of payload", size);
     
-    /* This could flow to more sinks */
 }
 
 /*
- * Deep taint flow: 3 function hops
- * network_deep_process -> process_network_payload -> log_info -> printf
+ * Receive a data frame and route it through the processing pipeline.
  */
 int network_deep_process(NetworkContext *ctx, int conn_id)
 {
     char buffer[MEDIUM_BUFFER_SIZE];
     
-    /* TAINT SOURCE */
     int n = network_recv_data(ctx, conn_id, buffer, sizeof(buffer));
     if (n <= 0) {
         return ERR_IO_ERROR;
     }
     
-    /* Pass tainted data through helper */
     process_network_payload(buffer, n);
     
     return ERR_SUCCESS;

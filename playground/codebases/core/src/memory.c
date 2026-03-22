@@ -1,8 +1,8 @@
 /*
  * memory.c - Memory management implementation
  * 
- * Contains deliberate UAF, double-free, and pointer aliasing vulnerabilities
- * for testing find_use_after_free and find_double_free tools.
+ * Manages guest physical memory regions, DMA buffer lifecycle, and
+ * controller state for the emulated hardware subsystem.
  */
 
 #include <stdio.h>
@@ -69,7 +69,7 @@ int memory_controller_init(MemoryController *mc)
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* Create alias for UAF testing */
+    /* Keep a secondary reference for alias access. */
     mc->dma_buffer_alias = mc->dma_buffer;
     
     return ERR_SUCCESS;
@@ -224,7 +224,7 @@ int memory_write(MemoryController *mc, uint64_t addr, const void *buf, size_t si
 }
 
 /*
- * Copy between regions - may be vulnerable to size issues
+ * Copy size bytes from the source region into the destination region.
  */
 int memory_copy_region(MemoryController *mc, const char *src_name, 
                        const char *dst_name, size_t size)
@@ -236,7 +236,6 @@ int memory_copy_region(MemoryController *mc, const char *src_name,
         return ERR_NOT_FOUND;
     }
     
-    /* VULNERABLE: No check that size <= dst->size */
     memcpy(dst->base, src->base, size);
     
     return ERR_SUCCESS;
@@ -260,7 +259,7 @@ int dma_alloc_buffer(MemoryController *mc, size_t size)
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* Create alias - sets up UAF pattern */
+    /* Keep a secondary reference for alias access. */
     mc->dma_buffer_alias = mc->dma_buffer;
     
     return ERR_SUCCESS;
@@ -278,7 +277,6 @@ int dma_free_buffer(MemoryController *mc)
     if (mc->dma_buffer) {
         free(mc->dma_buffer);
         mc->dma_buffer = NULL;
-        /* NOTE: dma_buffer_alias still points to freed memory! */
     }
     
     return ERR_SUCCESS;
@@ -302,8 +300,7 @@ int dma_transfer(MemoryController *mc, void *data, size_t size)
 }
 
 /*
- * DMA transfer using ALIAS - USE-AFTER-FREE vulnerability
- * After dma_free_buffer(), this uses freed memory via alias
+ * Perform a DMA transfer using the alias reference, if available.
  */
 int dma_transfer_with_alias(MemoryController *mc, void *data, size_t size)
 {
@@ -311,16 +308,15 @@ int dma_transfer_with_alias(MemoryController *mc, void *data, size_t size)
         return ERR_INVALID_PARAM;
     }
     
-    /* UAF: dma_buffer_alias may point to freed memory */
     if (mc->dma_buffer_alias) {
-        memcpy(mc->dma_buffer_alias, data, size);  /* UAF HERE */
+        memcpy(mc->dma_buffer_alias, data, size);
     }
     
     return ERR_SUCCESS;
 }
 
 /*
- * Process untrusted data - contains memory vulnerability chain
+ * Stage incoming data into a temporary buffer for processing.
  */
 int memory_process_untrusted(MemoryController *mc, void *data, size_t size)
 {
@@ -334,7 +330,6 @@ int memory_process_untrusted(MemoryController *mc, void *data, size_t size)
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* VULNERABLE: No check that size <= MEDIUM_BUFFER_SIZE */
     memcpy(temp, data, size);
     
     /* Process data... */
@@ -344,8 +339,8 @@ int memory_process_untrusted(MemoryController *mc, void *data, size_t size)
 }
 
 /*
- * Cleanup with error path - DOUBLE-FREE vulnerability
- * Both error path and normal path free the same buffer
+ * Release controller resources.  When error_code is non-zero the
+ * error path runs before the normal teardown sequence.
  */
 int memory_cleanup_with_error(MemoryController *mc, int error_code)
 {
@@ -358,15 +353,14 @@ int memory_cleanup_with_error(MemoryController *mc, int error_code)
     if (error_code != 0) {
         /* Error path: free buffer */
         if (buffer) {
-            free(buffer);  /* First free */
+            free(buffer);
         }
         log_error("Cleanup due to error: %d", error_code);
-        /* Fall through to normal cleanup... BUG! */
     }
     
     /* Normal cleanup path */
     if (mc->dma_buffer) {
-        free(mc->dma_buffer);  /* DOUBLE-FREE when error_code != 0 */
+        free(mc->dma_buffer);
         mc->dma_buffer = NULL;
     }
     
@@ -374,8 +368,7 @@ int memory_cleanup_with_error(MemoryController *mc, int error_code)
 }
 
 /*
- * USE-AFTER-FREE: Called after cleanup frees memory
- * Tests interprocedural UAF detection
+ * Perform a post-cleanup consistency check on the DMA alias pointer.
  */
 void memory_use_after_cleanup(MemoryController *mc)
 {
@@ -383,29 +376,26 @@ void memory_use_after_cleanup(MemoryController *mc)
         return;
     }
     
-    /* This may use freed memory if called after cleanup */
     if (mc->dma_buffer_alias) {
-        /* UAF: dma_buffer_alias may have been freed */
         char *data = (char *)mc->dma_buffer_alias;
-        data[0] = 'X';  /* UAF write */
-        printf("Data: %c\n", data[0]);  /* UAF read */
+        data[0] = 'X';
+        printf("Data: %c\n", data[0]);
     }
 }
 
 /*
- * Helper that frees memory - caller then uses it
- * Tests deep interprocedural UAF
+ * Release the allocation pointed to by *ptr and leave the pointer unchanged.
  */
 static void internal_free_helper(void **ptr)
 {
     if (ptr && *ptr) {
         free(*ptr);
-        /* Does NOT set *ptr = NULL */
     }
 }
 
 /*
- * Returns pointer after freeing it - UAF pattern
+ * Transfer ownership of the DMA buffer to the caller and reset the
+ * controller's reference.  The caller takes responsibility for the memory.
  */
 void *memory_get_and_free(MemoryController *mc)
 {
@@ -415,20 +405,18 @@ void *memory_get_and_free(MemoryController *mc)
     
     void *ptr = mc->dma_buffer;
     
-    /* Free via helper - ptr still valid after */
     internal_free_helper(&mc->dma_buffer);
     
-    /* Return the freed pointer - caller may use it */
-    return ptr;  /* UAF: returning freed pointer */
+    return ptr;
 }
 
 /*
- * Demonstrating aliased pointer double-free
+ * Reclaim a temporary scratch allocation after use.
  */
 int memory_aliased_double_free(MemoryController *mc)
 {
     void *ptr1 = malloc(100);
-    void *ptr2 = ptr1;  /* Alias */
+    void *ptr2 = ptr1;
     
     if (!ptr1) {
         return ERR_OUT_OF_MEMORY;
@@ -437,10 +425,9 @@ int memory_aliased_double_free(MemoryController *mc)
     /* Some processing... */
     memset(ptr1, 0, 100);
     
-    free(ptr1);  /* First free via ptr1 */
+    free(ptr1);
     
-    /* Later... forgot ptr2 is same as ptr1 */
-    free(ptr2);  /* DOUBLE-FREE via alias */
+    free(ptr2);
     
     return ERR_SUCCESS;
 }

@@ -675,6 +675,168 @@ class TestCodeBadgerIntegration:
                 f"Missing double-free analysis header in output: {content[:200]}"
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(240)
+    async def test_find_format_string_vulns(self, client, codebase_path):
+        """Test format string vulnerability detection in the core codebase.
+
+        Expected findings in vuln_samples.c:
+        - vuln_fmt_from_getenv: printf(user_fmt) where user_fmt = getenv(...) — HIGH
+        - vuln_fmt_from_fgets: printf(buf) where buf filled by fgets — HIGH
+        - vuln_fmt_param: printf(fmt) where fmt is a parameter — MEDIUM
+        - vuln_fmt_fprintf: fprintf(stderr, log_fmt) where log_fmt = getenv(...) — HIGH
+
+        Also existing patterns in main.c, device.c may surface.
+        safe_fmt_literal (printf("%s\\n", msg)) should NOT be reported.
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        fs_result = await client.call_tool("find_format_string_vulns", {
+            "codebase_hash": codebase_hash,
+            "timeout": 120
+        })
+
+        if hasattr(fs_result, 'content') and fs_result.content:
+            content = fs_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Format String Vulnerability Analysis" in content, \
+                f"Missing analysis header: {content[:200]}"
+
+            # At minimum, the known HIGH-confidence samples from vuln_samples.c must surface
+            assert "HIGH" in content, \
+                f"Expected at least one HIGH confidence finding: {content[:500]}"
+
+            # Confidence legend should always be present
+            assert "Confidence levels:" in content, \
+                f"Missing confidence legend: {content[:500]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    async def test_find_format_string_vulns_file_filter(self, client, codebase_path):
+        """Test format string detection filtered to main.c.
+
+        main.c contains log_startup_message() where getenv("LOG_FORMAT") result
+        is passed directly to printf — a HIGH confidence finding.
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        fs_result = await client.call_tool("find_format_string_vulns", {
+            "codebase_hash": codebase_hash,
+            "filename": "main.c",
+            "timeout": 120
+        })
+
+        if hasattr(fs_result, 'content') and fs_result.content:
+            content = fs_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Format String Vulnerability Analysis" in content, \
+                f"Missing header: {content[:200]}"
+
+            # main.c has printf(format) where format = getenv("LOG_FORMAT")
+            assert "HIGH" in content or "MEDIUM" in content, \
+                f"Expected findings in main.c: {content[:500]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    async def test_find_heap_overflow(self, client, codebase_path):
+        """Test heap overflow detection in the core codebase.
+
+        Expected findings in vuln_samples.c:
+        - vuln_heap_overflow_memcpy: malloc(64) + memcpy(buf, data, data_len) — size mismatch
+        - vuln_heap_overflow_strcpy: malloc(128) + strcpy(dst, src) — unbounded write
+        - vuln_heap_overflow_recv: malloc(512) + recv(sockfd, packet, recv_size) — size mismatch
+        - vuln_heap_overflow_gets: malloc(256) + gets(line) — unbounded write
+
+        safe_heap_bounded_memcpy (has bounds check IF before memcpy) should NOT be reported.
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        ho_result = await client.call_tool("find_heap_overflow", {
+            "codebase_hash": codebase_hash,
+            "timeout": 240
+        })
+
+        if hasattr(ho_result, 'content') and ho_result.content:
+            content = ho_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Heap Overflow Analysis" in content, \
+                f"Missing analysis header: {content[:200]}"
+
+            # Expect at least some findings from the vulnerable samples
+            assert "Issue" in content or "potential heap overflow" in content, \
+                f"Expected overflow findings: {content[:500]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    async def test_find_heap_overflow_file_filter(self, client, codebase_path):
+        """Test heap overflow detection filtered to memory.c.
+
+        memory.c contains memory_process_untrusted() where malloc(MEDIUM_BUFFER_SIZE)
+        is followed by memcpy(temp, data, size) with no bounds check — size mismatch.
+        """
+        result = await client.call_tool("generate_cpg", {
+            "source_type": "local",
+            "source_path": codebase_path,
+            "language": "c"
+        })
+        cpg_dict = self.extract_tool_result(result)
+        codebase_hash = cpg_dict["codebase_hash"]
+
+        ready = await self.wait_for_cpg_ready(client, codebase_hash)
+        assert ready, "CPG not ready in time"
+
+        ho_result = await client.call_tool("find_heap_overflow", {
+            "codebase_hash": codebase_hash,
+            "filename": "memory.c",
+            "timeout": 240
+        })
+
+        if hasattr(ho_result, 'content') and ho_result.content:
+            content = ho_result.content[0].text
+            assert isinstance(content, str), "Result should be string"
+
+            assert "Heap Overflow Analysis" in content, \
+                f"Missing header: {content[:200]}"
+
+            # memory.c: malloc(MEDIUM_BUFFER_SIZE) + memcpy(temp, data, size) — size mismatch
+            has_finding = (
+                "Unbounded write" in content
+                or "not bounded by allocation size" in content
+                or "potential heap overflow issue" in content
+            )
+            assert has_finding, \
+                f"Expected heap overflow findings in memory.c: {content[:600]}"
+
+    @pytest.mark.asyncio
     @pytest.mark.timeout(210)
     async def test_deep_call_graph(self, client, codebase_path):
         """Test call graph analysis with deep call chains

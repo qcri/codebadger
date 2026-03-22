@@ -38,36 +38,45 @@
     "realpath", "popen", "fdopen", "tmpfile", "dlopen"
   )
 
+  // Memoize findEntryPoint results — called once per finding, expensive without cache
+  val entryPointCache = mutable.Map[String, Option[String]]()
+
   /** Check if a method is transitively reachable from external input.
     * BFS-walks callers up to maxDepth levels.
     * Returns Some(entry_function_name) if reachable, None otherwise.
+    * Results are memoized to avoid redundant BFS across multiple findings.
     */
   def findEntryPoint(methodName: String, maxDepth: Int = 10): Option[String] = {
-    var visited = Set[String]()
-    var frontier = List(methodName)
-    var depth = 0
+    entryPointCache.getOrElseUpdate(methodName, {
+      var visited = Set[String]()
+      var frontier = List(methodName)
+      var depth = 0
+      var result: Option[String] = None
 
-    while (depth < maxDepth && frontier.nonEmpty) {
-      val nextFrontier = mutable.ListBuffer[String]()
-      frontier.foreach { current =>
-        if (!visited.contains(current)) {
-          visited += current
-          val hasExtInput = cpg.method.name(current).l.exists { m =>
-            m.call.l.exists(c => externalInputFunctions.contains(c.name))
+      while (depth < maxDepth && frontier.nonEmpty && result.isEmpty) {
+        val nextFrontier = mutable.ListBuffer[String]()
+        frontier.foreach { current =>
+          if (!visited.contains(current) && result.isEmpty) {
+            visited += current
+            val hasExtInput = cpg.method.name(current).l.exists { m =>
+              m.call.l.exists(c => externalInputFunctions.contains(c.name))
+            }
+            if (hasExtInput) result = Some(current)
+            else {
+              val callers = cpg.method.name(current).l
+                .flatMap(_.callIn.l)
+                .map(_.method.name)
+                .distinct
+                .filterNot(visited.contains)
+              nextFrontier ++= callers
+            }
           }
-          if (hasExtInput) return Some(current)
-          val callers = cpg.method.name(current).l
-            .flatMap(_.callIn.l)
-            .map(_.method.name)
-            .distinct
-            .filterNot(visited.contains)
-          nextFrontier ++= callers
         }
+        frontier = nextFrontier.toList
+        depth += 1
       }
-      frontier = nextFrontier.toList
-      depth += 1
-    }
-    None
+      result
+    })
   }
 
   output.append("Use-After-Free Analysis (Deep Interprocedural)\n")
@@ -133,11 +142,21 @@
             if (callLine > freeLine && !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*")) {
               val reassignedBefore = reassignmentLines.exists(rl => rl > freeLine && rl < callLine)
               
-              // Check for early return between free and usage
-              // Note: return statements are Return nodes in Joern's CPG, not Call nodes
+              // Check for an unconditional early return between free and usage.
+              // A return is only a real guard when it is NOT nested inside a control
+              // structure (loop/if/switch) that starts AFTER the free — because such a
+              // return can be bypassed (e.g. loop body may not execute every iteration).
               val hasEarlyReturn = method.ast.isReturn.l.exists { ret =>
                 val retLine = ret.lineNumber.getOrElse(-1)
-                retLine > freeLine && retLine < callLine
+                retLine > freeLine && retLine < callLine && {
+                  val nestedInControlStructure = method.controlStructure.l.exists { cs =>
+                    val csStart = cs.lineNumber.getOrElse(-1)
+                    val csLines = cs.ast.lineNumber.l.filter(_ > 0)
+                    val csEnd   = if (csLines.nonEmpty) csLines.max else csStart
+                    csStart > freeLine && csStart <= retLine && csEnd >= retLine
+                  }
+                  !nestedInControlStructure
+                }
               }
               
               // Check if free and usage are in mutually exclusive if/else branches
@@ -222,14 +241,27 @@
           val sources = List(freedPtrNode).collect { case cfgNode: CfgNode => cfgNode }
           
           if (sources.nonEmpty) {
-            // Find usages of identifiers with the same name across the codebase
-            // These could be parameters in callees that receive the freed pointer
+            // Find usages of identifiers with the same name — scoped to the freeing
+            // method and its direct callees only.  Scanning the whole codebase for a
+            // common name like "ptr" produces thousands of unrelated nodes and makes
+            // reachableByFlows() extremely slow with many false positives.
+            val directCalleeNames = method.call.l
+              .filterNot(_.name.startsWith("<operator>"))
+              .map(_.name)
+              .distinct
+              .toSet
+
             val sameNameUsages = cpg.identifier.name(freedPtr).l
               .filter { id =>
-                val idLine = id.lineNumber.getOrElse(-1)
-                val idFile = id.file.name.headOption.getOrElse("")
-                // Skip usages in the same method at/before the free
-                !(idFile == freeFile && id.method.name == methodName && idLine <= freeLine)
+                val idLine    = id.lineNumber.getOrElse(-1)
+                val idFile    = id.file.name.headOption.getOrElse("")
+                val idMethod  = id.method.name
+                // Keep: in a direct callee, or in same method AFTER the free
+                val inCallee  = directCalleeNames.contains(idMethod)
+                val postFreeInSameMethod = idFile == freeFile && idMethod == methodName && idLine > freeLine
+                (inCallee || postFreeInSameMethod) &&
+                  // Exclude the free call itself
+                  !(idFile == freeFile && idMethod == methodName && idLine <= freeLine)
               }
               .collect { case cfgNode: CfgNode => cfgNode }
             

@@ -400,7 +400,6 @@ Examples:
         source_path="https://github.com/joernio/sample-repo",
         language="java"
     )""",
-        timeout=600,
     )
     async def generate_cpg(
         source_type: Annotated[str, Field(description="Either 'local' or 'github'")],
@@ -642,7 +641,6 @@ Notes:
 
 Examples:
     get_cpg_status(codebase_hash="abc123456789")""",
-        timeout=30,
     )
     def get_cpg_status(
         codebase_hash: Annotated[str, Field(description="The hash identifier of the codebase")]

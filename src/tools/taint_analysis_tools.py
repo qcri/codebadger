@@ -423,7 +423,6 @@ Notes:
 Examples:
     find_taint_sources(codebase_hash="abc", language="c")
     find_taint_sources(codebase_hash="abc", source_patterns=["read_from_socket"])""",
-        timeout=120,
     )
     def find_taint_sources(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -550,7 +549,6 @@ Notes:
 Examples:
     find_taint_sinks(codebase_hash="abc", language="c")
     find_taint_sinks(codebase_hash="abc", sink_patterns=["custom_exec"])""",
-        timeout=120,
     )
     def find_taint_sinks(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -700,7 +698,6 @@ Examples:
     # Manual mode — specific source and sink
     find_taint_flows(codebase_hash="...", source_location="main.c:42", sink_location="utils.c:100")
     find_taint_flows(codebase_hash="...", source_node_id=12345, sink_node_id=67890)""",
-        timeout=300,
     )
     def find_taint_flows(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -936,7 +933,6 @@ Examples:
     get_program_slice(codebase_hash="abc", location="main.c:42")
     get_program_slice(codebase_hash="abc", location="parser.c:500:memcpy", direction="backward", max_depth=3)
     get_program_slice(codebase_hash="abc", location="module/file.c:100", direction="forward")""",
-        timeout=300,
     )
     def get_program_slice(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -1051,7 +1047,6 @@ Notes:
 
 Examples:
     get_variable_flow(codebase_hash="abc", location="main.c:50", variable="len", direction="backward")""",
-        timeout=120,
     )
     def get_variable_flow(
         codebase_hash: str,
@@ -1165,7 +1160,6 @@ Notes:
     - Deep interprocedural analysis can be slow (~2 min for large codebases).
     - Use get_program_slice to understand control flow around specific locations.
     - Use find_taint_flows for alternative dataflow analysis approach.""",
-        timeout=300,
     )
     def find_use_after_free(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -1251,7 +1245,6 @@ Returns:
     - Each potential double-free issue with pointer name
     - First and second free locations with [file:line]
     - Flow type (same-ptr, alias, or [CROSS-FUNC])""",
-        timeout=300,
     )
     def find_double_free(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -1348,7 +1341,6 @@ Notes:
     - Includes deep interprocedural analysis using Joern's dataflow engine.
     - Use get_program_slice for deeper control-flow context around specific locations.
     - Use find_taint_flows to check if allocation arguments come from external input.""",
-        timeout=300,
     )
     def find_null_pointer_deref(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -1447,7 +1439,6 @@ Notes:
     - Includes deep interprocedural analysis using Joern's dataflow engine.
     - Use get_program_slice for deeper control-flow context around specific locations.
     - Use find_taint_flows to check if arithmetic operands come from external input.""",
-        timeout=300,
     )
     def find_integer_overflow(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -1504,4 +1495,165 @@ Notes:
             return f"Validation Error: {str(e)}"
         except Exception as e:
             logger.error(f"Unexpected error detecting integer overflow: {e}", exc_info=True)
+            return f"Internal Error: {str(e)}"
+
+    @mcp.tool(
+        description="""Detect Format String vulnerabilities (CWE-134) where a non-literal value is used as a printf-family format argument.
+
+Analyzes the codebase for calls to format-string functions (printf, fprintf, sprintf,
+snprintf, syslog, err, warn, etc.) where the format argument is not a string literal.
+
+Detection:
+- HIGH confidence: format argument is a variable assigned from a known taint source
+  (getenv, fgets, read, recv, etc.) in the same function
+- MEDIUM confidence: format argument is a variable, parameter, or computed expression
+
+Functions checked: printf, vprintf, fprintf, vfprintf, dprintf, sprintf, vsprintf,
+snprintf, vsnprintf, syslog, vsyslog, err, errx, warn, warnx, asprintf, vasprintf
+
+Args:
+    codebase_hash: The codebase hash from generate_cpg.
+    filename: Optional filename regex to filter results (e.g., 'logger.c').
+    limit: Maximum results to return (default 100).
+    timeout: Query timeout in seconds (default 120).
+
+Returns:
+    Human-readable text showing each potential format string issue with:
+    - Location [file:line] and function name
+    - The non-literal format argument expression
+    - Confidence level and reasoning
+
+Examples:
+    find_format_string_vulns(codebase_hash="abc")
+    find_format_string_vulns(codebase_hash="abc", filename="log.c")""",
+    )
+    def find_format_string_vulns(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
+        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 120,
+    ) -> str:
+        """Detect potential format string vulnerabilities in the codebase."""
+        try:
+            validate_codebase_hash(codebase_hash)
+
+            codebase_tracker = services["codebase_tracker"]
+            query_executor = services["query_executor"]
+
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info or not codebase_info.cpg_path:
+                raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first using generate_cpg.")
+
+            cache_params = {"filename": filename, "limit": limit}
+
+            def _execute():
+                query = QueryLoader.load(
+                    "format_string",
+                    filename=filename or "",
+                    limit=limit,
+                )
+                result = query_executor.execute_query(
+                    codebase_hash=codebase_hash,
+                    cpg_path=codebase_info.cpg_path,
+                    query=query,
+                    timeout=timeout,
+                )
+                if not result.success:
+                    return f"Error: {result.error}"
+                if isinstance(result.data, str):
+                    return result.data.strip()
+                elif isinstance(result.data, list) and len(result.data) > 0:
+                    output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+                    return output.strip()
+                else:
+                    return f"Query returned unexpected format: {type(result.data)}"
+
+            return _cached_taint_query(services, "find_format_string_vulns", codebase_hash, cache_params, _execute)
+
+        except ValidationError as e:
+            logger.error(f"Error detecting format string vulnerabilities: {e}")
+            return f"Validation Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Unexpected error detecting format string vulnerabilities: {e}", exc_info=True)
+            return f"Internal Error: {str(e)}"
+
+    @mcp.tool(
+        description="""Detect Heap Overflow vulnerabilities (CWE-122) where a write to a heap buffer exceeds its allocated size.
+
+Analyzes the codebase for pairs of (allocation, write) where the write may exceed
+the allocated buffer size:
+1. **Unbounded writes**: strcpy, strcat, gets, sprintf, vsprintf writing to a malloc'd buffer
+   (no size argument — always dangerous)
+2. **Size-mismatched writes**: memcpy, memmove, read, recv with a write size that is not
+   bounded by or equal to the allocation size and no prior bounds check
+
+Filters out:
+- Writes guarded by a bounds check (if comparison) before the write
+- Writes where the size expression matches the allocation size expression
+- Buffer reassignments between allocation and write
+- Writes in mutually exclusive branches from the allocation
+
+Args:
+    codebase_hash: The codebase hash from generate_cpg.
+    filename: Optional filename regex to filter results (e.g., 'net.c').
+    limit: Maximum results to return (default 100).
+    timeout: Query timeout in seconds (default 240).
+
+Returns:
+    Human-readable text showing each potential heap overflow with:
+    - Allocation site [file:line] with buffer name and size expression
+    - Dangerous write(s) [file:line] with write size and overflow reason
+
+Examples:
+    find_heap_overflow(codebase_hash="abc")
+    find_heap_overflow(codebase_hash="abc", filename="buffer.c")""",
+    )
+    def find_heap_overflow(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
+        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
+    ) -> str:
+        """Detect potential heap overflow vulnerabilities in the codebase."""
+        try:
+            validate_codebase_hash(codebase_hash)
+
+            codebase_tracker = services["codebase_tracker"]
+            query_executor = services["query_executor"]
+
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info or not codebase_info.cpg_path:
+                raise ValidationError(f"CPG not found for codebase {codebase_hash}. Generate it first using generate_cpg.")
+
+            cache_params = {"filename": filename, "limit": limit}
+
+            def _execute():
+                query = QueryLoader.load(
+                    "heap_overflow",
+                    filename=filename or "",
+                    limit=limit,
+                )
+                result = query_executor.execute_query(
+                    codebase_hash=codebase_hash,
+                    cpg_path=codebase_info.cpg_path,
+                    query=query,
+                    timeout=timeout,
+                )
+                if not result.success:
+                    return f"Error: {result.error}"
+                if isinstance(result.data, str):
+                    return result.data.strip()
+                elif isinstance(result.data, list) and len(result.data) > 0:
+                    output = result.data[0] if isinstance(result.data[0], str) else str(result.data[0])
+                    return output.strip()
+                else:
+                    return f"Query returned unexpected format: {type(result.data)}"
+
+            return _cached_taint_query(services, "find_heap_overflow", codebase_hash, cache_params, _execute)
+
+        except ValidationError as e:
+            logger.error(f"Error detecting heap overflow: {e}")
+            return f"Validation Error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Unexpected error detecting heap overflow: {e}", exc_info=True)
             return f"Internal Error: {str(e)}"

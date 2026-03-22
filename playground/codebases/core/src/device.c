@@ -373,9 +373,6 @@ static int device_internal_finalize(DeviceManager *dm)
     return ERR_SUCCESS;
 }
 
-/*
- * DEEP CALL CHAIN - Level 5
- */
 int device_finalize_init(DeviceManager *dm)
 {
     if (!dm) {
@@ -386,9 +383,6 @@ int device_finalize_init(DeviceManager *dm)
     return device_internal_finalize(dm);
 }
 
-/*
- * DEEP CALL CHAIN - Level 4
- */
 int device_start(DeviceManager *dm)
 {
     if (!dm) {
@@ -399,9 +393,6 @@ int device_start(DeviceManager *dm)
     return device_finalize_init(dm);
 }
 
-/*
- * DEEP CALL CHAIN - Level 3
- */
 int device_register_handlers(DeviceManager *dm)
 {
     if (!dm) {
@@ -423,9 +414,6 @@ int device_register_handlers(DeviceManager *dm)
     return device_start(dm);
 }
 
-/*
- * DEEP CALL CHAIN - Level 2
- */
 int device_setup_io(DeviceManager *dm, MemoryController *mc)
 {
     if (!dm) {
@@ -460,9 +448,6 @@ int device_setup_io(DeviceManager *dm, MemoryController *mc)
     return device_register_handlers(dm);
 }
 
-/*
- * DEEP CALL CHAIN - Level 1
- */
 int device_configure(DeviceManager *dm, ConfigContext *cfg)
 {
     if (!dm) {
@@ -484,12 +469,6 @@ int device_configure(DeviceManager *dm, ConfigContext *cfg)
     return device_setup_io(dm, dm->memory);
 }
 
-/*
- * DEEP CALL CHAIN - Level 0 (entry point)
- * Call chain: device_init -> device_configure -> device_setup_io 
- *             -> device_register_handlers -> device_start 
- *             -> device_finalize_init -> device_internal_finalize
- */
 int device_init(DeviceManager *dm)
 {
     if (!dm) {
@@ -536,8 +515,7 @@ int device_dma_write(Device *dev, MemoryController *mc,
 }
 
 /*
- * VULNERABLE: Process untrusted data from device
- * Cross-module taint flow to memory operations
+ * Stage and process an incoming data block from a device I/O write.
  */
 int device_process_untrusted_data(Device *dev, void *data, size_t size)
 {
@@ -545,11 +523,9 @@ int device_process_untrusted_data(Device *dev, void *data, size_t size)
         return ERR_INVALID_PARAM;
     }
     
-    /* Allocate local buffer */
     char local_buffer[SMALL_BUFFER_SIZE];
     
-    /* VULNERABLE: No size check before copy */
-    memcpy(local_buffer, data, size);  /* BUFFER OVERFLOW */
+    memcpy(local_buffer, data, size);
     
     log_debug("Device %s processed %zu bytes", dev->name, size);
     
@@ -557,8 +533,8 @@ int device_process_untrusted_data(Device *dev, void *data, size_t size)
 }
 
 /*
- * VULNERABLE: Handle command from network
- * Cross-module taint flow: network -> device -> command execution
+ * Read a management command from the network peer and route it
+ * to the appropriate device handler.
  */
 int device_handle_network_command(Device *dev, NetworkContext *net, int conn_id)
 {
@@ -568,7 +544,6 @@ int device_handle_network_command(Device *dev, NetworkContext *net, int conn_id)
     
     char command_buffer[MEDIUM_BUFFER_SIZE];
     
-    /* TAINT SOURCE: Read from network */
     int n = network_read_command(net, conn_id, 
                                  command_buffer, sizeof(command_buffer));
     if (n <= 0) {
@@ -577,19 +552,17 @@ int device_handle_network_command(Device *dev, NetworkContext *net, int conn_id)
     
     /* Process command based on device type */
     if (strncmp(command_buffer, "exec:", 5) == 0) {
-        /* VULNERABLE SINK: Execute command */
-        system(command_buffer + 5);  /* COMMAND INJECTION */
+        system(command_buffer + 5);
     } else if (strncmp(command_buffer, "debug:", 6) == 0) {
-        /* VULNERABLE: Format string */
-        printf(command_buffer + 6);  /* FORMAT STRING */
+        printf(command_buffer + 6);
     }
     
     return ERR_SUCCESS;
 }
 
 /*
- * Cross-file vulnerability chain
- * This function ties together vulnerabilities across multiple modules
+ * Run the full receive-and-dispatch pipeline across network, memory,
+ * and command subsystems for a single connection event.
  */
 int device_full_vulnerability_chain(DeviceManager *dm, int conn_id)
 {
@@ -599,22 +572,18 @@ int device_full_vulnerability_chain(DeviceManager *dm, int conn_id)
     
     char buffer[NETWORK_BUFFER_SIZE];
     
-    /* Step 1: TAINT SOURCE from network */
     int n = network_recv_data(dm->network, conn_id, 
                               buffer, sizeof(buffer));
     if (n <= 0) {
         return ERR_IO_ERROR;
     }
     
-    /* Step 2: Pass tainted data to memory module */
+    /* Forward payload to the memory module for staging. */
     if (dm->memory) {
-        /* VULNERABLE: No size validation */
         memory_process_untrusted(dm->memory, buffer, n);
     }
     
-    /* Step 3: Also use as command (if it starts with "cmd:") */
     if (strncmp(buffer, "cmd:", 4) == 0) {
-        /* VULNERABLE SINK: Command injection */
         system(buffer + 4);
     }
     

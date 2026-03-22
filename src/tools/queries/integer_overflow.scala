@@ -48,35 +48,43 @@
     "realpath", "popen", "fdopen", "tmpfile", "dlopen"
   )
 
+  // Memoize findEntryPoint results — called once per finding, expensive without cache
+  val entryPointCache = mutable.Map[String, Option[String]]()
+
   /** Check if a method is transitively reachable from external input.
-    * BFS-walks callers up to maxDepth levels.
+    * BFS-walks callers up to maxDepth levels. Results are memoized.
     */
   def findEntryPoint(methodName: String, maxDepth: Int = 10): Option[String] = {
-    var visited = Set[String]()
-    var frontier = List(methodName)
-    var depth = 0
+    entryPointCache.getOrElseUpdate(methodName, {
+      var visited = Set[String]()
+      var frontier = List(methodName)
+      var depth = 0
+      var result: Option[String] = None
 
-    while (depth < maxDepth && frontier.nonEmpty) {
-      val nextFrontier = mutable.ListBuffer[String]()
-      frontier.foreach { current =>
-        if (!visited.contains(current)) {
-          visited += current
-          val hasExtInput = cpg.method.name(current).l.exists { m =>
-            m.call.l.exists(c => externalInputFunctions.contains(c.name))
+      while (depth < maxDepth && frontier.nonEmpty && result.isEmpty) {
+        val nextFrontier = mutable.ListBuffer[String]()
+        frontier.foreach { current =>
+          if (!visited.contains(current) && result.isEmpty) {
+            visited += current
+            val hasExtInput = cpg.method.name(current).l.exists { m =>
+              m.call.l.exists(c => externalInputFunctions.contains(c.name))
+            }
+            if (hasExtInput) result = Some(current)
+            else {
+              val callers = cpg.method.name(current).l
+                .flatMap(_.callIn.l)
+                .map(_.method.name)
+                .distinct
+                .filterNot(visited.contains)
+              nextFrontier ++= callers
+            }
           }
-          if (hasExtInput) return Some(current)
-          val callers = cpg.method.name(current).l
-            .flatMap(_.callIn.l)
-            .map(_.method.name)
-            .distinct
-            .filterNot(visited.contains)
-          nextFrontier ++= callers
         }
+        frontier = nextFrontier.toList
+        depth += 1
       }
-      frontier = nextFrontier.toList
-      depth += 1
-    }
-    None
+      result
+    })
   }
 
   // --- Helper functions ---
@@ -290,10 +298,15 @@
                 }
               }
 
-              // Also suppress array index arithmetic inside FOR loops that bound the index variable
+              // Suppress array index arithmetic when the index access falls INSIDE a FOR
+              // loop that names the operand in its header.  Previous code only checked
+              // forLine <= indexLine, which is true even when the index access is AFTER
+              // the loop ends.  Now we also verify indexLine <= forEnd.
               val isInBoundedLoop = method.controlStructure.filter(_.controlStructureType == "FOR").l.exists { forStmt =>
-                val forLine = forStmt.lineNumber.getOrElse(-1)
-                forLine > 0 && forLine <= indexLine && {
+                val forStart = forStmt.lineNumber.getOrElse(-1)
+                val forLines = forStmt.ast.lineNumber.l.filter(_ > 0)
+                val forEnd   = if (forLines.nonEmpty) forLines.max else forStart
+                forStart > 0 && forStart <= indexLine && forEnd >= indexLine && {
                   val forCode = forStmt.code
                   operandNames.exists(n => n.length > 1 && forCode.contains(n))
                 }

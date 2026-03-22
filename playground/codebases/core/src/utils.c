@@ -1,8 +1,8 @@
 /*
  * utils.c - Common utilities implementation
  * 
- * Contains bounds checking examples (both with and without proper checks)
- * for testing find_bounds_checks tool.
+ * Provides string and buffer utilities, bounds-checked wrappers, and
+ * the logging helpers used throughout the codebase.
  */
 
 #include <stdio.h>
@@ -67,7 +67,7 @@ char *safe_strdup(const char *src)
 }
 
 /*
- * Buffer copy WITH proper bounds checking - SAFE
+ * Copy src into dest, returning an error if src_size exceeds dest_size.
  */
 int buffer_copy_checked(void *dest, size_t dest_size, 
                         const void *src, size_t src_size)
@@ -76,7 +76,6 @@ int buffer_copy_checked(void *dest, size_t dest_size,
         return ERR_INVALID_PARAM;
     }
     
-    /* Proper bounds check BEFORE access */
     if (src_size > dest_size) {
         return ERR_BUFFER_OVERFLOW;
     }
@@ -86,13 +85,13 @@ int buffer_copy_checked(void *dest, size_t dest_size,
 }
 
 /*
- * Buffer copy WITHOUT bounds checking - VULNERABLE
- * find_bounds_checks should flag this
+ * Copy src into dest without constraining to dest's declared capacity.
+ * Returns ERR_SUCCESS; callers are responsible for ensuring dest is large enough.
  */
 int buffer_copy_unchecked(void *dest, const void *src, size_t size)
 {
     /* No bounds check - directly copies */
-    memcpy(dest, src, size);  /* VULNERABLE: no size validation for dest */
+    memcpy(dest, src, size);
     return ERR_SUCCESS;
 }
 
@@ -107,7 +106,7 @@ void buffer_zero(void *buf, size_t size)
 }
 
 /*
- * Validate buffer access bounds - PROPER CHECK
+ * Return true if a [offset, offset+access_size) window fits within buf_size.
  */
 bool validate_buffer_access(const void *buf, size_t buf_size, 
                            size_t offset, size_t access_size)
@@ -116,7 +115,6 @@ bool validate_buffer_access(const void *buf, size_t buf_size,
         return false;
     }
     
-    /* Check for overflow in addition */
     if (offset > buf_size || access_size > buf_size) {
         return false;
     }
@@ -129,29 +127,25 @@ bool validate_buffer_access(const void *buf, size_t buf_size,
 }
 
 /*
- * Process buffer WITH bounds check - SAFE pattern
- * find_bounds_checks should find the check
+ * Write to buffer[index] after verifying index is in range.
  */
 int process_with_bounds_check(char *buffer, size_t len, int index)
 {
-    /* Check BEFORE access */
     if (index < 0 || (size_t)index >= len) {
         return ERR_BUFFER_OVERFLOW;
     }
     
-    buffer[index] = 'X';  /* Safe - bounds checked above */
+    buffer[index] = 'X';
     return ERR_SUCCESS;
 }
 
 /*
- * Process buffer WITHOUT bounds check first - VULNERABLE
- * find_bounds_checks should flag late check
+ * Write to buffer[index], then validate the index.
  */
 int process_without_bounds_check(char *buffer, size_t len, int index)
 {
-    buffer[index] = 'Y';  /* VULNERABLE: check comes AFTER access */
+    buffer[index] = 'Y';
     
-    /* Late check - too late! */
     if (index < 0 || (size_t)index >= len) {
         return ERR_BUFFER_OVERFLOW;
     }
@@ -164,21 +158,20 @@ int process_without_bounds_check(char *buffer, size_t len, int index)
  */
 static void helper_array_write(int *arr, int index, int value)
 {
-    arr[index] = value;  /* VULNERABLE: no bounds check */
+    arr[index] = value;
 }
 
 /*
- * Caller that doesn't check before calling helper
+ * Write value to arr[index] without prior range validation.
  */
 int process_array_unchecked(int *arr, size_t arr_size, int index, int value)
 {
-    /* No validation of index against arr_size */
-    helper_array_write(arr, index, value);  /* Interprocedural vulnerability */
+    helper_array_write(arr, index, value);
     return ERR_SUCCESS;
 }
 
 /*
- * Caller that checks before calling helper - SAFE
+ * Validate index against arr_size, then write value to arr[index].
  */
 int process_array_checked(int *arr, size_t arr_size, int index, int value)
 {
@@ -186,7 +179,7 @@ int process_array_checked(int *arr, size_t arr_size, int index, int value)
         return ERR_BUFFER_OVERFLOW;
     }
     
-    helper_array_write(arr, index, value);  /* Safe - checked above */
+    helper_array_write(arr, index, value);
     return ERR_SUCCESS;
 }
 

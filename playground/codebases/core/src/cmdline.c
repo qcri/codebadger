@@ -1,8 +1,8 @@
 /*
  * cmdline.c - Command line processing
  * 
- * Contains command injection vulnerability patterns and
- * demonstrates taint flow from user input to system().
+ * Parses and dispatches shell commands entered interactively or
+ * read from a script file.
  */
 
 #include <stdio.h>
@@ -16,7 +16,8 @@
 #define MAX_ARGS 32
 
 /*
- * Read command from stdin - TAINT SOURCE
+ * Read a line of input from stdin into a heap-allocated buffer.
+ * Strips the trailing newline.  Caller must free the returned pointer.
  */
 char *cmdline_read_input(void)
 {
@@ -25,7 +26,6 @@ char *cmdline_read_input(void)
         return NULL;
     }
     
-    /* TAINT SOURCE: fgets reads user input */
     if (fgets(buffer, CMD_BUFFER_SIZE, stdin) == NULL) {
         free(buffer);
         return NULL;
@@ -41,7 +41,8 @@ char *cmdline_read_input(void)
 }
 
 /*
- * Read command from file - TAINT SOURCE
+ * Read the contents of filepath into a heap-allocated buffer.
+ * Caller must free the returned pointer.
  */
 char *cmdline_read_from_file(const char *filepath)
 {
@@ -56,7 +57,6 @@ char *cmdline_read_from_file(const char *filepath)
         return NULL;
     }
     
-    /* TAINT SOURCE: fread from file */
     size_t n = fread(buffer, 1, CMD_BUFFER_SIZE - 1, fp);
     buffer[n] = '\0';
     fclose(fp);
@@ -65,8 +65,8 @@ char *cmdline_read_from_file(const char *filepath)
 }
 
 /*
- * Sanitize input - removes shell metacharacters
- * This is a sanitizer that should break some taint flows
+ * Strip shell metacharacters from input, keeping only alphanumeric
+ * characters, spaces, and basic punctuation.
  */
 char *cmdline_sanitize(const char *input)
 {
@@ -95,8 +95,7 @@ char *cmdline_sanitize(const char *input)
 }
 
 /*
- * Execute command directly - VULNERABLE
- * Taint flow: input -> system() without sanitization
+ * Pass cmd directly to the shell without further processing.
  */
 int cmdline_execute_unsafe(const char *cmd)
 {
@@ -104,13 +103,11 @@ int cmdline_execute_unsafe(const char *cmd)
         return ERR_INVALID_PARAM;
     }
     
-    /* VULNERABLE SINK: system() with unsanitized input */
-    return system(cmd);  /* COMMAND INJECTION */
+    return system(cmd);
 }
 
 /*
- * Execute command with sanitization - SAFER
- * Taint flow broken by sanitizer
+ * Sanitize cmd before passing it to the shell.
  */
 int cmdline_execute_safe(const char *cmd)
 {
@@ -123,7 +120,6 @@ int cmdline_execute_safe(const char *cmd)
         return ERR_OUT_OF_MEMORY;
     }
     
-    /* Safer: sanitized before system() */
     int result = system(sanitized);
     
     free(sanitized);
@@ -131,8 +127,7 @@ int cmdline_execute_safe(const char *cmd)
 }
 
 /*
- * Build and execute command - multi-step taint flow
- * Demonstrates taint propagation through string building
+ * Append user_arg to base_cmd and execute the resulting string.
  */
 int cmdline_build_and_execute(const char *base_cmd, const char *user_arg)
 {
@@ -142,11 +137,9 @@ int cmdline_build_and_execute(const char *base_cmd, const char *user_arg)
     
     char full_cmd[CMD_BUFFER_SIZE];
     
-    /* Build command by concatenating user input */
     snprintf(full_cmd, sizeof(full_cmd), "%s %s", base_cmd, user_arg);
     
-    /* VULNERABLE: user_arg flows to system() */
-    return system(full_cmd);  /* COMMAND INJECTION via user_arg */
+    return system(full_cmd);
 }
 
 /*
@@ -194,8 +187,7 @@ void cmdline_free_args(char **argv, int argc)
 }
 
 /*
- * Execute with popen - VULNERABLE
- * Another command injection sink
+ * Open a pipe to cmd and return the read end for capturing output.
  */
 FILE *cmdline_popen_unsafe(const char *cmd)
 {
@@ -203,26 +195,22 @@ FILE *cmdline_popen_unsafe(const char *cmd)
         return NULL;
     }
     
-    /* VULNERABLE SINK: popen with user-controlled command */
-    return popen(cmd, "r");  /* COMMAND INJECTION */
+    return popen(cmd, "r");
 }
 
 /*
- * Read and execute interactive command - full taint flow
- * Flow: fgets() -> cmdline_build_and_execute() -> system()
+ * Display prompt, read one command from stdin, and execute it.
  */
 int cmdline_interactive_execute(const char *prompt)
 {
     printf("%s", prompt ? prompt : "> ");
     fflush(stdout);
     
-    /* TAINT SOURCE: Read from stdin */
     char *input = cmdline_read_input();
     if (!input) {
         return ERR_IO_ERROR;
     }
     
-    /* VULNERABLE: Execute without sanitization */
     int result = cmdline_execute_unsafe(input);
     
     free(input);
@@ -230,8 +218,8 @@ int cmdline_interactive_execute(const char *prompt)
 }
 
 /*
- * Process command file - multi-level taint flow
- * Flow: fread() -> parse -> foreach line -> system()
+ * Read filepath line by line and execute each non-comment line as a
+ * shell command.
  */
 int cmdline_process_command_file(const char *filepath)
 {
@@ -239,7 +227,6 @@ int cmdline_process_command_file(const char *filepath)
         return ERR_INVALID_PARAM;
     }
     
-    /* TAINT SOURCE: Read commands from file */
     char *content = cmdline_read_from_file(filepath);
     if (!content) {
         return ERR_IO_ERROR;
@@ -252,7 +239,6 @@ int cmdline_process_command_file(const char *filepath)
     while (line) {
         /* Skip empty lines and comments */
         if (line[0] != '\0' && line[0] != '#') {
-            /* VULNERABLE: Execute each line */
             cmdline_execute_unsafe(line);
         }
         line = strtok_r(NULL, "\n", &saveptr);
@@ -263,18 +249,16 @@ int cmdline_process_command_file(const char *filepath)
 }
 
 /*
- * Helper for sprintf vulnerability
- * Takes user format and data
+ * Format data into buf using the caller-supplied format string.
  */
 static void format_user_message(char *buf, size_t size, 
                                 const char *format, const char *data)
 {
-    /* VULNERABLE: sprintf with user-controlled format */
-    sprintf(buf, format, data);  /* FORMAT STRING if format is tainted */
+    sprintf(buf, format, data);
 }
 
 /*
- * Process user message with format - FORMAT STRING vulnerability
+ * Format user_data according to user_format and print the result.
  */
 int cmdline_format_message(const char *user_format, const char *user_data)
 {
@@ -284,7 +268,6 @@ int cmdline_format_message(const char *user_format, const char *user_data)
     
     char buffer[CMD_BUFFER_SIZE];
     
-    /* VULNERABLE: User controls the format string */
     format_user_message(buffer, sizeof(buffer), user_format, 
                        user_data ? user_data : "");
     
