@@ -15,14 +15,29 @@
 
   /** Check if two line numbers are in mutually exclusive branches of the same IF. */
   def areInMutuallyExclusiveBranches(method: Method, lineA: Int, lineB: Int): Boolean = {
-    method.controlStructure.filter(_.controlStructureType == "IF").l.exists { ifStmt =>
-      val children = ifStmt.astChildren.l
-      if (children.size >= 3) {
-        val thenLines = children(1).ast.lineNumber.l
-        val elseLines = children(2).ast.lineNumber.l
-        (thenLines.contains(lineA) && elseLines.contains(lineB)) ||
-        (elseLines.contains(lineA) && thenLines.contains(lineB))
-      } else false
+    method.ast.isControlStructure.l.exists { cs =>
+      cs.controlStructureType match {
+        case "IF" =>
+          val children = cs.astChildren.l
+          if (children.size >= 3) {
+            val thenLines = children(1).ast.lineNumber.l.toSet
+            val elseLines = children(2).ast.lineNumber.l.toSet
+            (thenLines.contains(lineA) && elseLines.contains(lineB)) ||
+            (elseLines.contains(lineA) && thenLines.contains(lineB))
+          } else false
+        case "SWITCH" =>
+          val switchLines = cs.ast.lineNumber.l.toSet
+          if (switchLines.contains(lineA) && switchLines.contains(lineB)) {
+            val caseLabels = cs.ast.isJumpTarget.lineNumber.l.sorted
+            if (caseLabels.size >= 2) {
+              def caseSegmentOf(line: Int): Int = caseLabels.lastIndexWhere(_ <= line)
+              val segA = caseSegmentOf(lineA)
+              val segB = caseSegmentOf(lineB)
+              segA >= 0 && segB >= 0 && segA != segB
+            } else false
+          } else false
+        case _ => false
+      }
     }
   }
 
