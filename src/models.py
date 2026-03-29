@@ -111,7 +111,7 @@ class JoernConfig:
     server_auth_username: Optional[str] = None
     server_auth_password: Optional[str] = None
     port_min: int = 13371
-    port_max: int = 13399
+    port_max: int = 13870
     server_init_sleep_time: float = 3.0
     server_startup_timeout: int = 120
     # HTTP Connection Pooling
