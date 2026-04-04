@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Joern server (container)
   codebadger-joern-server:

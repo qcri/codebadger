@@ -240,7 +240,31 @@ async def _generate_cpg_async(
 
         # Use Docker API to generate CPG inside container
         docker_client = docker.from_env()
-        container = docker_client.containers.get("codebadger-joern-server")
+        container_name = "codebadger-joern-server"
+        joern_server_manager = services.get("joern_server_manager")
+        if joern_server_manager:
+            container_name = joern_server_manager.container_name
+        try:
+            container = docker_client.containers.get(container_name)
+        except docker.errors.NotFound:
+            error_msg = (
+                f"Docker container '{container_name}' not found. "
+                f"Please start it with: docker compose up -d"
+            )
+            logger.error(error_msg)
+            codebase_tracker.update_codebase(
+                codebase_hash=codebase_hash,
+                metadata={"status": "failed", "error": error_msg}
+            )
+            return
+        except docker.errors.DockerException as e:
+            error_msg = f"Docker error: {e}"
+            logger.error(error_msg)
+            codebase_tracker.update_codebase(
+                codebase_hash=codebase_hash,
+                metadata={"status": "failed", "error": error_msg}
+            )
+            return
 
         # Get language-specific command
         language_commands = {
@@ -523,7 +547,7 @@ Examples:
                 # Clone to playground/codebases/<hash>
                 if not os.path.exists(codebase_dir):
                     os.makedirs(codebase_dir, exist_ok=True)
-                    git_manager.clone_repository(
+                    await git_manager.clone_repository(
                         repo_url=source_path,
                         target_path=codebase_dir,
                         branch=branch,
