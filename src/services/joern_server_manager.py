@@ -98,7 +98,7 @@ class JoernServerManager:
             self._exec_ids[codebase_hash] = f"exec-{codebase_hash}"
             self._ports[codebase_hash] = port
 
-            logger.info(f"Joern server command executed, waiting for server to be ready on port {port}...")
+            logger.info(f"Joern server command executed, waiting for server to be ready at {config.joern.server_host}{port}...")
 
             # Wait for server to start (JVM + Scala REPL init can take >60s in Docker)
             startup_timeout = self.config.joern.server_startup_timeout if self.config else 120
