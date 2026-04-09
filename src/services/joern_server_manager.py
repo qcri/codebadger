@@ -11,9 +11,10 @@ import docker
 from docker.errors import DockerException, NotFound, APIError
 
 from .port_manager import PortManager
+from ..config import load_config
 
 logger = logging.getLogger(__name__)
-
+config = load_config("config.yaml")
 
 class JoernServerManager:
     """Manages individual Joern server instances running in Docker container using Docker Python API"""
@@ -168,7 +169,7 @@ class JoernServerManager:
             }
 
         client = JoernServerClient(
-            host="localhost",
+            host=config.joern.server_host,
             port=port,
             username=self.config.joern.server_auth_username if self.config else None,
             password=self.config.joern.server_auth_password if self.config else None,
@@ -275,7 +276,7 @@ class JoernServerManager:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex(('localhost', port))
+            result = sock.connect_ex((config.joern.server_host, port))
             sock.close()
             return result == 0
         except Exception as e:
@@ -347,14 +348,14 @@ class JoernServerManager:
                 # Try to connect to the port
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1)
-                result = sock.connect_ex(('localhost', port))
+                result = sock.connect_ex((config.joern.server_host, port))
                 sock.close()
 
                 if result == 0:
                     # Server port is open, now check HTTP
                     try:
                         import requests
-                        response = requests.get(f"http://localhost:{port}", timeout=2)
+                        response = requests.get(f"http://{config.joern.server_host}:{port}", timeout=2)
                         # Server responds (even 404 is OK - means it's up)
                         if response.status_code in [200, 404]:
                             server_responding = True
