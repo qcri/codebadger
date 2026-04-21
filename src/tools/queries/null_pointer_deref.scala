@@ -96,13 +96,11 @@
   output.append("=" * 60 + "\n\n")
 
   // Allocation functions that can return NULL
-  val allocFunctions = "malloc|calloc|realloc|strdup|strndup|aligned_alloc|reallocarray|fopen|fdopen|freopen|tmpfile|popen|dlopen|mmap|xmlMalloc|xmlMallocAtomic|xmlRealloc|xmlStrdup|xmlStrndup|xmlCharStrdup|xmlCharStrndup"
+  val allocFunctions = "malloc|calloc|realloc|strdup|strndup|aligned_alloc|reallocarray|fopen|fdopen|freopen|tmpfile|popen|dlopen|mmap"
 
   // Safe wrapper allocators that guarantee non-NULL (abort on failure)
   val safeWrappers = Set(
-    "xmalloc", "xcalloc", "xrealloc", "xstrdup", "xstrndup",
-    "g_malloc", "g_malloc0", "g_new", "g_new0", "g_strdup", "g_strndup",
-    "emalloc", "ecalloc", "erealloc", "estrdup"
+    "xmalloc", "xcalloc", "xrealloc", "xstrdup", "xstrndup"
   )
 
   // Find all allocation calls
@@ -191,7 +189,7 @@
               val callLine = call.lineNumber.getOrElse(-1)
               if (callLine > allocLine &&
                   !call.name.startsWith("<operator>") &&
-                  !call.name.matches("free|cfree|g_free|sizeof|typeof|__builtin_.*|assert|__assert_fail|exit|abort|_exit")) {
+                  !call.name.matches("free|cfree|sizeof|typeof|__builtin_.*|assert|__assert_fail|exit|abort|_exit")) {
                 val argsContainPtr = call.argument.code.l.exists { argCode =>
                   argCode == assignedPtr ||
                   argCode.startsWith(assignedPtr + "->") ||
@@ -461,7 +459,7 @@
       output.append("  - Dereferences guarded by if(ptr != NULL) checks\n")
       output.append("  - Dereferences after early return/exit on NULL\n")
       output.append("  - Pointer reassignments between allocation and use\n")
-      output.append("  - Safe wrapper allocators (xmalloc, g_malloc, etc.)\n")
+      output.append("  - Safe wrapper allocators (xmalloc, xcalloc, xrealloc, etc.)\n")
       output.append("  - Cross-function dereferences with NULL checks in callee\n")
     } else {
       output.append(s"Found ${npIssues.size} potential null pointer dereference issue(s):\n\n")

@@ -19,7 +19,7 @@
     * meaning they cannot both execute in the same control flow path.
     */
   def areInMutuallyExclusiveBranches(method: Method, lineA: Int, lineB: Int): Boolean = {
-    method.ast.isControlStructure.l.exists { cs =>
+    csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l).exists { cs =>
       cs.controlStructureType match {
         case "IF" =>
           val children = cs.astChildren.l
@@ -53,14 +53,10 @@
     "realpath", "popen", "fdopen", "tmpfile", "dlopen"
   )
 
-  // Memoize findEntryPoint results — called once per finding, expensive without cache
+  val csCache    = mutable.Map[String, List[ControlStructure]]()
+  val retCache   = mutable.Map[String, List[Return]]()
   val entryPointCache = mutable.Map[String, Option[String]]()
 
-  /** Check if a method is transitively reachable from external input.
-    * BFS-walks callers up to maxDepth levels.
-    * Returns Some(entry_function_name) if reachable, None otherwise.
-    * Results are memoized to avoid redundant BFS across multiple findings.
-    */
   def findEntryPoint(methodName: String, maxDepth: Int = 10): Option[String] = {
     entryPointCache.getOrElseUpdate(methodName, {
       var visited = Set[String]()
@@ -98,8 +94,8 @@
   output.append("=" * 60 + "\n\n")
   
   // Find all free() calls (and common variants)
-  val freeCalls = cpg.call.name("free|cfree|g_free|xmlFree|xsltFree.*").l
-  
+  val freeCalls = cpg.call.name("free|cfree").l
+
   val freeCallsFiltered = if (fileFilter.nonEmpty) {
     val pattern = pathBoundaryRegex(fileFilter)
     freeCalls.filter(_.file.name.headOption.exists(_.matches(pattern)))
@@ -154,17 +150,18 @@
           // === PHASE 1: Intraprocedural usages (same method) ===
           method.call.l.foreach { call =>
             val callLine = call.lineNumber.getOrElse(-1)
-            if (callLine > freeLine && !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*")) {
+            if (callLine > freeLine && !call.name.matches("free|cfree")) {
               val reassignedBefore = reassignmentLines.exists(rl => rl > freeLine && rl < callLine)
               
               // Check for an unconditional early return between free and usage.
               // A return is only a real guard when it is NOT nested inside a control
               // structure (loop/if/switch) that starts AFTER the free — because such a
               // return can be bypassed (e.g. loop body may not execute every iteration).
-              val hasEarlyReturn = method.ast.isReturn.l.exists { ret =>
+              val methodCss = csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l)
+              val hasEarlyReturn = retCache.getOrElseUpdate(method.fullName, method.ast.isReturn.l).exists { ret =>
                 val retLine = ret.lineNumber.getOrElse(-1)
                 retLine > freeLine && retLine < callLine && {
-                  val nestedInControlStructure = method.controlStructure.l.exists { cs =>
+                  val nestedInControlStructure = methodCss.exists { cs =>
                     val csStart = cs.lineNumber.getOrElse(-1)
                     val csLines = cs.ast.lineNumber.l.filter(_ > 0)
                     val csEnd   = if (csLines.nonEmpty) csLines.max else csStart
@@ -240,11 +237,20 @@
 
             method.call.l.foreach { call =>
               val callLine = call.lineNumber.getOrElse(-1)
-              if (callLine > aliasLine && !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*")) {
+              if (callLine > aliasLine && !call.name.matches("free|cfree")) {
                 val aliasReassignedBefore = aliasReassignmentLines.exists(rl => rl > aliasLine && rl < callLine)
-                val hasEarlyReturn = method.ast.isReturn.l.exists { ret =>
+                val methodCss2b = csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l)
+                val hasEarlyReturn = retCache.getOrElseUpdate(method.fullName, method.ast.isReturn.l).exists { ret =>
                   val retLine = ret.lineNumber.getOrElse(-1)
-                  retLine > freeLine && retLine < callLine
+                  retLine > freeLine && retLine < callLine && {
+                    val nested = methodCss2b.exists { cs =>
+                      val csStart = cs.lineNumber.getOrElse(-1)
+                      val csLines = cs.ast.lineNumber.l.filter(_ > 0)
+                      val csEnd   = if (csLines.nonEmpty) csLines.max else csStart
+                      csStart > freeLine && csStart <= retLine && csEnd >= retLine
+                    }
+                    !nested
+                  }
                 }
                 val inDifferentBranches = areInMutuallyExclusiveBranches(method, freeLine, callLine)
 
@@ -277,17 +283,23 @@
 
               method.call.l.foreach { call =>
                 val callLine = call.lineNumber.getOrElse(-1)
-                if (callLine > freeLine && !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*")) {
+                if (callLine > freeLine && !call.name.matches("free|cfree")) {
                   // Check if alias was reassigned between free and this specific usage
                   val aliasReassignedBefore = aliasReassignmentLines.exists(rl => rl > freeLine && rl < callLine)
 
-                  // Check for early return between free and usage
-                  val hasEarlyReturn = method.ast.isReturn.l.exists { ret =>
+                  val methodCss2a = csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l)
+                  val hasEarlyReturn = retCache.getOrElseUpdate(method.fullName, method.ast.isReturn.l).exists { ret =>
                     val retLine = ret.lineNumber.getOrElse(-1)
-                    retLine > freeLine && retLine < callLine
+                    retLine > freeLine && retLine < callLine && {
+                      val nested = methodCss2a.exists { cs =>
+                        val csStart = cs.lineNumber.getOrElse(-1)
+                        val csLines = cs.ast.lineNumber.l.filter(_ > 0)
+                        val csEnd   = if (csLines.nonEmpty) csLines.max else csStart
+                        csStart > freeLine && csStart <= retLine && csEnd >= retLine
+                      }
+                      !nested
+                    }
                   }
-
-                  // Check if free and usage are in mutually exclusive if/else branches
                   val inDifferentBranches = areInMutuallyExclusiveBranches(method, freeLine, callLine)
 
                   if (!aliasReassignedBefore && !hasEarlyReturn && !inDifferentBranches) {

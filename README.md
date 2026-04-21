@@ -2,6 +2,25 @@
 
 A containerized Model Context Protocol (MCP) server providing static code analysis using Joern's Code Property Graph (CPG) technology with support for Java, C/C++, JavaScript, Python, Go, Kotlin, C#, Ghidra, Jimple, PHP, Ruby, and Swift.
 
+## News
+
+codebadger and its accompanying paper — *Bridging Code Property Graphs and Language Models for Program Analysis* — have been accepted at the **Software Vulnerability Management Workshop @ ICSE 2026**. 🎉
+
+## Citation
+
+```bibtex
+@article{lekssays2026bridging,
+  title={Bridging Code Property Graphs and Language Models for Program Analysis},
+  author={Lekssays, Ahmed},
+  journal={arXiv preprint arXiv:2603.24837},
+  year={2026}
+}
+```
+
+## Found a vulnerability using codebadger?
+
+If codebadger helped you discover a real-world vulnerability, we'd love to hear about it. Open a pull request adding it to [TROPHIES.md](TROPHIES.md) — include the CVE ID, project, a one-line description, and the date.
+
 ## Prerequisites
 
 Before you begin, make sure you have:
@@ -170,6 +189,16 @@ Add the following:
 - `find_stack_overflow`: Detect stack buffer overflow vulnerabilities (CWE-121) where writes to fixed-size local arrays (e.g. `char buf[64]`) may exceed their declared dimension.
 - `find_toctou`: Detect Time-of-Check-Time-of-Use race conditions (CWE-367) where a file is checked with `access()`/`stat()` and then opened or operated on in a separate step.
 - `find_uninitialized_reads`: Detect uninitialized variable reads (CWE-457) where local variables are used before being assigned a value.
+
+### Custom tools
+
+You can add your own detectors without modifying the core codebase:
+
+1. Write a Scala query template in `src/tools/queries/your_query.scala`.
+2. Register a Python tool function in `src/tools/custom_tools.py`.
+3. Restart the server — the tool appears automatically in every MCP client.
+
+See [CUSTOM_TOOLS_GUIDE.md](CUSTOM_TOOLS_GUIDE.md) for the full step-by-step guide, CPGQL reference, and design decisions.
 
 ## Contributing & Tests
 

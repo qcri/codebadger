@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class PortManager:
     """Manages port allocation for Joern server instances"""
 
-    def __init__(self, port_min: int = 13371, port_max: int = 13399):
+    def __init__(self, port_min: int = 13371, port_max: int = 13870):
         self.port_min = port_min
         self.port_max = port_max
         self._session_to_port: Dict[str, int] = {}  # session_id -> port

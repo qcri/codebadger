@@ -1096,7 +1096,8 @@ Examples:
                     filename=filename,
                     line_num=line_num,
                     variable=variable,
-                    direction=direction
+                    direction=direction,
+                    max_results=50,
                 )
 
                 result = query_executor.execute_query(

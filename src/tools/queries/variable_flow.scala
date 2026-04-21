@@ -3,13 +3,16 @@
   val targetVar = "{{variable}}"
   val filename = "{{filename}}"
   val direction = "{{direction}}"
-  val maxResults = 50
+  val maxResults = {{max_results}}
+
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+  val filePattern = pathBoundaryRegex(filename)
 
   val targetMethodOpt = cpg.method
-    .filter(m => {
-      val f = m.file.name.headOption.getOrElse("")
-      f.endsWith(filename) || f.contains(filename)
-    })
+    .where(_.file.name(filePattern))
     .filterNot(_.name == "<global>")
     .filter(m => {
       val start = m.lineNumber.getOrElse(-1)
@@ -123,7 +126,7 @@
           // 4. Function Calls
           currMethod.call
             .filter(_.lineNumber.getOrElse(-1) <= scopeLine)
-            .filter(c => c.argument.code.l.exists(arg => trackedVars.exists(v => arg.contains(v))))
+            .filter(c => c.argument.code.l.exists(arg => isRelevantVar(arg, trackedVars)))
             .take(maxResults)
             .foreach { call =>
                if (!call.name.startsWith("<operator>"))
@@ -143,7 +146,7 @@
           // 2. Propagations
           currMethod.assignment
             .filter(_.lineNumber.getOrElse(-1) >= scopeLine)
-            .filter(a => isRelevantVar(a.source.code, trackedVars) || trackedVars.exists(v => a.source.code.contains(v)))
+            .filter(a => isRelevantVar(a.source.code, trackedVars))
             .take(maxResults)
             .foreach { assign =>
                dependencies += ((currFile, assign.lineNumber.getOrElse(-1), assign.code, "propagation"))

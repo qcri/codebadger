@@ -7,8 +7,8 @@ services:
     image: codebadger-joern-server:latest
     container_name: codebadger-joern-server
     ports:
-      # Expose ports 13371-13399 for Joern servers
-      - "13371-13399:13371-13399"
+      # Expose ports 13371-13870 for Joern servers
+      - "13371-13870:13371-13870"
     volumes:
       # Mount playground for CPG storage (shared with host)
       - ./playground:/playground

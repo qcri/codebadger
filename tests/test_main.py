@@ -60,7 +60,7 @@ class TestLifespan:
             mock_config.query = MagicMock()
             mock_config.joern = MagicMock()
             mock_config.joern.port_min = 13371
-            mock_config.joern.port_max = 13399
+            mock_config.joern.port_max = 13870
             mock_config.joern.binary_path = "joern"
             mock_config.telemetry = MagicMock()
             mock_config.telemetry.enabled = False

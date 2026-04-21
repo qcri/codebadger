@@ -23,6 +23,7 @@ class SessionStatus(str, Enum):
     INITIALIZING = "initializing"
     GENERATING = "generating"
     READY = "ready"
+    SLEEPING = "sleeping"
     ERROR = "error"
 
 @dataclass
@@ -111,9 +112,10 @@ class JoernConfig:
     server_auth_username: Optional[str] = None
     server_auth_password: Optional[str] = None
     port_min: int = 13371
-    port_max: int = 13399
+    port_max: int = 13870
     server_init_sleep_time: float = 3.0
     server_startup_timeout: int = 120
+    max_active_servers: int = 3
     # HTTP Connection Pooling
     http_pool_connections: int = 10
     http_pool_maxsize: int = 10
@@ -145,6 +147,7 @@ class CPGConfig:
     taint_sinks: Optional[Dict[str, List[str]]] = None
     min_cpg_file_size: int = 1024  # 1KB minimum
     output_truncation_length: int = 2000  # Max characters for output logging
+    build_workers: int = 2
 
 
 @dataclass

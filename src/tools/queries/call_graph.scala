@@ -30,7 +30,7 @@
       ): (scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]], Int) = {
 
         val toVisit     = scala.collection.mutable.Queue[(io.shiftleft.codepropertygraph.generated.nodes.Method, Int)]()
-        var visited     = Set[String](rootName)
+        var visited     = Set[String]()
         var edgesVisited= Set[(String, String)]()
         val edgesByDepth= scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
 

@@ -82,78 +82,77 @@
       val localName = local.name
       val localType = local.typeFullName
       parseArraySize(localType).foreach { arraySize =>
-        val method   = local.method
-        val methName = method.name
-        val declFile = local.file.name.headOption.getOrElse("unknown")
-        val declLine = local.lineNumber.getOrElse(-1)
+        val mOpt = local.method.l.headOption
+        if (mOpt.isDefined) {
+          val m        = mOpt.get
+          val methName = m.name
+          val declFile = local.file.name.headOption.getOrElse("unknown")
+          val declLine = local.lineNumber.getOrElse(-1)
 
-        val overflowUsages = mutable.ListBuffer[(Int, String, String, String, String)]()
+          val overflowUsages = mutable.ListBuffer[(Int, String, String, String, String)]()
 
-        method.call.name(writePattern).l.foreach { writeCall =>
-          val writeLine = writeCall.lineNumber.getOrElse(-1)
-          val (dstOrder, sizeOrder) = writeOps.getOrElse(writeCall.name, (1, 0))
-          val dstCode = writeCall.argument.order(dstOrder).l.headOption.map(_.code.trim).getOrElse("")
+          m.call.name(writePattern).l.foreach { writeCall =>
+            val writeLine = writeCall.lineNumber.getOrElse(-1)
+            val (dstOrder, sizeOrder) = writeOps.getOrElse(writeCall.name, (1, 0))
+            val dstCode = writeCall.argument.order(dstOrder).l.headOption.map(_.code.trim).getOrElse("")
 
-          val bufIsArg = dstCode == localName ||
-            dstCode.startsWith(localName + "[") ||
-            dstCode.startsWith(localName + "+") ||
-            dstCode.startsWith("&" + localName)
+            val bufIsArg = dstCode == localName ||
+              dstCode.startsWith(localName + "[") ||
+              dstCode.startsWith(localName + "+") ||
+              dstCode.startsWith("&" + localName)
 
-          if (bufIsArg) {
-            val inDiffBranch = declLine > 0 && areInMutuallyExclusiveBranches(method, declLine, writeLine)
+            if (bufIsArg) {
+              val inDiffBranch = declLine > 0 && areInMutuallyExclusiveBranches(m, declLine, writeLine)
 
-            if (!inDiffBranch) {
-              val writeSizeExpr = if (sizeOrder > 0)
-                writeCall.argument.order(sizeOrder).l.headOption.map(_.code.trim).getOrElse("?")
-              else
-                "(unbounded)"
+              if (!inDiffBranch) {
+                val writeSizeExpr = if (sizeOrder > 0)
+                  writeCall.argument.order(sizeOrder).l.headOption.map(_.code.trim).getOrElse("?")
+                else
+                  "(unbounded)"
 
-              val reason: Option[String] = if (sizeOrder == 0) {
-                // Unbounded write (strcpy, gets, sprintf, …) — always dangerous
-                Some(s"Unbounded write (${writeCall.name}) to fixed-size stack buffer [$arraySize]")
-              } else {
-                // Bounded write: check whether the size literal or variable is safe
-                scala.util.Try(writeSizeExpr.trim.toLong).toOption match {
-                  case Some(wSize) if wSize > arraySize =>
-                    Some(s"Write size $wSize exceeds stack buffer size $arraySize")
-                  case Some(_) =>
-                    None // Literal size fits — safe
-                  case None =>
-                    // Non-literal: flag unless it's statically bounded by arraySize or contains sizeof
-                    val arraySizeStr = arraySize.toString
-                    val sizeMatch = writeSizeExpr == arraySizeStr ||
-                      writeSizeExpr.contains(arraySizeStr) ||
-                      writeSizeExpr.contains("sizeof")
-                    if (!sizeMatch) {
-                      // Check for a preceding bounds check on the size variable
-                      val writeSizeVar = writeSizeExpr.replaceAll("[^a-zA-Z0-9_].*", "").trim
-                      val hasBoundsCheck = writeSizeVar.nonEmpty && method.controlStructure
-                        .filter(_.controlStructureType == "IF").l.exists { ifStmt =>
-                          val condLine = ifStmt.lineNumber.getOrElse(-1)
-                          condLine < writeLine && {
-                            val condCode = ifStmt.condition.code.headOption.getOrElse("")
-                            condCode.matches(s".*\\b${java.util.regex.Pattern.quote(writeSizeVar)}\\b.*") &&
-                            (condCode.contains("<") || condCode.contains(">") ||
-                             condCode.contains("<=") || condCode.contains(">="))
+                val reason: Option[String] = if (sizeOrder == 0) {
+                  Some(s"Unbounded write (${writeCall.name}) to fixed-size stack buffer [$arraySize]")
+                } else {
+                  scala.util.Try(writeSizeExpr.trim.toLong).toOption match {
+                    case Some(wSize) if wSize > arraySize =>
+                      Some(s"Write size $wSize exceeds stack buffer size $arraySize")
+                    case Some(_) =>
+                      None
+                    case None =>
+                      val arraySizeStr = arraySize.toString
+                      val sizeMatch = writeSizeExpr == arraySizeStr ||
+                        writeSizeExpr.matches(s".*\\b${java.util.regex.Pattern.quote(arraySizeStr)}\\b.*") ||
+                        writeSizeExpr.contains("sizeof")
+                      if (!sizeMatch) {
+                        val writeSizeVar = writeSizeExpr.replaceAll("[^a-zA-Z0-9_].*", "").trim
+                        val hasBoundsCheck = writeSizeVar.nonEmpty && m.controlStructure
+                          .filter(_.controlStructureType == "IF").l.exists { ifStmt =>
+                            val condLine = ifStmt.lineNumber.getOrElse(-1)
+                            condLine >= declLine && condLine < writeLine && {
+                              val condCode = ifStmt.condition.code.headOption.getOrElse("")
+                              condCode.matches(s".*\\b${java.util.regex.Pattern.quote(writeSizeVar)}\\b.*") &&
+                              (condCode.contains("<") || condCode.contains(">") ||
+                               condCode.contains("<=") || condCode.contains(">="))
+                            }
                           }
-                        }
-                      if (!hasBoundsCheck)
-                        Some(s"Write size '$writeSizeExpr' not statically bounded by stack buffer size $arraySize")
-                      else None
-                    } else None
+                        if (!hasBoundsCheck)
+                          Some(s"Write size '$writeSizeExpr' not statically bounded by stack buffer size $arraySize")
+                        else None
+                      } else None
+                  }
                 }
-              }
 
-              reason.foreach { r =>
-                overflowUsages += ((writeLine, writeCall.code, writeSizeExpr, writeCall.name, r))
+                reason.foreach { r =>
+                  overflowUsages += ((writeLine, writeCall.code, writeSizeExpr, writeCall.name, r))
+                }
               }
             }
           }
-        }
 
-        if (overflowUsages.nonEmpty) {
-          issues += ((declFile, declLine, localName, localType, arraySize, methName,
-            overflowUsages.toList.distinct.sortBy(_._1)))
+          if (overflowUsages.nonEmpty) {
+            issues += ((declFile, declLine, localName, localType, arraySize, methName,
+              overflowUsages.toList.distinct.sortBy(_._1)))
+          }
         }
       }
     }

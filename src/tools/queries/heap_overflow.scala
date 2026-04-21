@@ -46,7 +46,7 @@
 
   // Allocation functions that return a heap pointer of a known size.
   // calloc is excluded: its size is count * element_size (handled differently).
-  val allocPattern = "malloc|realloc|aligned_alloc|valloc|pvalloc|memalign|strdup|strndup|xmlMalloc|xmlMallocAtomic|xmlRealloc|xmlStrdup|xmlStrndup|g_malloc|g_malloc0|g_realloc|g_strdup|g_strndup|xmalloc|xrealloc|xstrdup|emalloc|erealloc|estrdup|kmalloc|kzalloc|krealloc|vmalloc|kvmalloc"
+  val allocPattern = "malloc|calloc|realloc|aligned_alloc|reallocarray|valloc|pvalloc|memalign|posix_memalign|strdup|strndup"
 
   // Write operations and their (dst_arg_order, size_arg_order) — size_arg_order=0 means unbounded
   val writeOps: Map[String, (Int, Int)] = Map(
@@ -61,6 +61,8 @@
     "recvfrom"-> (2, 3)
   )
   val writePattern = writeOps.keys.mkString("|")
+
+  val sizeInSecondArg = Set("realloc", "reallocarray", "aligned_alloc", "memalign", "posix_memalign")
 
   val allocCalls = cpg.call.name(allocPattern).l
   val filteredAllocs = if (fileFilter.nonEmpty) {
@@ -93,8 +95,8 @@
         val bufVar      = assign.target.code.trim
         if (!bufVar.contains("(") && !bufVar.contains("[") && bufVar.length < 50 && bufVar.nonEmpty) {
 
-          // Determine the allocation size expression (first meaningful arg)
-          val allocSizeExpr = allocCall.argument.order(1).l.headOption.map(_.code).getOrElse("?")
+          val sizeArgOrder = if (sizeInSecondArg.contains(allocCall.name)) 2 else 1
+          val allocSizeExpr = allocCall.argument.order(sizeArgOrder).l.headOption.map(_.code).getOrElse("?")
 
           // Track reassignments of the buffer after allocation
           val reassignLines = mutable.Set[Int]()
