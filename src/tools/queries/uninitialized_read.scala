@@ -39,74 +39,54 @@
       val methName = method.name
       val methFile = method.file.name.headOption.getOrElse("unknown")
 
-      // Collect local variable declarations
-      val locals = method.local.l
+      // Pre-compute once per method — O(n) instead of O(locals × identifiers)
+      val plainAssignments = method.call.nameExact("<operator>.assignment").l
+      // IDs of identifiers that are the direct LHS of a plain assignment
+      val lhsIds = plainAssignments.flatMap(_.argument.order(1).l.headOption).map(_.id).toSet
+      // Map varName → sorted list of plain-assignment line numbers
+      val assignLinesByVar: Map[String, List[Int]] = plainAssignments
+        .groupBy(c => c.argument.order(1).l.headOption.map(_.code.trim).getOrElse(""))
+        .view.mapValues(cs => cs.flatMap(_.lineNumber).sorted).toMap
+      // Map varName → all identifier nodes (reads and compound-assign LHS)
+      val identsByName: Map[String, List[Identifier]] =
+        method.ast.isIdentifier.l.groupBy(_.name)
 
-      locals.foreach { local =>
+      method.local.l.foreach { local =>
         val varName  = local.name
         val varType  = local.typeFullName
         val declLine = local.lineNumber.getOrElse(-1)
 
-        // Skip: function parameters (they are always initialized by the caller)
-        // Skip: static variables (zero-initialized by the C standard)
-        // Skip: aggregate types that are typically zero-initialized with = {0} or memset
-        //   We approximate: skip anything whose type contains "*" (pointers initialised via
-        //   parameter), "[]" (array — tracked by stack_overflow), or "static" in the name.
-        val isArray = varType.matches(".*\\[\\d*\\].*")
-        if (!isArray) {
+        // Skip fixed-size arrays (covered by stack_overflow analysis)
+        if (!varType.matches(".*\\[\\d*\\].*")) {
+          val firstAssignLine: Option[Int] = assignLinesByVar.get(varName).flatMap(_.headOption)
 
-          // Find the first explicit assignment to this variable within the method.
-          // An assignment is a Call node whose name is "<operator>.assignment" and
-          // whose first argument (the LHS) mentions varName.
-          val assignments = method.call
-            .nameExact("<operator>.assignment")
-            .filter(c => c.argument.order(1).l.headOption.map(_.code.trim).getOrElse("") == varName)
-            .lineNumber.l.sorted
-
-          val firstAssignLine: Option[Int] = assignments.headOption
-
-          // Find ALL reads of this variable: Identifier nodes with this name that
-          // are NOT on the LHS of an assignment.
-          val allReads = method.ast.isIdentifier
-            .nameExact(varName)
-            .filter { ident =>
-              val parent = ident.astParent
-              // Exclude if this identifier is the direct LHS of an assignment
-              val isLhs = parent.isCall &&
-                parent.asInstanceOf[Call].name == "<operator>.assignment" &&
-                parent.asInstanceOf[Call].argument.order(1).l.headOption.exists(_.id == ident.id)
-              !isLhs
-            }
-            .l
-
-          // For each read, check whether it precedes the first assignment
-          allReads.foreach { ident =>
+          identsByName.getOrElse(varName, Nil).foreach { ident =>
             val readLine = ident.lineNumber.getOrElse(-1)
-
             if (readLine > 0 && declLine > 0) {
-              val isBeforeAssignment = firstAssignLine match {
-                case None       => true             // never assigned → always uninitialized
-                case Some(asLn) => readLine < asLn  // read before the first assignment
+              // Skip: direct LHS of a plain assignment (x = ...)
+              val isPlainLhs = lhsIds.contains(ident.id)
+              // Skip: operand of addressOf — &x passes the address for output (scanf, read, etc.)
+              val isAddressOf = {
+                val p = ident.astParent
+                p.isCall && p.asInstanceOf[Call].name == "<operator>.addressOf"
               }
 
-              if (isBeforeAssignment) {
-                // Try to get the enclosing statement code for context
-                val stmtCode = {
-                  val parentCode = ident.astParent.code.trim
-                  if (parentCode.length > 80) parentCode.take(77) + "..." else parentCode
+              if (!isPlainLhs && !isAddressOf) {
+                val isBeforeAssignment = firstAssignLine match {
+                  case None       => true
+                  case Some(asLn) => readLine < asLn
                 }
-
-                // Confidence heuristic
-                val (confidence, reason) = firstAssignLine match {
-                  case None =>
-                    // Variable declared but never explicitly assigned — HIGH confidence
-                    ("HIGH", "Variable declared but never assigned before use")
-                  case Some(asLn) =>
-                    // Read before first assignment — still HIGH if assignment is later in same block
-                    ("HIGH", s"Read at line $readLine precedes first assignment at line $asLn")
+                if (isBeforeAssignment) {
+                  val stmtCode = {
+                    val parentCode = ident.astParent.code.trim
+                    if (parentCode.length > 80) parentCode.take(77) + "..." else parentCode
+                  }
+                  val (confidence, reason) = firstAssignLine match {
+                    case None      => ("HIGH", "Variable declared but never assigned before use")
+                    case Some(asLn)=> ("HIGH", s"Read at line $readLine precedes first assignment at line $asLn")
+                  }
+                  issues += ((methFile, methName, varName, varType, declLine, readLine, stmtCode, confidence, reason))
                 }
-
-                issues += ((methFile, methName, varName, varType, declLine, readLine, stmtCode, confidence, reason))
               }
             }
           }

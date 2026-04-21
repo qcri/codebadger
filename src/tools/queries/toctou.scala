@@ -73,9 +73,7 @@
             // Path arguments must refer to the same value:
             // exact match OR the use path argument is derived from the check path
             // (e.g. check uses `path`, open uses `path` or a variable holding `path`)
-            val sameTarget = chkPath == usePath ||
-              usePath.startsWith(chkPath) ||
-              chkPath.startsWith(usePath)
+            val sameTarget = chkPath == usePath || usePath.startsWith(chkPath)
 
             if (sameTarget) {
               issues += ((methFile, methName, chkLine, chkCall.code, chkPath,

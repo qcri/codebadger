@@ -16,7 +16,7 @@ from fastmcp.server.lifespan import lifespan
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 from src.config import load_config
 from src import defaults
@@ -227,9 +227,6 @@ async def app_lifespan(server: FastMCP):
         services['joern_server_manager'].start_watchdog()
         logger.info("Joern server watchdog started")
 
-        # Token-saving transforms — applied after all tools are registered
-        _apply_transforms(server)
-
         logger.info("All services initialized")
         logger.info("CodeBadger Server is ready")
 
@@ -289,10 +286,9 @@ mcp = FastMCP(
     "CodeBadger Server",
     lifespan=app_lifespan,
 )
-mcp.add_middleware(Middleware(ConcurrencyLimitMiddleware, max_concurrent=_max_mcp))
-
 # Note: Tools are registered inside the lifespan function
 # register_tools(mcp, services)
+# _apply_transforms is called only in __main__ so tests use direct tool access
 
 
 def _get_disk_usage(path: str) -> dict:
@@ -509,15 +505,12 @@ async def root(request):
 
 
 if __name__ == "__main__":
-    # Run the server with HTTP transport (Streamable HTTP)
-    # Get configuration
     config_data = load_config("config.yaml")
     host = config_data.server.host
     port = config_data.server.port
-    
+
     logger.info(f"Starting CodeBadger Server with HTTP transport on {host}:{port}")
-    
-    # Use HTTP transport (Streamable HTTP) for production deployment
-    # This enables network accessibility, multiple concurrent clients,
-    # and integration with web infrastructure
-    mcp.run(transport="http", host=host, port=port)
+
+    _apply_transforms(mcp)
+    _http_middleware = [Middleware(ConcurrencyLimitMiddleware, max_concurrent=_max_mcp)]
+    mcp.run_http_async(host=host, port=port, middleware=_http_middleware)

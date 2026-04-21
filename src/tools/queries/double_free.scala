@@ -21,7 +21,7 @@
     * meaning they cannot both execute in the same control flow path.
     */
   def areInMutuallyExclusiveBranches(method: Method, lineA: Int, lineB: Int): Boolean = {
-    method.ast.isControlStructure.l.exists { cs =>
+    csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l).exists { cs =>
       cs.controlStructureType match {
         case "IF" =>
           val children = cs.astChildren.l
@@ -55,12 +55,9 @@
     "realpath", "popen", "fdopen", "tmpfile", "dlopen"
   )
 
-  // Memoize findEntryPoint results — called once per finding, expensive without cache
+  val csCache = mutable.Map[String, List[ControlStructure]]()
   val entryPointCache = mutable.Map[String, Option[String]]()
 
-  /** Check if a method is transitively reachable from external input.
-    * BFS-walks callers up to maxDepth levels. Results are memoized.
-    */
   def findEntryPoint(methodName: String, maxDepth: Int = 10): Option[String] = {
     entryPointCache.getOrElseUpdate(methodName, {
       var visited = Set[String]()
@@ -98,7 +95,7 @@
   output.append("=" * 60 + "\n\n")
   
   // Find all free() calls (and common variants)
-  val freeCalls = cpg.call.name("free|cfree|g_free|xmlFree|xsltFree.*").l
+  val freeCalls = cpg.call.name("free|cfree").l
   
   val freeCallsFiltered = if (fileFilter.nonEmpty) {
     val pattern = pathBoundaryRegex(fileFilter)
@@ -123,8 +120,8 @@
       if (methodFreeCalls.size >= 2) {
         val method = methodFreeCalls.head.method
         val methodName = method.name
+        val methodAssignments = method.assignment.l
 
-        // Sort by line number
         val sortedFreeCalls = methodFreeCalls.sortBy(_.lineNumber.getOrElse(0))
         // Track which free sites already have a pair to avoid redundant chains
         // e.g., free@10, free@20, free@30 → report (10,20) only, skip (10,30)
@@ -143,9 +140,8 @@
             
             if (!firstPtr.contains("(") && !firstPtr.contains("[") && firstPtr.length < 50) {
               
-              // Track aliases of this pointer (assignments before the first free)
               val aliases = mutable.Set[String](firstPtr)
-              method.assignment.l.foreach { assign =>
+              methodAssignments.foreach { assign =>
                 val assignLine = assign.lineNumber.getOrElse(-1)
                 if (assignLine < firstLine) {
                   val srcCode = assign.source.code.trim
@@ -160,7 +156,7 @@
               }
               
               // Check for reallocation between first free and any subsequent free
-              val reallocCalls = method.call.name("malloc|calloc|realloc|strdup|xmlMalloc.*|g_malloc.*|xmlStrdup").l
+              val reallocCalls = method.call.name("malloc|calloc|realloc|strdup|strndup|aligned_alloc|reallocarray").l
               
               // Check remaining free calls for double-free
               sortedFreeCalls.drop(idx + 1).foreach { secondFree =>
@@ -173,36 +169,32 @@
                   
                   // Check if second free is on the same pointer or an alias
                   if (aliases.contains(secondPtr)) {
-                    // Check if there's a reallocation between the two frees
                     val hasRealloc = reallocCalls.exists { realloc =>
                       val reallocLine = realloc.lineNumber.getOrElse(-1)
                       reallocLine > firstLine && reallocLine < secondLine &&
-                      method.assignment.l.exists { assign =>
+                      methodAssignments.exists { assign =>
                         assign.lineNumber.getOrElse(-1) == reallocLine &&
                         aliases.contains(assign.target.code.trim)
                       }
                     }
-                    
-                    // Check if pointer is reassigned between the two frees
-                    val hasReassignment = method.assignment.l.exists { assign =>
+
+                    val hasReassignment = methodAssignments.exists { assign =>
                       val assignLine = assign.lineNumber.getOrElse(-1)
                       assignLine > firstLine && assignLine < secondLine &&
                       aliases.contains(assign.target.code.trim)
                     }
-                    
-                    // A return between the two frees is only a real guard when it is NOT
-                    // nested inside a control structure that starts after the first free —
-                    // otherwise the return can be bypassed (e.g. inside a loop body).
+
+                    val methodCss = csCache.getOrElseUpdate(method.fullName, method.ast.isControlStructure.l)
                     val hasEarlyExit = method.ast.isReturn.l.exists { ret =>
                       val retLine = ret.lineNumber.getOrElse(-1)
                       retLine > firstLine && retLine < secondLine && {
-                        val nestedInControlStructure = method.controlStructure.l.exists { cs =>
+                        val nested = methodCss.exists { cs =>
                           val csStart = cs.lineNumber.getOrElse(-1)
                           val csLines = cs.ast.lineNumber.l.filter(_ > 0)
                           val csEnd   = if (csLines.nonEmpty) csLines.max else csStart
                           csStart > firstLine && csStart <= retLine && csEnd >= retLine
                         }
-                        !nestedInControlStructure
+                        !nested
                       }
                     }
                     
@@ -241,7 +233,7 @@
           val callsAfterFree = method.call.l.filter { call =>
             val callLine = call.lineNumber.getOrElse(-1)
             callLine > freeLine &&
-            !call.name.matches("free|cfree|g_free|xmlFree|xsltFree.*") &&
+            !call.name.matches("free|cfree") &&
             call.argument.code.l.exists(_ == freedPtr)
           }
           
@@ -250,7 +242,7 @@
             
             val calleeMethods = cpg.method.name(calleeName).l
             calleeMethods.foreach { calleeMethod =>
-              val calleeFreeCalls = calleeMethod.call.name("free|cfree|g_free|xmlFree|xsltFree.*").l
+              val calleeFreeCalls = calleeMethod.call.name("free|cfree").l
               
               if (calleeFreeCalls.nonEmpty) {
                 val argIndex = callerCall.argument.code.l.indexOf(freedPtr)

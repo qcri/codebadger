@@ -19,10 +19,10 @@
 
   // Allocation functions vulnerable to integer overflow in size argument.
   // calloc and reallocarray are EXCLUDED: they handle multiplication overflow internally.
-  val allocPattern = "malloc|realloc|aligned_alloc|valloc|pvalloc|memalign|kmalloc|kzalloc|krealloc|vmalloc|kvmalloc|xmlMalloc|xmlMallocAtomic|xmlRealloc|g_malloc|g_malloc0|g_realloc|xmalloc|xrealloc|emalloc|erealloc"
+  val allocPattern = "malloc|calloc|realloc|aligned_alloc|reallocarray|valloc|pvalloc|memalign|posix_memalign"
 
   // Functions where size is the SECOND argument (ptr/alignment, size)
-  val sizeInSecondArg = Set("realloc", "krealloc", "xmlRealloc", "g_realloc", "xrealloc", "erealloc", "aligned_alloc")
+  val sizeInSecondArg = Set("realloc", "aligned_alloc", "memalign", "posix_memalign")
 
   // High-risk: multiplication and left-shift can cause dramatic overflow
   val highRiskOps = Set("<operator>.multiplication", "<operator>.shiftLeft")

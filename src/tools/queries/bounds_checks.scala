@@ -10,57 +10,50 @@
   }
 
   /** Classify a call as a sized operation based on its name.
-    * Uses case-insensitive matching to generically handle library wrappers
-    * (e.g., xmlMalloc, g_malloc, xmlRealloc, g_realloc, xmlStrndup, etc.)
-    * without hardcoding specific function names.
+    * Uses case-insensitive matching to generically handle common naming
+    * conventions without hardcoding specific function names.
     *
     * Returns: (typeLabel, sizeArgOrder, sizeLabel, optDstArgOrder)
     */
   def classifySizedOp(callName: String): Option[(String, Int, String, Option[Int])] = {
-    val n = callName.toLowerCase
-    // Order matters: check specific patterns (realloc, calloc) before generic (malloc)
-    if (n.matches(".*mem(cpy|move).*") || n.matches(".*strncpy.*") || n.matches(".*strlcpy.*"))
-      Some(("Memory/String Copy", 3, "Length", Some(1)))
-    else if (n.matches(".*memset.*"))
-      Some(("Memory Set", 3, "Length", Some(1)))
-    else if (n.matches("v?snprintf"))
-      Some(("Formatted Output", 2, "Buffer Size", Some(1)))
-    else if (n.matches(".*realloc.*"))
-      Some(("Memory Reallocation", 2, "Size", None))
-    else if (n.matches(".*calloc.*"))
-      Some(("Memory Allocation", 1, "Count", None))
-    else if (n == "aligned_alloc")
-      Some(("Memory Allocation", 2, "Size", None))
-    else if (n.matches(".*malloc.*"))
-      Some(("Memory Allocation", 1, "Size", None))
-    else if (n.matches(".*strndup.*"))
-      Some(("String Duplication", 2, "Length", None))
-    else
-      None
+    callName match {
+      case "memcpy" | "memmove"             => Some(("Memory Copy",        3, "Length",      Some(1)))
+      case "memset"                          => Some(("Memory Set",         3, "Length",      Some(1)))
+      case "strncpy" | "strlcpy"            => Some(("String Copy",        3, "Length",      Some(1)))
+      case "strncat" | "strlcat"            => Some(("String Concat",      3, "Length",      Some(1)))
+      case "snprintf" | "vsnprintf"         => Some(("Formatted Output",   2, "Buffer Size", Some(1)))
+      case "read" | "recv"                  => Some(("I/O Read",           3, "Length",      Some(2)))
+      case "fread"                           => Some(("File Read",          3, "Count",       Some(1)))
+      case "realloc" | "reallocarray"       => Some(("Memory Reallocation",2, "Size",        None))
+      case "calloc"                          => Some(("Memory Allocation",  1, "Count",       None))
+      case "aligned_alloc" | "memalign" |
+           "posix_memalign"                 => Some(("Memory Allocation",  2, "Size",        None))
+      case "malloc" | "valloc" | "pvalloc"  => Some(("Memory Allocation",  1, "Size",        None))
+      case "strndup"                         => Some(("String Duplication", 2, "Length",      None))
+      case _                                 => None
+    }
   }
+
+  def pathBoundaryRegex(f: String): String = {
+    val escaped = java.util.regex.Pattern.quote(f)
+    "(^|.*/)" + escaped + "$"
+  }
+  val filePattern = pathBoundaryRegex(filename)
 
   // --- Target Identification ---
 
   // 1. Buffer Access (buf[i])
   val bufferAccessOpt = cpg.call
     .name("<operator>.indirectIndexAccess")
-    .filter(c => {
-      val f = c.file.name.headOption.getOrElse("")
-      f.endsWith("/" + filename) || f == filename
-    })
+    .where(_.file.name(filePattern))
     .filter(c => c.lineNumber.getOrElse(-1) == lineNum)
     .l.headOption
 
   // 2. Sized operations (allocation, memory copy/set, snprintf, strndup, etc.)
-  // Broad regex pre-filter for performance; classifySizedOp does precise classification.
-  // Uses [Mm], [Cc], [Rr], [Ss] character classes to handle camelCase wrappers (xmlMalloc, etc.)
-  val sizedCallPattern = ".*[Mm]alloc.*|.*[Cc]alloc.*|.*[Rr]ealloc.*|.*[Mm]em(cpy|move|set).*|.*[Ss]trncpy.*|.*[Ss]trlcpy.*|v?snprintf|aligned_alloc|.*[Ss]trndup.*"
+  val sizedCallPattern = "malloc|calloc|realloc|aligned_alloc|reallocarray|strdup|strndup|memcpy|memmove|memset|strncpy|strlcpy|strncat|strlcat|snprintf|vsnprintf|read|recv|fread"
   val sizedCallOpt = cpg.call
     .name(sizedCallPattern)
-    .filter(c => {
-      val f = c.file.name.headOption.getOrElse("")
-      f.endsWith("/" + filename) || f == filename
-    })
+    .where(_.file.name(filePattern))
     .filter(c => c.lineNumber.getOrElse(-1) == lineNum)
     .l.headOption
 
