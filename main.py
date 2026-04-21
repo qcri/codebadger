@@ -227,6 +227,9 @@ async def app_lifespan(server: FastMCP):
         services['joern_server_manager'].start_watchdog()
         logger.info("Joern server watchdog started")
 
+        # Token-saving transforms — applied after all tools are registered
+        _apply_transforms(server)
+
         logger.info("All services initialized")
         logger.info("CodeBadger Server is ready")
 
@@ -238,6 +241,28 @@ async def app_lifespan(server: FastMCP):
     finally:
         await _graceful_shutdown()
         logger.info("CodeBadger Server shutdown complete")
+
+
+def _apply_transforms(server) -> None:
+    """Apply CodeMode transform after all tools are registered.
+
+    CodeMode replaces the full 34-tool catalog with three lightweight
+    discovery tools + one execute tool, so the LLM only loads schemas
+    for the tools it actually needs:
+
+        ListTools   — enumerate every available tool by name (one-shot)
+        Search      — natural-language search across tool descriptions
+        GetSchemas  — fetch full parameter schemas for selected tools
+        execute     — run a Python script that chains call_tool() calls
+                      in a sandbox, eliminating sequential round-trips
+    """
+    from fastmcp.experimental.transforms.code_mode import (
+        CodeMode, ListTools, Search, GetSchemas,
+    )
+    server.add_transform(CodeMode(
+        discovery_tools=[ListTools(), Search(), GetSchemas()],
+    ))
+    logger.info("Transform: CodeMode enabled (ListTools + Search + GetSchemas)")
 
 
 class ConcurrencyLimitMiddleware(BaseHTTPMiddleware):
