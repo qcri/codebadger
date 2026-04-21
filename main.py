@@ -11,6 +11,8 @@ import logging
 import os
 import shutil
 import socket
+import time
+from datetime import datetime, timezone
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 from starlette.middleware import Middleware
@@ -38,6 +40,9 @@ VERSION = "0.3.4-beta"
 
 # Global service instances
 services = {}
+
+# Set when the lifespan starts — used for uptime calculation
+_server_start_time: float = 0.0
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +122,9 @@ async def _graceful_shutdown():
 @lifespan
 async def app_lifespan(server: FastMCP):
     """Startup and shutdown logic for the FastMCP server"""
+    global _server_start_time
+    _server_start_time = time.monotonic()
+
     # Load configuration
     config = load_config("config.yaml")
     setup_logging(config.server.log_level)
@@ -227,6 +235,10 @@ async def app_lifespan(server: FastMCP):
         services['joern_server_manager'].start_watchdog()
         logger.info("Joern server watchdog started")
 
+        # Periodic status logger
+        interval = int(os.getenv("STATUS_LOG_INTERVAL_SECS", "60"))
+        asyncio.create_task(_periodic_status_log(interval))
+
         logger.info("All services initialized")
         logger.info("CodeBadger Server is ready")
 
@@ -291,129 +303,41 @@ mcp = FastMCP(
 # _apply_transforms is called only in __main__ so tests use direct tool access
 
 
-def _get_disk_usage(path: str) -> dict:
-    """Get disk usage information for a path"""
+def _uptime_seconds() -> float:
+    return round(time.monotonic() - _server_start_time, 1) if _server_start_time else 0.0
+
+
+def _format_uptime(seconds: float) -> str:
+    s = int(seconds)
+    days, s = divmod(s, 86400)
+    hours, s = divmod(s, 3600)
+    minutes, s = divmod(s, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def _get_process_memory_mb() -> float:
     try:
-        stat = shutil.disk_usage(path)
-        return {
-            "total_gb": round(stat.total / (1024**3), 2),
-            "used_gb": round(stat.used / (1024**3), 2),
-            "free_gb": round(stat.free / (1024**3), 2),
-            "percent_used": round((stat.used / stat.total) * 100, 2) if stat.total > 0 else 0
-        }
-    except Exception as e:
-        logger.debug(f"Error getting disk usage for {path}: {e}")
-        return {"error": str(e)}
-
-
-def _get_cache_size() -> dict:
-    """Get cache directory size"""
+        import psutil
+        return round(psutil.Process().memory_info().rss / (1024 ** 2), 1)
+    except ImportError:
+        pass
     try:
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        cpgs_dir = os.path.join(project_root, "playground", "cpgs")
-
-        total_size = 0
-        if os.path.exists(cpgs_dir):
-            for dirpath, dirnames, filenames in os.walk(cpgs_dir):
-                for filename in filenames:
-                    filepath = os.path.join(dirpath, filename)
-                    try:
-                        total_size += os.path.getsize(filepath)
-                    except Exception as e:
-                        logger.debug(f"Error getting size of {filepath}: {e}")
-
-        return {
-            "cache_path": cpgs_dir,
-            "size_mb": round(total_size / (1024**2), 2),
-            "exists": os.path.exists(cpgs_dir)
-        }
-    except Exception as e:
-        logger.debug(f"Error calculating cache size: {e}")
-        return {"error": str(e)}
-
-
-def _check_joern_container_status() -> dict:
-    """Check Joern Docker container status"""
-    try:
-        if 'joern_server_manager' not in services:
-            return {"error": "Joern server manager not initialized"}
-
-        joern_mgr = services['joern_server_manager']
-        try:
-            container = joern_mgr.docker_client.containers.get(joern_mgr.container_name)
-            return {
-                "container_name": joern_mgr.container_name,
-                "status": container.status,
-                "running": container.status == "running"
-            }
-        except Exception as e:
-            logger.debug(f"Error checking container status: {e}")
-            return {
-                "container_name": joern_mgr.container_name,
-                "status": "not_found",
-                "running": False,
-                "error": str(e)
-            }
-    except Exception as e:
-        logger.debug(f"Error in Joern container status check: {e}")
-        return {"error": str(e)}
-
-
-def _get_active_servers() -> dict:
-    """Get information about active Joern servers"""
-    try:
-        if 'joern_server_manager' not in services:
-            return {"error": "Joern server manager not initialized", "count": 0}
-
-        joern_mgr = services['joern_server_manager']
-        running_servers = joern_mgr.get_running_servers()
-
-        servers = {}
-        for codebase_hash, port in running_servers.items():
-            # Check port connectivity
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex(('localhost', port))
-                sock.close()
-                is_accessible = result == 0
-            except Exception:
-                is_accessible = False
-
-            servers[codebase_hash] = {
-                "port": port,
-                "accessible": is_accessible
-            }
-
-        return {
-            "count": len(servers),
-            "servers": servers
-        }
-    except Exception as e:
-        logger.debug(f"Error getting active servers: {e}")
-        return {"error": str(e), "count": 0}
-
-
-def _get_port_utilization() -> dict:
-    """Get port manager utilization information"""
-    try:
-        if 'port_manager' not in services:
-            return {"error": "Port manager not initialized"}
-
-        port_mgr = services['port_manager']
-        allocations = port_mgr.get_all_allocations()
-        allocated_count = len(allocations)
-        available_count = port_mgr.available_count()
-
-        return {
-            "allocated_count": allocated_count,
-            "available_count": available_count,
-            "total_pool_size": allocated_count + available_count,
-            "utilization_percent": round((allocated_count / (allocated_count + available_count) * 100)) if (allocated_count + available_count) > 0 else 0
-        }
-    except Exception as e:
-        logger.debug(f"Error getting port utilization: {e}")
-        return {"error": str(e)}
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    kb = int(line.split()[1])
+                    return round(kb / 1024, 1)
+    except Exception:
+        pass
+    return -1.0
 
 
 def _get_system_memory_available_gb() -> float:
@@ -430,62 +354,205 @@ def _get_system_memory_available_gb() -> float:
                     return round(kb / (1024 ** 2), 2)
     except Exception:
         pass
-    return -1
+    return -1.0
 
 
-def _get_sleeping_servers_count() -> int:
+def _get_disk_usage(path: str) -> dict:
     try:
-        if "codebase_tracker" not in services:
-            return 0
-        tracker = services["codebase_tracker"]
-        hashes = tracker.list_codebases()
-        count = 0
-        for h in hashes:
-            info = tracker.get_codebase(h)
-            if info and info.metadata.get("status") == "sleeping":
-                count += 1
-        return count
+        stat = shutil.disk_usage(path)
+        return {
+            "total_gb": round(stat.total / (1024 ** 3), 2),
+            "used_gb": round(stat.used / (1024 ** 3), 2),
+            "free_gb": round(stat.free / (1024 ** 3), 2),
+            "percent_used": round((stat.used / stat.total) * 100, 1) if stat.total > 0 else 0,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_cpg_cache_mb() -> float:
+    try:
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        cpgs_dir = os.path.join(project_root, "playground", "cpgs")
+        total = 0
+        for dirpath, _, filenames in os.walk(cpgs_dir):
+            for f in filenames:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, f))
+                except OSError:
+                    pass
+        return round(total / (1024 ** 2), 2)
     except Exception:
-        return 0
+        return -1.0
+
+
+def _get_codebase_list() -> list:
+    try:
+        tracker = services.get("codebase_tracker")
+        joern_mgr = services.get("joern_server_manager")
+        if not tracker:
+            return []
+        result = []
+        for h in tracker.list_codebases():
+            info = tracker.get_codebase(h)
+            if not info:
+                continue
+            status = info.metadata.get("status", "unknown")
+            port = joern_mgr.get_server_port(h) if joern_mgr else None
+            result.append({
+                "hash": h,
+                "language": info.language,
+                "status": status,
+                "joern_port": port,
+                "source": info.source_path,
+            })
+        return result
+    except Exception:
+        return []
+
+
+def _build_health() -> dict:
+    """Collect all health metrics and return a structured dict."""
+    joern_mgr = services.get("joern_server_manager")
+    project_root = os.path.dirname(os.path.abspath(__file__))
+
+    # Joern container
+    container_info: dict = {}
+    try:
+        if joern_mgr:
+            container = joern_mgr.docker_client.containers.get(joern_mgr.container_name)
+            container_info = {"running": container.status == "running", "status": container.status}
+        else:
+            container_info = {"running": False, "status": "no_manager"}
+    except Exception as e:
+        container_info = {"running": False, "status": "not_found", "error": str(e)}
+
+    # Joern server pool
+    active_servers: dict = {}
+    if joern_mgr:
+        for h, p in joern_mgr.get_running_servers().items():
+            active_servers[h] = p
+
+    # Sleeping count
+    sleeping = 0
+    codebases = _get_codebase_list()
+    by_status: dict = {}
+    for cb in codebases:
+        s = cb["status"]
+        by_status[s] = by_status.get(s, 0) + 1
+        if s == "sleeping":
+            sleeping += 1
+
+    # Port pool
+    port_info: dict = {}
+    if "port_manager" in services:
+        pm = services["port_manager"]
+        alloc = len(pm.get_all_allocations())
+        avail = pm.available_count()
+        port_info = {"allocated": alloc, "available": avail}
+
+    # CPG queue
+    cpq = services.get("cpg_queue")
+    config = services.get("config")
+
+    issues = []
+    if not container_info.get("running"):
+        issues.append("Joern Docker container is not running")
+    if _get_system_memory_available_gb() < 1.0:
+        issues.append("System memory critically low (<1 GB available)")
+
+    uptime = _uptime_seconds()
+    return {
+        "status": "unhealthy" if any("not running" in i for i in issues) else ("degraded" if issues else "healthy"),
+        "issues": issues,
+        "service": "codebadger",
+        "version": VERSION,
+        "uptime": {
+            "seconds": uptime,
+            "human": _format_uptime(uptime),
+        },
+        "joern": {
+            "container": container_info,
+            "servers": {
+                "active": len(active_servers),
+                "sleeping": sleeping,
+                "max_allowed": joern_mgr._max_active if joern_mgr else 0,
+                "lru_evictions": joern_mgr._lru_eviction_count if joern_mgr else 0,
+                "port_pool": port_info,
+            },
+        },
+        "cpg_queue": {
+            "depth": cpq.depth if cpq else 0,
+            "workers": config.cpg.build_workers if config else 0,
+        },
+        "codebases": {
+            "total": len(codebases),
+            "by_status": by_status,
+            "list": codebases,
+        },
+        "resources": {
+            "process_memory_mb": _get_process_memory_mb(),
+            "system_memory_available_gb": _get_system_memory_available_gb(),
+            "disk": _get_disk_usage(project_root),
+            "cpg_cache_mb": _get_cpg_cache_mb(),
+        },
+    }
+
+
+async def _periodic_status_log(interval_secs: int) -> None:
+    """Log a compact server status block every interval_secs seconds."""
+    while True:
+        await asyncio.sleep(interval_secs)
+        try:
+            h = _build_health()
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            sep = "=" * 60
+            lines = [
+                sep,
+                f"CodeBadger Status  [{now}]  uptime {h['uptime']['human']}",
+                sep,
+                f"Status : {h['status'].upper()}" + (f"  issues={h['issues']}" if h['issues'] else ""),
+                f"Memory : process={h['resources']['process_memory_mb']} MB  "
+                f"system_avail={h['resources']['system_memory_available_gb']} GB",
+                f"Joern  : active={h['joern']['servers']['active']}  "
+                f"sleeping={h['joern']['servers']['sleeping']}  "
+                f"max={h['joern']['servers']['max_allowed']}  "
+                f"evictions={h['joern']['servers']['lru_evictions']}",
+                f"Queue  : depth={h['cpg_queue']['depth']}  "
+                f"workers={h['cpg_queue']['workers']}",
+                f"CPGs   : {h['codebases']['total']} registered  "
+                + "  ".join(f"{k}={v}" for k, v in h['codebases']['by_status'].items()),
+            ]
+            for cb in h['codebases']['list']:
+                port_str = f":{cb['joern_port']}" if cb['joern_port'] else "      "
+                src = cb['source']
+                if len(src) > 40:
+                    src = "..." + src[-37:]
+                lines.append(
+                    f"  {cb['hash']:<12}  {cb['language']:<10}  {cb['status']:<10}  {port_str:<7}  {src}"
+                )
+            lines.append(sep)
+            for line in lines:
+                logger.info(line)
+        except Exception as e:
+            logger.warning(f"Periodic status log failed: {e}")
 
 
 # Health check endpoint
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
-    """Health check endpoint for monitoring server status"""
+    """Health check endpoint"""
     try:
-        project_root = os.path.dirname(os.path.abspath(__file__))
-
-        joern_mgr = services.get("joern_server_manager")
-        health_status = {
-            "status": "healthy",
-            "service": "codebadger",
-            "version": VERSION,
-            "joern_container": _check_joern_container_status(),
-            "active_servers": _get_active_servers(),
-            "active_joern_servers": len(joern_mgr.get_running_servers()) if joern_mgr else 0,
-            "sleeping_joern_servers": _get_sleeping_servers_count(),
-            "lru_eviction_count": joern_mgr._lru_eviction_count if joern_mgr else 0,
-            "cpg_build_queue_depth": services["cpg_queue"].depth if "cpg_queue" in services else 0,
-            "system_memory_available_gb": _get_system_memory_available_gb(),
-            "port_utilization": _get_port_utilization(),
-            "disk_usage": _get_disk_usage(project_root),
-            "cache_info": _get_cache_size(),
-        }
-
-        # Determine overall health status
-        container_status = health_status["joern_container"]
-        if "error" in container_status or not container_status.get("running", False):
-            health_status["status"] = "degraded"
-
-        return JSONResponse(health_status)
+        h = _build_health()
+        status_code = 200 if h["status"] != "unhealthy" else 503
+        return JSONResponse(h, status_code=status_code)
     except Exception as e:
         logger.error(f"Error in health check: {e}", exc_info=True)
         return JSONResponse({
             "status": "unhealthy",
             "service": "codebadger",
             "version": VERSION,
-            "error": str(e)
+            "error": str(e),
         }, status_code=500)
 
 
