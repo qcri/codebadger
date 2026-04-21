@@ -171,6 +171,16 @@ Add the following:
 - `find_toctou`: Detect Time-of-Check-Time-of-Use race conditions (CWE-367) where a file is checked with `access()`/`stat()` and then opened or operated on in a separate step.
 - `find_uninitialized_reads`: Detect uninitialized variable reads (CWE-457) where local variables are used before being assigned a value.
 
+### Custom tools
+
+You can add your own detectors without modifying the core codebase:
+
+1. Write a Scala query template in `src/tools/queries/your_query.scala`.
+2. Register a Python tool function in `src/tools/custom_tools.py`.
+3. Restart the server — the tool appears automatically in every MCP client.
+
+See [CUSTOM_TOOLS_GUIDE.md](CUSTOM_TOOLS_GUIDE.md) for the full step-by-step guide, CPGQL reference, and design decisions.
+
 ## Contributing & Tests
 
 Thanks for contributing! Here's a quick guide to get started with running tests and contributing code.
