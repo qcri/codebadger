@@ -11,6 +11,7 @@ from .joern_server_manager import JoernServerManager
 
 if TYPE_CHECKING:
     from .joern_client import JoernServerClient
+    from ..services.codebase_tracker import CodebaseTracker
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer()
@@ -19,9 +20,15 @@ tracer = get_tracer()
 class QueryExecutor:
     """Service for executing CPGQL queries against CPGs using Joern HTTP server"""
 
-    def __init__(self, joern_server_manager: Optional['JoernServerManager'] = None, config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        joern_server_manager: Optional["JoernServerManager"] = None,
+        config: Optional[Dict[str, Any]] = None,
+        codebase_tracker: Optional["CodebaseTracker"] = None,
+    ):
         self.joern_server_manager = joern_server_manager
         self.config = config or {}
+        self.codebase_tracker = codebase_tracker
 
     def execute_query(
         self,
@@ -50,6 +57,20 @@ class QueryExecutor:
                     )
 
                 port = self.joern_server_manager.get_server_port(codebase_hash)
+                if not port:
+                    # Auto-wake sleeping codebase
+                    if self.codebase_tracker:
+                        info = self.codebase_tracker.get_codebase(codebase_hash)
+                        if info and info.metadata.get("status") == "sleeping" and info.cpg_path:
+                            logger.info(f"Auto-waking sleeping codebase {codebase_hash}")
+                            try:
+                                port = self.joern_server_manager.reactivate(codebase_hash, info.cpg_path)
+                            except Exception as e:
+                                return QueryResult(
+                                    success=False,
+                                    error=f"Failed to reactivate sleeping codebase: {e}",
+                                    execution_time=time.time() - start_time,
+                                )
                 if not port:
                     return QueryResult(
                         success=False,

@@ -92,12 +92,9 @@ class CodebaseTracker:
             logger.error(f"Failed to update codebase {codebase_hash}: {e}")
             raise
 
-    def delete_codebase(self, codebase_hash: str) -> None:
-        """Delete codebase information"""
-        # Not implemented in DBManager yet, but we can add it if needed.
-        # For now, we can just log a warning or implement it in DBManager.
-        # Let's implement it in DBManager later if needed.
-        pass
+    def delete_codebase(self, codebase_hash: str) -> bool:
+        """Delete codebase record and associated data."""
+        return self.db.delete_codebase(codebase_hash)
 
     def list_codebases(self) -> list[str]:
         """List all tracked codebase hashes"""

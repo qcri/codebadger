@@ -125,3 +125,13 @@ QUERY_CACHE_TTL = 300
 # Storage defaults
 WORKSPACE_ROOT = "/tmp/codebadger"
 CLEANUP_ON_SHUTDOWN = True
+
+# Joern server pool (LRU eviction)
+MAX_ACTIVE_JOERN_SERVERS = 4
+JOERN_EVICTION_POLICY = "lru"
+
+# MCP connection concurrency limit
+MAX_MCP_CONNECTIONS = 8
+
+# CPG build queue
+CPG_BUILD_WORKERS = 2

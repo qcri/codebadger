@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 import tarfile
-from typing import Any, Dict, Optional, Annotated
+from typing import Any, Dict, Optional, Annotated, Set
 from pydantic import Field
 
 from ..exceptions import ValidationError
@@ -388,6 +388,48 @@ async def _generate_cpg_async(
             logger.error(f"Failed to update codebase status in error handler: {tracker_error}")
 
 
+class CPGGenerationQueue:
+    """Bounded async queue for CPG generation jobs (B1 dedup + B3 concurrency limit)."""
+
+    def __init__(self, workers: int = 2):
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._workers = workers
+        self._in_flight: Set[str] = set()
+        self._tasks: list = []
+
+    async def start(self) -> None:
+        for _ in range(self._workers):
+            task = asyncio.create_task(self._worker())
+            self._tasks.append(task)
+
+    async def stop(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+
+    async def submit(self, codebase_hash: str, job: dict) -> bool:
+        """Submit a CPG generation job. Returns False if hash already in-flight."""
+        if codebase_hash in self._in_flight:
+            return False
+        self._in_flight.add(codebase_hash)
+        await self._queue.put((codebase_hash, job))
+        return True
+
+    @property
+    def depth(self) -> int:
+        return self._queue.qsize()
+
+    async def _worker(self) -> None:
+        while True:
+            codebase_hash, job = await self._queue.get()
+            try:
+                await _generate_cpg_async(**job)
+            except Exception as e:
+                logger.error(f"CPG generation job for {codebase_hash} failed: {e}", exc_info=True)
+            finally:
+                self._in_flight.discard(codebase_hash)
+                self._queue.task_done()
+
+
 def register_core_tools(mcp, services: dict):
     """Register core MCP tools with the FastMCP server"""
 
@@ -602,17 +644,26 @@ Examples:
                 }
             )
 
-            # Start async CPG generation task
-            asyncio.create_task(
-                _generate_cpg_async(
-                    codebase_hash=codebase_hash,
-                    codebase_dir=codebase_dir,
-                    cpg_path=cpg_path,
-                    language=language,
-                    container_cpg_path=container_cpg_path,
-                    services=services
-                )
+            # Submit to bounded queue (B1 dedup + B3 concurrency limit)
+            job = dict(
+                codebase_hash=codebase_hash,
+                codebase_dir=codebase_dir,
+                cpg_path=cpg_path,
+                language=language,
+                container_cpg_path=container_cpg_path,
+                services=services,
             )
+            cpg_queue = services.get("cpg_queue")
+            if cpg_queue:
+                submitted = await cpg_queue.submit(codebase_hash, job)
+                if not submitted:
+                    return {
+                        "codebase_hash": codebase_hash,
+                        "status": "generating",
+                        "message": "CPG build already in progress for this codebase.",
+                    }
+            else:
+                asyncio.create_task(_generate_cpg_async(**job))
 
             # Estimate time
             estimate = _estimate_processing_time(codebase_dir, language, has_cpg=False)
@@ -687,44 +738,41 @@ Examples:
             status = codebase_info.metadata.get("status", "unknown")
             if status == "unknown" and codebase_info.cpg_path and os.path.exists(codebase_info.cpg_path):
                 status = "ready"
-            
-            # Ensure Joern server is running if status is ready
+
             joern_port = codebase_info.joern_port
-            if status == "ready":
-                joern_server_manager = services.get("joern_server_manager")
-                if joern_server_manager:
-                    # Check if running
-                    is_running = False
-                    if joern_port:
-                        is_running = joern_server_manager.is_server_running(codebase_hash)
-                    
-                    if not is_running:
-                        logger.info(f"Joern server not running for ready codebase {codebase_hash}, restarting in background...")
-                        joern_port = None
-                        status = "loading"
+            joern_server_manager = services.get("joern_server_manager")
 
-                        # Kick off async restart
-                        container_cpg_path = codebase_info.metadata.get("container_cpg_path")
-                        if not container_cpg_path:
-                            container_cpg_path = f"/playground/cpgs/{codebase_hash}/cpg.bin"
+            # Sleeping means CPG on disk but server evicted — treat like ready-but-not-running
+            needs_restart = status in ("ready", "sleeping")
+            if needs_restart and joern_server_manager:
+                is_running = bool(joern_port and joern_server_manager.is_server_running(codebase_hash))
 
-                        codebase_tracker.update_codebase(
-                            codebase_hash=codebase_hash,
-                            joern_port=None,
-                            metadata={"status": "loading", **{k: v for k, v in codebase_info.metadata.items() if k != "status"}}
-                        )
+                if not is_running:
+                    logger.info(f"Joern server not running for {status} codebase {codebase_hash}, restarting in background...")
+                    joern_port = None
+                    status = "loading"
 
-                        try:
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(
-                                _restart_server_async(
-                                    codebase_hash=codebase_hash,
-                                    container_cpg_path=container_cpg_path,
-                                    services=services,
-                                )
+                    container_cpg_path = codebase_info.metadata.get("container_cpg_path")
+                    if not container_cpg_path:
+                        container_cpg_path = f"/playground/cpgs/{codebase_hash}/cpg.bin"
+
+                    codebase_tracker.update_codebase(
+                        codebase_hash=codebase_hash,
+                        joern_port=None,
+                        metadata={"status": "loading", **{k: v for k, v in codebase_info.metadata.items() if k != "status"}}
+                    )
+
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(
+                            _restart_server_async(
+                                codebase_hash=codebase_hash,
+                                container_cpg_path=container_cpg_path,
+                                services=services,
                             )
-                        except RuntimeError:
-                            logger.warning(f"No event loop for async restart of {codebase_hash}")
+                        )
+                    except RuntimeError:
+                        logger.warning(f"No event loop for async restart of {codebase_hash}")
             
             return {
                 "codebase_hash": codebase_hash,
@@ -747,3 +795,89 @@ Examples:
                 "success": False,
                 "error": str(e),
             }
+
+    @mcp.tool(
+        description="""Free resources held by a codebase.
+
+delete_files=False (default):
+    Terminate the Joern process and release the port.
+    CPG binary is kept on disk for fast re-activation later.
+    Status is set to 'sleeping'.
+
+delete_files=True:
+    Full removal: kill the Joern process, delete the CPG binary and the
+    copied/cloned source under /playground/, and remove the DB row.
+    Requires a full CPG rebuild to use the codebase again.
+    Returns freed_mb in the response.
+""",
+    )
+    async def remove_cpg(
+        codebase_hash: Annotated[str, Field(description="The hash identifier of the codebase")],
+        delete_files: Annotated[bool, Field(description="If True, permanently delete CPG and source files")] = False,
+    ) -> Dict[str, Any]:
+        """Free resources held by a codebase (evict server and optionally delete files)."""
+        try:
+            codebase_tracker = services["codebase_tracker"]
+            joern_server_manager = services.get("joern_server_manager")
+
+            codebase_info = codebase_tracker.get_codebase(codebase_hash)
+            if not codebase_info:
+                return {"success": False, "error": f"Codebase {codebase_hash} not found"}
+
+            # Kill Joern process and release port
+            if joern_server_manager and joern_server_manager.get_server_port(codebase_hash):
+                joern_server_manager.terminate_server(codebase_hash)
+
+            if not delete_files:
+                codebase_tracker.update_codebase(
+                    codebase_hash=codebase_hash,
+                    joern_port=None,
+                    metadata={"status": "sleeping"},
+                )
+                return {
+                    "success": True,
+                    "codebase_hash": codebase_hash,
+                    "status": "sleeping",
+                    "message": "Joern process terminated. CPG kept on disk for fast re-activation.",
+                }
+
+            # delete_files=True: remove everything
+            playground_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "playground")
+            )
+            freed_bytes = 0
+
+            cpg_dir = os.path.join(playground_path, "cpgs", codebase_hash)
+            if os.path.exists(cpg_dir):
+                for dirpath, _, filenames in os.walk(cpg_dir):
+                    for fname in filenames:
+                        try:
+                            freed_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                        except OSError:
+                            pass
+                shutil.rmtree(cpg_dir, ignore_errors=True)
+
+            codebase_dir = os.path.join(playground_path, "codebases", codebase_hash)
+            if os.path.exists(codebase_dir):
+                for dirpath, _, filenames in os.walk(codebase_dir):
+                    for fname in filenames:
+                        try:
+                            freed_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                        except OSError:
+                            pass
+                shutil.rmtree(codebase_dir, ignore_errors=True)
+
+            db_manager = services["db_manager"]
+            db_manager.delete_codebase(codebase_hash)
+
+            return {
+                "success": True,
+                "codebase_hash": codebase_hash,
+                "status": "removed",
+                "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+                "message": "CPG, source files, and DB record deleted.",
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to remove CPG {codebase_hash}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}

@@ -6,15 +6,21 @@ This is the main entry point for the CodeBadger Server that provides static code
 capabilities through the Model Context Protocol (MCP) using Joern's Code Property Graph.
 """
 
+import asyncio
 import logging
 import os
 import shutil
 import socket
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
-from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
 from src.config import load_config
+from src import defaults
+from src.tools.core_tools import CPGGenerationQueue
 from src.services import (
     CodebaseTracker,
     GitManager,
@@ -91,6 +97,10 @@ async def _graceful_shutdown():
             except Exception as e:
                 logger.warning(f"Error releasing ports: {e}")
 
+        # Stop CPG generation queue
+        if 'cpg_queue' in services:
+            await services['cpg_queue'].stop()
+
         # Flush database and caches
         if 'db_manager' in services:
             logger.info("Flushing database...")
@@ -151,7 +161,9 @@ async def app_lifespan(server: FastMCP):
         services['joern_server_manager'] = JoernServerManager(
             joern_binary_path=config.joern.binary_path,
             container_name=container_name,
-            config=config
+            config=config,
+            codebase_tracker=services['codebase_tracker'],
+            max_active_servers=config.joern.max_active_servers,
         )
 
         # Verify the Docker container is running before proceeding
@@ -189,7 +201,11 @@ async def app_lifespan(server: FastMCP):
         # Skip initialize() - no Docker needed
 
         # Initialize query executor with Joern server manager
-        services['query_executor'] = QueryExecutor(services['joern_server_manager'], config=config.query)
+        services['query_executor'] = QueryExecutor(
+            services['joern_server_manager'],
+            config=config.query,
+            codebase_tracker=services['codebase_tracker'],
+        )
 
         # Initialize Code Browsing Service
         services['code_browsing_service'] = CodeBrowsingService(
@@ -198,8 +214,18 @@ async def app_lifespan(server: FastMCP):
             services['db_manager']
         )
 
+        # Start CPG generation queue (B3)
+        cpg_queue = CPGGenerationQueue(workers=config.cpg.build_workers)
+        await cpg_queue.start()
+        services['cpg_queue'] = cpg_queue
+        logger.info(f"CPG generation queue started with {config.cpg.build_workers} workers")
+
         # Register MCP tools now that services are initialized
         register_tools(server, services)
+
+        # Start Joern watchdog (C1) — must run after tools are registered
+        services['joern_server_manager'].start_watchdog()
+        logger.info("Joern server watchdog started")
 
         logger.info("All services initialized")
         logger.info("CodeBadger Server is ready")
@@ -214,11 +240,31 @@ async def app_lifespan(server: FastMCP):
         logger.info("CodeBadger Server shutdown complete")
 
 
+class ConcurrencyLimitMiddleware(BaseHTTPMiddleware):
+    """Return 503 when too many MCP connections are active (B2)."""
+
+    def __init__(self, app, max_concurrent: int = 8):
+        super().__init__(app)
+        self._sem = asyncio.Semaphore(max_concurrent)
+
+    async def dispatch(self, request: Request, call_next):
+        if self._sem._value == 0:
+            return Response(
+                "Server busy — too many concurrent requests",
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+        async with self._sem:
+            return await call_next(request)
+
+
 # Initialize FastMCP server
+_max_mcp = int(os.getenv("MAX_MCP_CONNECTIONS", str(defaults.MAX_MCP_CONNECTIONS)))
 mcp = FastMCP(
     "CodeBadger Server",
-    lifespan=app_lifespan
+    lifespan=app_lifespan,
 )
+mcp.add_middleware(Middleware(ConcurrencyLimitMiddleware, max_concurrent=_max_mcp))
 
 # Note: Tools are registered inside the lifespan function
 # register_tools(mcp, services)
@@ -349,6 +395,39 @@ def _get_port_utilization() -> dict:
         return {"error": str(e)}
 
 
+def _get_system_memory_available_gb() -> float:
+    try:
+        import psutil
+        return round(psutil.virtual_memory().available / (1024 ** 3), 2)
+    except ImportError:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    kb = int(line.split()[1])
+                    return round(kb / (1024 ** 2), 2)
+    except Exception:
+        pass
+    return -1
+
+
+def _get_sleeping_servers_count() -> int:
+    try:
+        if "codebase_tracker" not in services:
+            return 0
+        tracker = services["codebase_tracker"]
+        hashes = tracker.list_codebases()
+        count = 0
+        for h in hashes:
+            info = tracker.get_codebase(h)
+            if info and info.metadata.get("status") == "sleeping":
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
 # Health check endpoint
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
@@ -356,15 +435,21 @@ async def health_check(request):
     try:
         project_root = os.path.dirname(os.path.abspath(__file__))
 
+        joern_mgr = services.get("joern_server_manager")
         health_status = {
             "status": "healthy",
             "service": "codebadger",
             "version": VERSION,
             "joern_container": _check_joern_container_status(),
             "active_servers": _get_active_servers(),
+            "active_joern_servers": len(joern_mgr.get_running_servers()) if joern_mgr else 0,
+            "sleeping_joern_servers": _get_sleeping_servers_count(),
+            "lru_eviction_count": joern_mgr._lru_eviction_count if joern_mgr else 0,
+            "cpg_build_queue_depth": services["cpg_queue"].depth if "cpg_queue" in services else 0,
+            "system_memory_available_gb": _get_system_memory_available_gb(),
             "port_utilization": _get_port_utilization(),
             "disk_usage": _get_disk_usage(project_root),
-            "cache_info": _get_cache_size()
+            "cache_info": _get_cache_size(),
         }
 
         # Determine overall health status

@@ -51,6 +51,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 port_max=int(os.getenv("JOERN_PORT_MAX", str(defaults.JOERN_PORT_MAX))),
                 server_init_sleep_time=float(os.getenv("JOERN_SERVER_INIT_SLEEP_TIME", str(defaults.JOERN_SERVER_INIT_SLEEP_TIME))),
                 server_startup_timeout=int(os.getenv("JOERN_SERVER_STARTUP_TIMEOUT", str(defaults.JOERN_SERVER_STARTUP_TIMEOUT))),
+                max_active_servers=int(os.getenv("MAX_ACTIVE_JOERN_SERVERS", str(defaults.MAX_ACTIVE_JOERN_SERVERS))),
             ),
             cpg=CPGConfig(
                 generation_timeout=int(os.getenv("CPG_GENERATION_TIMEOUT", str(defaults.CPG_GENERATION_TIMEOUT))),
@@ -62,6 +63,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 taint_sinks={},
                 min_cpg_file_size=int(os.getenv("MIN_CPG_FILE_SIZE", str(defaults.MIN_CPG_FILE_SIZE))),
                 output_truncation_length=int(os.getenv("OUTPUT_TRUNCATION_LENGTH", str(defaults.OUTPUT_TRUNCATION_LENGTH))),
+                build_workers=int(os.getenv("CPG_BUILD_WORKERS", str(defaults.CPG_BUILD_WORKERS))),
             ),
             query=QueryConfig(
                 timeout=int(os.getenv("QUERY_TIMEOUT", str(defaults.QUERY_TIMEOUT))),

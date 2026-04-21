@@ -161,6 +161,19 @@ class DBManager:
             logger.error(f"Failed to list codebases: {e}")
             return []
 
+    def delete_codebase(self, codebase_hash: str) -> bool:
+        """Delete a codebase record and its associated findings."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("DELETE FROM findings WHERE codebase_hash = ?", (codebase_hash,))
+                conn.execute("DELETE FROM tool_cache WHERE codebase_hash = ?", (codebase_hash,))
+                conn.execute("DELETE FROM codebases WHERE hash = ?", (codebase_hash,))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete codebase {codebase_hash}: {e}")
+            return False
+
     # Tool cache operations
     def cache_tool_output(self, tool_name: str, codebase_hash: str, parameters: Dict[str, Any], output: Any):
         """Cache tool output"""
