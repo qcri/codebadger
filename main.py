@@ -147,11 +147,42 @@ async def app_lifespan(server: FastMCP):
         )
 
         # Initialize Joern server manager (runs servers inside Docker container)
+        container_name = os.getenv("JOERN_CONTAINER_NAME", "codebadger-joern-server")
         services['joern_server_manager'] = JoernServerManager(
             joern_binary_path=config.joern.binary_path,
-            container_name=os.getenv("JOERN_CONTAINER_NAME", "codebadger-joern-server"),
+            container_name=container_name,
             config=config
         )
+
+        # Verify the Docker container is running before proceeding
+        try:
+            import docker
+            docker_client = docker.from_env()
+            container = docker_client.containers.get(container_name)
+            if container.status != "running":
+                logger.error(
+                    f"Docker container '{container_name}' exists but is not running "
+                    f"(status: {container.status}). Please start it with: docker compose up -d"
+                )
+                raise RuntimeError(
+                    f"Docker container '{container_name}' is not running. "
+                    f"Run 'docker compose up -d' first."
+                )
+            logger.info(f"Docker container '{container_name}' is running")
+        except docker.errors.NotFound:
+            logger.error(
+                f"Docker container '{container_name}' not found. "
+                f"Please start it with: docker compose up -d"
+            )
+            raise RuntimeError(
+                f"Docker container '{container_name}' not found. "
+                f"Run 'docker compose up -d' first."
+            )
+        except docker.errors.DockerException as e:
+            logger.error(f"Cannot connect to Docker daemon: {e}")
+            raise RuntimeError(
+                f"Cannot connect to Docker daemon. Is Docker running? Error: {e}"
+            )
 
         # Initialize CPG generator (runs Joern CLI directly in container)
         services['cpg_generator'] = CPGGenerator(config=config, joern_server_manager=services['joern_server_manager'])

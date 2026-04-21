@@ -28,7 +28,7 @@
         case "SWITCH" =>
           val switchLines = cs.ast.lineNumber.l.toSet
           if (switchLines.contains(lineA) && switchLines.contains(lineB)) {
-            val caseLabels = cs.ast.isJumpTarget.lineNumber.l.sorted
+            val caseLabels = cs.ast.filter(_.label == "JUMP_TARGET").lineNumber.l.sorted
             if (caseLabels.size >= 2) {
               def caseSegmentOf(line: Int): Int = caseLabels.lastIndexWhere(_ <= line)
               val segA = caseSegmentOf(lineA)
