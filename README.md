@@ -2,6 +2,25 @@
 
 A containerized Model Context Protocol (MCP) server providing static code analysis using Joern's Code Property Graph (CPG) technology with support for Java, C/C++, JavaScript, Python, Go, Kotlin, C#, Ghidra, Jimple, PHP, Ruby, and Swift.
 
+## News
+
+codebadger and its accompanying paper — *Bridging Code Property Graphs and Language Models for Program Analysis* — have been accepted at the **Software Vulnerability Management Workshop @ ICSE 2026**. 🎉
+
+## Citation
+
+```bibtex
+@article{lekssays2026bridging,
+  title={Bridging Code Property Graphs and Language Models for Program Analysis},
+  author={Lekssays, Ahmed},
+  journal={arXiv preprint arXiv:2603.24837},
+  year={2026}
+}
+```
+
+## Found a vulnerability using codebadger?
+
+If codebadger helped you discover a real-world vulnerability, we'd love to hear about it. Open a pull request adding it to [TROPHIES.md](TROPHIES.md) — include the CVE ID, project, a one-line description, and the date.
+
 ## Prerequisites
 
 Before you begin, make sure you have:
