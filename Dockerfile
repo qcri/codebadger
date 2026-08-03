@@ -12,16 +12,25 @@ RUN apt-get update && apt-get install -y \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JOERN_VERSION=4.0.581
+ENV JOERN_VERSION=4.0.594
 ENV JOERN_HOME=/opt/joern
 
-RUN mkdir -p ${JOERN_HOME} && \
-    cd /tmp && \
-    wget -q https://github.com/joernio/joern/releases/download/v${JOERN_VERSION}/joern-install.sh && \
-    chmod +x joern-install.sh && \
-    sed -i 's/sudo //g' joern-install.sh && \
-    ./joern-install.sh && \
-    rm -rf joern-install.sh joern-cli.zip
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64)        joern_platform=linux-x86_64 ;; \
+      aarch64|arm64) joern_platform=linux-arm64 ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    joern_zip="joern-cli-${joern_platform}.zip"; \
+    base_url="https://github.com/joernio/joern/releases/download/v${JOERN_VERSION}"; \
+    mkdir -p ${JOERN_HOME}; \
+    cd /tmp; \
+    wget -q "${base_url}/${joern_zip}"; \
+    wget -q "${base_url}/${joern_zip}.sha512"; \
+    echo "$(cut -d' ' -f1 "${joern_zip}.sha512")  ${joern_zip}" | sha512sum -c -; \
+    unzip -q -d ${JOERN_HOME} "${joern_zip}"; \
+    test -x ${JOERN_HOME}/joern-cli/joern; \
+    rm -f "${joern_zip}" "${joern_zip}.sha512"
 
 ENV PATH="${JOERN_HOME}/joern-cli:${JOERN_HOME}/joern-cli/bin:${PATH}"
 
