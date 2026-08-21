@@ -30,7 +30,7 @@ fixture.
   available from the caller's response cap and make truncation explicit.
 - [x] **T05 — `list_calls` result totals.** Apply the same total/truncation
   contract as `list_methods`.
-- [ ] **T06 — `get_type_definition` duplicate types.** Deduplicate Joern
+- [x] **T06 — `get_type_definition` duplicate types.** Deduplicate Joern
   `<duplicate>N` entries while retaining the canonical definition and members.
 - [ ] **T07 — `find_taint_sources` precision.** Do not classify setup calls
   such as `socket`, `bind`, and `listen` as input-bearing values by default.

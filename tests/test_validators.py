@@ -552,6 +552,14 @@ class TestQueryLoaderClamps:
         q = QueryLoader.load("type_definition", type_name="Foo", limit=10)
         assert ".take(10)" in q
 
+    def test_type_definition_deduplicates_before_limit(self):
+        from src.tools.queries import QueryLoader
+
+        q = QueryLoader.load("type_definition", type_name="Foo", limit=10)
+
+        assert q.index(".groupBy") < q.index(".take(10)")
+        assert 'replaceAll("<duplicate>[0-9]+$", "")' in q
+
 
 class TestSanitizeErrorText:
     """Test host-path redaction in client-facing error text"""

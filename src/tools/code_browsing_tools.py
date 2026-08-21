@@ -5,6 +5,7 @@ Tools for exploring and navigating codebase structure
 
 import logging
 import os
+import re
 from typing import Any, Dict, Optional, Annotated
 from pydantic import Field
 
@@ -19,6 +20,32 @@ from .queries import QueryLoader
 from ._common import require_cpg, unwrap_result
 
 logger = logging.getLogger(__name__)
+
+_DUPLICATE_TYPE_SUFFIX = re.compile(r"<duplicate>[0-9]+$")
+
+
+def _deduplicate_type_definitions(types):
+    """Normalize Joern duplicate suffixes and prefer canonical definitions."""
+    unique = {}
+    for item in types:
+        if not isinstance(item, dict):
+            continue
+
+        full_name = str(item.get("fullName") or "")
+        canonical_full_name = _DUPLICATE_TYPE_SUFFIX.sub("", full_name)
+        normalized = {**item, "fullName": canonical_full_name}
+        key = canonical_full_name or str(item.get("name") or "")
+        existing = unique.get(key)
+        if existing is None:
+            unique[key] = (normalized, full_name != canonical_full_name)
+            continue
+
+        _, existing_is_duplicate = existing
+        candidate_is_duplicate = full_name != canonical_full_name
+        if existing_is_duplicate and not candidate_is_duplicate:
+            unique[key] = (normalized, False)
+
+    return [definition for definition, _ in unique.values()]
 
 
 def _get_playground_path() -> str:
@@ -713,6 +740,7 @@ Returns:
 Notes:
     - Essential for understanding buffer sizes and memory layouts.
     - Does not read header files; uses CPG type info.
+    - Joern's internal `<duplicate>N` variants are collapsed into the canonical type.
 
 Examples:
     get_type_definition(codebase_hash="abc", type_name=".*request_t.*")""",
@@ -760,6 +788,8 @@ Examples:
                             "lineNumber": item.get("_4"),
                             "members": item.get("_5", []),
                         })
+
+            types = _deduplicate_type_definitions(types)
 
             return {
                 "success": True,

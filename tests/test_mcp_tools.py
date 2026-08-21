@@ -1130,6 +1130,77 @@ Edges:
             assert result_dict["types"][0]["name"] == "Buffer"
             assert len(result_dict["types"][0]["members"]) == 2
 
+    @pytest.mark.asyncio
+    async def test_get_type_definition_collapses_joern_duplicate_variants(
+        self, mock_services
+    ):
+        """Canonical definitions win and duplicate-only definitions keep members."""
+        import json
+
+        from src.tools.code_browsing_tools import register_code_browsing_tools
+
+        mock_services["query_executor"].execute_query.return_value = QueryResult(
+            success=True,
+            data=[
+                {
+                    "_1": "glob_t",
+                    "_2": "glob_t<duplicate>0",
+                    "_3": "runtest.c",
+                    "_4": 228,
+                    "_5": [{"name": "gl_pathc", "type": "size_t"}],
+                },
+                {
+                    "_1": "glob_t",
+                    "_2": "glob_t",
+                    "_3": "runtest.c",
+                    "_4": 134,
+                    "_5": [
+                        {"name": "gl_pathc", "type": "size_t"},
+                        {"name": "gl_pathv", "type": "char**"},
+                    ],
+                },
+                {
+                    "_1": "testDesc",
+                    "_2": "testDesc<duplicate>1",
+                    "_3": "runtest.c",
+                    "_4": 116,
+                    "_5": [{"name": "desc", "type": "char*"}],
+                },
+            ],
+            row_count=3,
+        )
+
+        mcp = FastMCP("TestServer")
+        register_code_browsing_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "get_type_definition",
+                {"codebase_hash": "553642871dd4251d", "type_name": ".*"},
+            )
+            result_dict = json.loads(result.content[0].text)
+
+        assert result_dict["total"] == 2
+        assert result_dict["types"] == [
+            {
+                "name": "glob_t",
+                "fullName": "glob_t",
+                "filename": "runtest.c",
+                "lineNumber": 134,
+                "members": [
+                    {"name": "gl_pathc", "type": "size_t"},
+                    {"name": "gl_pathv", "type": "char**"},
+                ],
+            },
+            {
+                "name": "testDesc",
+                "fullName": "testDesc",
+                "filename": "runtest.c",
+                "lineNumber": 116,
+                "members": [{"name": "desc", "type": "char*"}],
+            },
+        ]
+
 
 
 
