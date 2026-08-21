@@ -39,7 +39,7 @@ fixture.
   if needed.
 - [x] **T09 — `find_taint_flows` result contract.** Make matched, confirmed,
   emitted, unique, and truncated counts internally consistent.
-- [ ] **T10 — `get_program_slice` relevance.** Stop linking unrelated methods
+- [x] **T10 — `get_program_slice` relevance.** Stop linking unrelated methods
   solely through common variable names; preserve useful local and explicit
   interprocedural dependencies.
 - [ ] **T11 — `get_backend_status` bounded output.** Add pagination or summary

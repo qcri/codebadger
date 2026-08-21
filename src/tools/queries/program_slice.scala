@@ -283,13 +283,13 @@
 
               currMethod.call
                 .filter(c => c.lineNumber.getOrElse(0) > afterLine)
-                .filter(c => c.argument.code.l.exists(_.contains(varName)))
+                .filter(c => c.argument.ast.isIdentifier.name.l.contains(varName))
                 .l.take(15)
                 .foreach { call =>
                   val callFile = call.file.name.headOption.getOrElse("unknown")
                   propagationsList += ((call.lineNumber.getOrElse(-1), callFile, "usage", varName, call.code))
 
-                  call.argument.filter(_.code.contains(varName)).foreach { arg =>
+                  call.argument.filter(_.ast.isIdentifier.name.l.contains(varName)).foreach { arg =>
                     call.callee.foreach { calleeMethod =>
                       calleeMethod.parameter.filter(_.order == arg.argumentIndex).foreach { param =>
                         val pName = param.name
@@ -302,7 +302,7 @@
 
               currMethod.assignment
                 .filter(a => a.lineNumber.getOrElse(0) > afterLine)
-                .filter(a => a.source.code.contains(varName))
+                .filter(a => a.source.ast.isIdentifier.name.l.contains(varName))
                 .l.take(15)
                 .foreach { assign =>
                   val targetVar = assign.target.code
@@ -341,7 +341,7 @@
             if (includeControlFlow) {
               val controlAffected = method.controlStructure
                 .filter(c => c.lineNumber.getOrElse(0) > anchorLine)
-                .filter(c => resultVars.exists(v => c.condition.code.headOption.getOrElse("").contains(v)))
+                .filter(c => resultVars.exists(v => c.condition.ast.isIdentifier.name.l.contains(v)))
                 .map(ctrl => (ctrl.lineNumber.getOrElse(-1), ctrl.file.name.headOption.getOrElse("unknown"), ctrl.controlStructureType, ctrl.condition.code.headOption.getOrElse("")))
                 .l.distinct.take(20)
 

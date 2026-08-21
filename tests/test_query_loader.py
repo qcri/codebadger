@@ -76,3 +76,15 @@ def test_string_placeholder_still_escaped():
     # A filename with a quote must be escaped, not break out of the literal.
     q = QueryLoader.load("use_after_free", filename='a".c', limit=5)
     assert r'\"' in q  # the embedded quote is escaped
+
+
+def test_program_slice_forward_matching_uses_exact_identifiers():
+    q = QueryLoader.load(
+        "program_slice", line_num=10, max_depth=5,
+        include_backward=False, include_forward=True,
+        include_control_flow=True,
+    )
+
+    assert "c.argument.ast.isIdentifier.name.l.contains(varName)" in q
+    assert "a.source.ast.isIdentifier.name.l.contains(varName)" in q
+    assert ".code.l.exists(_.contains(varName))" not in q
