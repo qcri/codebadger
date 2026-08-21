@@ -1511,6 +1511,8 @@ Notes:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Format String Vulnerabilities",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Format String vulnerabilities (CWE-134) where a non-literal value is used as a printf-family format argument.
 
 Analyzes the codebase for calls to format-string functions (printf, fprintf, sprintf,
