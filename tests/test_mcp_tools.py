@@ -960,6 +960,15 @@ class TestMCPTools:
         for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition", "list_parameters", "run_cpgql_query", "get_cfg", "find_bounds_checks", "get_cpgql_syntax_help"):
             assert by_name[name].title
             assert by_name[name].annotations.readOnlyHint is True
+        for name in (
+            "find_taint_sources", "find_taint_sinks", "find_taint_flows",
+            "get_program_slice", "get_variable_flow", "find_use_after_free",
+            "find_double_free", "find_null_pointer_deref", "find_integer_overflow",
+            "find_format_string_vulns", "find_heap_overflow", "find_stack_overflow",
+            "find_toctou", "find_uninitialized_reads",
+        ):
+            assert by_name[name].title
+            assert by_name[name].annotations.readOnlyHint is True
         methods_schema = by_name["list_methods"].outputSchema
         assert methods_schema["required"] == ["success"]
         assert methods_schema["properties"]["truncated"]["type"] == "boolean"
