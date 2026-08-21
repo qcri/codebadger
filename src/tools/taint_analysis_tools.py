@@ -1794,6 +1794,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Uninitialized Reads",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect uninitialized variable reads (CWE-457) — variables used before assignment.
 
 Analyzes the codebase for local variables that are read before they have been
