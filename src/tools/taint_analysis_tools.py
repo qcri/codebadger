@@ -1582,6 +1582,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Heap Overflows",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Heap Overflow vulnerabilities (CWE-122) where a write to a heap buffer exceeds its allocated size.
 
 Analyzes the codebase for pairs of (allocation, write) where the write may exceed
