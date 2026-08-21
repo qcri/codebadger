@@ -1520,6 +1520,7 @@ Notes:
     @mcp.tool(
         title="Find Format String Vulnerabilities",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Format String vulnerabilities (CWE-134) where a non-literal value is used as a printf-family format argument.
 
 Analyzes the codebase for calls to format-string functions (printf, fprintf, sprintf,
@@ -1554,7 +1555,7 @@ Examples:
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
         limit: Annotated[int, Field(description="Maximum results to return")] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 120,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Detect potential format string vulnerabilities in the codebase."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -1579,14 +1580,14 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return _cached_taint_query(services, "find_format_string_vulns", codebase_hash, cache_params, _execute)
+            return {"success": True, "summary": str(_cached_taint_query(services, "find_format_string_vulns", codebase_hash, cache_params, _execute))}
 
         except ValidationError as e:
             logger.error(f"Error detecting format string vulnerabilities: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error detecting format string vulnerabilities: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
     @mcp.tool(
         title="Find Heap Overflows",
