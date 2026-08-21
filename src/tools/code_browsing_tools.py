@@ -754,6 +754,9 @@ Examples:
     # Semantic analysis tools
 
     @mcp.tool(
+        title="Get Control Flow Graph",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Get control flow graph (CFG) for a method.
 
 Understand the control flow of a method with a human-readable graph.
@@ -786,7 +789,7 @@ Examples:
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         method_name: Annotated[str, Field(description="Name of the method (can be regex pattern)")],
         max_nodes: Annotated[int, Field(description="Maximum CFG nodes to return (for large methods)")] = 100,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Get nodes and edges representing control flow in a method."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -808,14 +811,16 @@ Examples:
                 limit=max_nodes,
             )
 
-            return unwrap_result(result)
+            if not result.success:
+                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error or "CFG query failed"}}
+            return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
             logger.error(f"Error getting CFG: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error getting CFG: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
 
     @mcp.tool(

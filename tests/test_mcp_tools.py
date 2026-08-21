@@ -984,6 +984,7 @@ class TestMCPTools:
         assert by_name["find_uninitialized_reads"].title == "Find Uninitialized Reads"
         assert by_name["get_call_graph"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_taint_flows"].outputSchema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_cfg"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio
