@@ -1086,6 +1086,7 @@ Examples:
     @mcp.tool(
         title="Get Variable Flow",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Analyze data dependencies for a variable at a specific location.
 
 Finds code locations that influence (backward) or are influenced by (forward)
@@ -1116,7 +1117,7 @@ Examples:
         location: str,
         variable: str,
         direction: str = "backward",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Analyze variable data dependencies in backward or forward direction."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -1169,14 +1170,14 @@ Examples:
 
                 return unwrap_result(result)
 
-            return _cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute)
+            return {"success": True, "summary": str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))}
 
         except ValidationError as e:
             logger.error(f"Error getting data dependencies: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
     @mcp.tool(
         title="Find Use-After-Free Issues",
