@@ -624,14 +624,14 @@ Examples:
                 output = result.data[0] if isinstance(result.data, list) else str(result.data)
                 return {"success": True, "summary": output.strip()}
             else:
-                raise ToolError(f"QUERY_ERROR: {result.error if not result.success else 'No data returned'}")
+                raise ToolError(f"QUERY_ERROR: {result.error if not result.success else 'No data returned'} Hint: verify the CPG is ready and use a relative filename:line location.")
 
         except ValidationError as e:
             logger.error(f"Error finding bounds checks: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide buffer_access_location as filename:line.") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
 
     @mcp.tool(
         title="Get CPGQL Syntax Help",
