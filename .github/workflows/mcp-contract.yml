@@ -13,3 +13,23 @@ jobs:
         run: docker build -f Dockerfile.mcp -t codebadger-mcp:ci .
       - name: Run MCP contract tests
         run: docker run --rm -v "$PWD:/workspace" -w /workspace codebadger-mcp:ci pytest -q tests/test_mcp_tools.py tests/test_presentation_tools.py
+
+  live-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build MCP service image
+        run: docker build -f Dockerfile.mcp -t codebadger-mcp:latest .
+      - name: Start compose services
+        run: docker compose up -d postgres redis codebadger-joern-server codebadger-mcp
+      - name: Probe health endpoint
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4242/health; then exit 0; fi
+            sleep 5
+          done
+          docker compose logs codebadger-mcp
+          exit 1
+      - name: Tear down compose services
+        if: always()
+        run: docker compose down -v
