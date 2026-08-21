@@ -937,11 +937,13 @@ class TestMCPTools:
         from src.tools.core_tools import register_core_tools
         from src.tools.code_browsing_tools import register_code_browsing_tools
         from src.tools.taint_analysis_tools import register_taint_analysis_tools
+        from src.tools.custom_tools import register_custom_tools
 
         mcp = FastMCP("TestServer")
         register_core_tools(mcp, mock_services)
         register_code_browsing_tools(mcp, mock_services)
         register_taint_analysis_tools(mcp, mock_services)
+        register_custom_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
             tools = await client.list_tools()
@@ -999,6 +1001,7 @@ class TestMCPTools:
         assert by_name["find_stack_overflow"].title == "Find Stack Overflows"
         assert by_name["find_toctou"].title == "Find TOCTOU Issues"
         assert by_name["find_uninitialized_reads"].title == "Find Uninitialized Reads"
+        assert by_name["find_command_injection_sinks"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_call_graph"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_call_graph"].inputSchema["properties"]["detail"]["default"] == "compact"
         assert by_name["find_taint_flows"].outputSchema["properties"]["summary"]["type"] == "string"
