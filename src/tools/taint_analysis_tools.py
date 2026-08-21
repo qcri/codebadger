@@ -1423,6 +1423,8 @@ Notes:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Integer Overflows",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Integer Overflow/Underflow vulnerabilities (CWE-190) before allocation or array indexing.
 
 Analyzes the codebase for cases where arithmetic operations (multiplication, left-shift,
