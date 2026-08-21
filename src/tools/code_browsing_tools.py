@@ -620,14 +620,14 @@ Examples:
                 output = result.data[0] if isinstance(result.data, list) else str(result.data)
                 return {"success": True, "summary": output.strip()}
             else:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error if not result.success else "No data returned"}}
+                raise ToolError(f"QUERY_ERROR: {result.error if not result.success else 'No data returned'}")
 
         except ValidationError as e:
             logger.error(f"Error finding bounds checks: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
     @mcp.tool(
         title="Get CPGQL Syntax Help",
