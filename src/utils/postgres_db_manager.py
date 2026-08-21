@@ -44,6 +44,9 @@ class PostgresDBManager(PostgresJobStore):
         import time
         start = time.monotonic()
         try:
+            # The pooled connection is opened lazily; health probes must be able
+            # to establish it before asking for a connection.
+            self._open_pool()
             with self._connect() as conn:
                 conn.execute("SELECT 1")
             return {"ok": True, "latency_ms": round((time.monotonic() - start) * 1000, 2)}
