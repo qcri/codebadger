@@ -90,12 +90,11 @@ fixture.
   duplicated prose that can drift from schemas.
 - [ ] Expose pagination and truncation metadata consistently so an LLM knows
   whether it saw all results and how to request the next page.
-- [ ] Generate the available-tools reference from the live FastMCP schemas, or
+- [x] Generate the available-tools reference from the live FastMCP schemas, or
   enforce schema/documentation parity in CI.
   Local contract tests now enforce title, description, annotations, and output
-  schema presence for the registered core/browsing/taint surface; CI wiring and
-  generated reference output remain.
-- [ ] Add an MCP contract test that inventories tools, validates annotations and
+  schema presence for the registered core/browsing/taint surface, and run in CI.
+- [x] Add an MCP contract test that inventories tools, validates annotations and
   schemas, invokes representative success/error paths, and snapshots only stable
   protocol fields.
 
