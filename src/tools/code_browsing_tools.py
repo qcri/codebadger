@@ -816,15 +816,15 @@ Examples:
             )
 
             if not result.success:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error or "CFG query failed"}}
+                raise ToolError(f"QUERY_ERROR: {result.error or 'CFG query failed'}")
             return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
             logger.error(f"Error getting CFG: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error getting CFG: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
 
     @mcp.tool(
