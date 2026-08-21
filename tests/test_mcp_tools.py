@@ -958,6 +958,9 @@ class TestMCPTools:
         for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition"):
             assert by_name[name].title
             assert by_name[name].annotations.readOnlyHint is True
+        methods_schema = by_name["list_methods"].outputSchema
+        assert methods_schema["required"] == ["success"]
+        assert methods_schema["properties"]["truncated"]["type"] == "boolean"
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):

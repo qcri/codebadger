@@ -59,6 +59,34 @@ def register_code_browsing_tools(mcp, services: dict):
     @mcp.tool(
         title="List Methods",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "methods": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"}, "node_id": {"type": "string"},
+                            "fullName": {"type": "string"}, "signature": {"type": "string"},
+                            "filename": {"type": "string"}, "lineNumber": {"type": "integer"},
+                            "lineNumberEnd": {"type": "integer"},
+                            "cyclomaticComplexity": {"type": "number"},
+                            "numberOfLines": {"type": "integer"}, "isExternal": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "total": {"type": "integer"}, "available": {"type": "integer"},
+                "returned": {"type": "integer"}, "result_cap": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "page": {"type": "integer"},
+                "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
+                "error": {"type": "string"},
+            },
+            "required": ["success"],
+            "additionalProperties": False,
+        },
         description="""List methods/functions in the codebase.
 
 Discover all methods and functions defined in the analyzed code.
