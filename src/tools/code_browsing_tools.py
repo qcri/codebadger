@@ -162,6 +162,31 @@ Examples:
     @mcp.tool(
         title="List Calls",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "caller": {"type": "string"}, "callee": {"type": "string"},
+                            "code": {"type": "string"}, "filename": {"type": "string"},
+                            "lineNumber": {"type": "integer"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "total": {"type": "integer"}, "available": {"type": "integer"},
+                "returned": {"type": "integer"}, "result_cap": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "page": {"type": "integer"},
+                "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
+                "error": {"type": ["string", "object"]},
+            },
+            "required": ["success"],
+            "additionalProperties": False,
+        },
         description="""List function/method calls in the codebase.
 
 Discover call relationships between functions.

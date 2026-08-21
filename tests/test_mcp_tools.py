@@ -961,6 +961,8 @@ class TestMCPTools:
         methods_schema = by_name["list_methods"].outputSchema
         assert methods_schema["required"] == ["success"]
         assert methods_schema["properties"]["truncated"]["type"] == "boolean"
+        calls_schema = by_name["list_calls"].outputSchema
+        assert calls_schema["properties"]["calls"]["items"]["properties"]["callee"]["type"] == "string"
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
