@@ -79,8 +79,11 @@
     output.append("No sink nodes found matching the pattern.\n")
     output.append("Try broadening sink_patterns or removing the filename filter.\n")
   } else {
-    // Run batch taint analysis: all sinks reachable from all sources
-    val rawFlows = effectiveSinks.reachableByFlows(sources).l.take(maxResults)
+    // Fetch one extra candidate so the response can report whether the cap
+    // hid additional flows without materializing an unbounded result set.
+    val candidateFlows = effectiveSinks.reachableByFlows(sources).l.take(maxResults + 1)
+    val truncated = candidateFlows.size > maxResults
+    val rawFlows = candidateFlows.take(maxResults)
 
     // Filter out flows that pass through sanitizer functions
     val flows = if (sanitizerPattern.isEmpty) rawFlows else {
@@ -96,13 +99,20 @@
 
     if (flows.isEmpty) {
       output.append("No confirmed taint flows found.\n")
+      output.append(s"Matched flow candidates: ${rawFlows.size}\n")
+      output.append(s"Confirmed flows after sanitizers: ${flows.size}\n")
+      output.append(s"Emitted unique flows: 0\n")
+      output.append(s"Truncated at max_results=$maxResults: $truncated\n")
       output.append(s"Tested ${sources.size} sources against ${sinkCalls.size} sinks.\n")
       if (sanitizerPattern.nonEmpty && rawFlows.nonEmpty) {
         output.append(s"Note: ${rawFlows.size} flow(s) were filtered out by sanitizer functions.\n")
       }
     } else {
       val filteredCount = rawFlows.size - flows.size
-      output.append(s"Found ${flows.size} confirmed taint flow(s):\n")
+      output.append(s"Found ${flows.size} confirmed candidate flow(s):\n")
+      output.append(s"Matched flow candidates: ${rawFlows.size}\n")
+      output.append(s"Confirmed flows after sanitizers: ${flows.size}\n")
+      output.append(s"Truncated at max_results=$maxResults: $truncated\n")
       if (filteredCount > 0) {
         output.append(s"($filteredCount flow(s) filtered out by sanitizer functions)\n")
       }
@@ -159,7 +169,8 @@
       }
 
       output.append("=" * 60 + "\n")
-      output.append(s"Summary: ${seen.size} unique flow(s) from ${sources.size} sources to ${sinkCalls.size} sinks\n")
+      output.append(s"Summary: ${seen.size} emitted unique flow(s) from ${sources.size} sources to ${sinkCalls.size} sinks\n")
+      output.append(s"Counts: matched=${rawFlows.size}, confirmed=${flows.size}, emitted=${seen.size}, truncated=$truncated\n")
     }
   }
 

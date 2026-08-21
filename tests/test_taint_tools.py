@@ -188,6 +188,23 @@ def test_query_loader_escapes_scala_string_values():
     assert 'val methodName = "main\\"; cpg.call.l // {{depth}}"' in query
 
 
+def test_auto_taint_query_reports_bounded_flow_counts():
+    query = QueryLoader.load(
+        "taint_flows_auto",
+        source_pattern="getenv",
+        sink_pattern="system",
+        sanitizer_pattern="",
+        file_filter="",
+        max_results=20,
+    )
+
+    assert ".take(maxResults + 1)" in query
+    assert "Matched flow candidates:" in query
+    assert "Confirmed flows after sanitizers:" in query
+    assert "Counts: matched=" in query
+    assert "truncated=" in query
+
+
 @pytest.mark.asyncio
 async def test_find_taint_sources_escapes_filename_for_query(fake_services):
     mcp = FastMCP("TestServer")

@@ -37,7 +37,7 @@ fixture.
 - [x] **T08 — `find_taint_sinks` precision.** Separate memory-management and
   other broad operations from high-signal data sinks, with an opt-in broad mode
   if needed.
-- [ ] **T09 — `find_taint_flows` result contract.** Make matched, confirmed,
+- [x] **T09 — `find_taint_flows` result contract.** Make matched, confirmed,
   emitted, unique, and truncated counts internally consistent.
 - [ ] **T10 — `get_program_slice` relevance.** Stop linking unrelated methods
   solely through common variable names; preserve useful local and explicit
