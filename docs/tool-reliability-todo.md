@@ -61,7 +61,7 @@ fixture.
   validation commands, fixture expectations, commit boundaries, and safe rules
   for working with generated CPG/runtime data. Add narrower nested guidance only
   where a subsystem genuinely needs different instructions.
-- [ ] Add concise FastMCP server instructions that teach an LLM the intended
+- [x] Add concise FastMCP server instructions that teach an LLM the intended
   sequence: inspect capacity, generate or select a CPG, wait until ready, browse
   narrowly, then expand into flow or detector analysis.
 - [ ] Add tool annotations and human-readable titles, including accurate
