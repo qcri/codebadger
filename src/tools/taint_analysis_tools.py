@@ -1654,6 +1654,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Stack Overflows",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Stack Buffer Overflow vulnerabilities (CWE-121) where a write to a fixed-size stack array may exceed its declared dimension.
 
 Analyzes the codebase for local fixed-size array declarations (e.g. char buf[64]) combined
