@@ -26,7 +26,7 @@ fixture.
 - [x] **T03 — `find_uninitialized_reads` false positives.** Exclude language
   literals, macros/constants, and type names such as `true`, `false`,
   `AF_INET`, `SOCK_STREAM`, and `NetworkContext` from variable findings.
-- [ ] **T04 — `list_methods` result totals.** Separate the number of matches
+- [x] **T04 — `list_methods` result totals.** Separate the number of matches
   available from the caller's response cap and make truncation explicit.
 - [ ] **T05 — `list_calls` result totals.** Apply the same total/truncation
   contract as `list_methods`.

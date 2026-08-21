@@ -1,10 +1,39 @@
 import logging
+import re
 from typing import Any, Dict, Optional
 from ..exceptions import ValidationError
 from ..utils.validators import validate_codebase_hash
 from ..utils.query_rendering import escape_scala_string
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_count(raw: Any) -> Optional[int]:
+    """Decode a scalar count returned by Joern across output formats."""
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str):
+        value = raw.strip()
+        try:
+            return int(value)
+        except ValueError:
+            # Joern's Scala REPL may retain the assignment prefix even when
+            # QueryExecutor requests a scalar via `.toString`.
+            match = re.fullmatch(
+                r'val\s+\w+:\s+String\s*=\s*"(-?\d+)"', value
+            )
+            return int(match.group(1)) if match else None
+    if isinstance(raw, (list, tuple)):
+        if not raw:
+            return 0
+        return _decode_count(raw[0])
+    if isinstance(raw, dict):
+        for key in ("value", "count", "_1"):
+            if key in raw:
+                return _decode_count(raw[key])
+    return None
 
 
 def _decode_parameter(raw: Any) -> Optional[Dict[str, Any]]:
@@ -119,6 +148,7 @@ class CodeBrowsingService:
             "callee_pattern": callee_pattern,
             "include_external": include_external,
             "limit": limit,
+            "result_schema_version": 2,
         }
 
         def execute_query():
@@ -142,12 +172,35 @@ class CodeBrowsingService:
                     f'.where(_.callOut.name("{escape_scala_string(callee_pattern)}"))'
                 )
 
-            query_parts.append(
+            base_query = "".join(query_parts) + ".dedup"
+            count_result = self.query_executor.execute_query(
+                codebase_hash=codebase_hash,
+                cpg_path=codebase_info.cpg_path,
+                query=f"{base_query}.size",
+                timeout=30,
+            )
+            if not count_result.success:
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": count_result.error},
+                }
+
+            total = _decode_count(count_result.data)
+            if total is None:
+                return {
+                    "success": False,
+                    "error": {
+                        "code": "QUERY_ERROR",
+                        "message": "Joern returned an invalid method count",
+                    },
+                }
+
+            projection = (
                 ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.controlStructure.size + 1, m.isExternal))"
             )
 
-            query_limit = min(limit, 10000)
-            query = "".join(query_parts) + f".dedup.take({query_limit}).l"
+            query_limit = max(0, min(limit, 10000))
+            query = f"{base_query}{projection}.take({query_limit}).l"
 
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
@@ -189,7 +242,13 @@ class CodeBrowsingService:
                             "isExternal": item.get("_9", False),
                         }
                     )
-            return {"success": True, "methods": methods, "total": len(methods)}
+            return {
+                "success": True,
+                "methods": methods,
+                "total": total,
+                "result_cap": query_limit,
+                "truncated": total > query_limit,
+            }
 
         # Get full result (cached or fresh)
         full_result = self._get_cached_or_execute(
@@ -200,10 +259,9 @@ class CodeBrowsingService:
             return full_result
 
         methods = full_result.get("methods", [])
-        # Respect the provided 'limit' for the returned list, independent of page_size
-        if limit is not None and limit > 0:
-            methods = methods[:limit]
-        total = len(methods)
+        total = full_result.get("total", len(methods))
+        result_cap = full_result.get("result_cap", max(0, min(limit, 10000)))
+        available = len(methods)
 
         # Pagination
         start_idx = (page - 1) * page_size
@@ -214,9 +272,15 @@ class CodeBrowsingService:
             "success": True,
             "methods": paged_methods,
             "total": total,
+            "available": available,
+            "returned": len(paged_methods),
+            "result_cap": result_cap,
+            "truncated": full_result.get("truncated", total > available),
             "page": page,
             "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1,
+            "total_pages": (
+                (available + page_size - 1) // page_size if page_size > 0 else 1
+            ),
         }
 
     def list_calls(

@@ -47,9 +47,14 @@ Returns:
     {
         "success": true,
         "methods": [{"name": "main", "filename": "main.c", ...}],
-        "total": 100,
+        "total": 1250,
+        "available": 1000,
+        "returned": 100,
+        "result_cap": 1000,
+        "truncated": true,
         "page": 1,
-        "total_pages": 5
+        "page_size": 100,
+        "total_pages": 10
     }
 
 Notes:
@@ -66,7 +71,7 @@ Examples:
         file_pattern: Annotated[Optional[str], Field(description="Optional regex to filter by file path")] = None,
         callee_pattern: Annotated[Optional[str], Field(description="Optional regex to filter for methods that call a specific function (e.g., 'memcpy|free|malloc')")] = None,
         include_external: Annotated[bool, Field(description="Include external/library methods")] = False,
-        limit: Annotated[int, Field(description="Maximum number of results to fetch for caching")] = 1000,
+        limit: Annotated[int, Field(description="Maximum number of matching methods made available for pagination (capped at 10000); total still reports the exact match count")] = 1000,
         page: Annotated[int, Field(description="Page number")] = 1,
         page_size: Annotated[int, Field(description="Number of results per page")] = 100,
     ) -> Dict[str, Any]:
@@ -767,5 +772,4 @@ Examples:
                 "success": False,
                 "error": str(e),
             }
-
 
