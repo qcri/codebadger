@@ -981,10 +981,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide both source and sink endpoints, or use mode='auto'.") from e
         except Exception as e:
             logger.error(f"Unexpected error finding taint flows: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status and narrowing the analysis.") from e
 
     @mcp.tool(
         title="Get Program Slice",
