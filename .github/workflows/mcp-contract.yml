@@ -1,0 +1,15 @@
+name: MCP contract
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build clean-clone MCP image
+        run: docker build -f Dockerfile.mcp -t codebadger-mcp:ci .
+      - name: Run MCP contract tests
+        run: docker run --rm -v "$PWD:/workspace" -w /workspace codebadger-mcp:ci pytest -q tests/test_mcp_tools.py tests/test_presentation_tools.py
