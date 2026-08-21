@@ -971,6 +971,7 @@ class TestMCPTools:
         assert by_name["find_taint_sources"].outputSchema["properties"]["sources"]["type"] == "array"
         assert by_name["find_taint_sinks"].outputSchema["properties"]["sinks"]["type"] == "array"
         assert by_name["find_taint_flows"].title == "Find Taint Flows"
+        assert by_name["get_program_slice"].title == "Get Program Slice"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio

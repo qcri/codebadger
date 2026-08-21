@@ -974,6 +974,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Get Program Slice",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Build a program slice from a specific call location.
 
 Creates a program slice showing code that affects (backward) or is affected by (forward)
