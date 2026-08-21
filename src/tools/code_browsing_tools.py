@@ -412,6 +412,20 @@ Examples:
 
 
     @mcp.tool(
+        title="Run CPGQL Query",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"}, "data": {},
+                "row_count": {"type": ["integer", "null"]},
+                "execution_time": {"type": ["number", "null"]},
+                "truncated": {"type": "boolean"}, "truncation_note": {"type": "string"},
+                "error": {"type": "string"}, "error_code": {"type": "string"},
+                "suggestion": {}, "help": {}, "validation": {},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""Execute a raw CPGQL query against the codebase.
 
 Run arbitrary Code Property Graph Query Language (CPGQL) queries
