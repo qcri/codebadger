@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
 from src.config import load_config
@@ -487,16 +488,12 @@ async def test_find_taint_flows_validation_error(fake_services):
 
     async with Client(mcp) as client:
         # Test with only sink (missing source)
-        res_text = await client.call_tool(
-            "find_taint_flows",
-            {
-                "codebase_hash": services["codebase_hash"],
-                "sink_location": "core.c:42",
-                "timeout": 10,
-            }
-        )
-        result = res_text.content[0].text
-
-        # Should return validation error about missing source
-        assert "Validation Error" in result
-        assert "source" in result.lower()
+        with pytest.raises(ToolError, match="source"):
+            await client.call_tool(
+                "find_taint_flows",
+                {
+                    "codebase_hash": services["codebase_hash"],
+                    "sink_location": "core.c:42",
+                    "timeout": 10,
+                },
+            )
