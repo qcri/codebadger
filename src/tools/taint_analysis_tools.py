@@ -1177,6 +1177,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Use-After-Free Issues",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Use-After-Free vulnerabilities by finding free(ptr) calls where ptr is used afterward.
 
 Analyzes the codebase for potential UAF issues using three-phase detection:
