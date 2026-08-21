@@ -227,6 +227,72 @@ async def test_find_taint_sinks_success(fake_services):
 
 
 @pytest.mark.asyncio
+async def test_find_taint_sinks_defaults_to_focused_c_categories(fake_services):
+    fake_services["config"].cpg.taint_sinks = {
+        "c": ["system", "sprintf", "malloc", "free", "stat", "bind", "printf"]
+    }
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "find_taint_sinks",
+            {"codebase_hash": fake_services["codebase_hash"], "language": "c"},
+        )
+        import json
+
+        response = json.loads(result.content[0].text)
+
+    query = fake_services["query_executor"].last_query
+    assert 'name("system|sprintf")' in query
+    assert response["mode"] == "focused"
+
+
+@pytest.mark.asyncio
+async def test_find_taint_sinks_broad_mode_restores_filtered_categories(fake_services):
+    patterns = ["system", "malloc", "free", "stat", "bind", "printf"]
+    fake_services["config"].cpg.taint_sinks = {"c": patterns}
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "find_taint_sinks",
+            {
+                "codebase_hash": fake_services["codebase_hash"],
+                "language": "c",
+                "broad": True,
+            },
+        )
+        import json
+
+        response = json.loads(result.content[0].text)
+
+    query = fake_services["query_executor"].last_query
+    for pattern in patterns:
+        assert pattern in query
+    assert response["mode"] == "broad"
+
+
+@pytest.mark.asyncio
+async def test_find_taint_sinks_explicit_patterns_bypass_focused_filter(fake_services):
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "find_taint_sinks",
+            {
+                "codebase_hash": fake_services["codebase_hash"],
+                "language": "c",
+                "sink_patterns": ["free"],
+            },
+        )
+
+    assert "free" in fake_services["query_executor"].last_query
+
+
+@pytest.mark.asyncio
 async def test_find_taint_sinks_with_filename_filter(fake_services):
     """Test find_taint_sinks with filename parameter"""
     mcp = FastMCP("TestServer")

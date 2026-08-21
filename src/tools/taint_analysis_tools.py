@@ -152,6 +152,20 @@ DEFAULT_SINKS = {
     ],
 }
 
+# Useful for exhaustive audits, but too noisy for the default sink inventory.
+# These remain available through broad=True or explicit sink_patterns.
+BROAD_C_FAMILY_SINKS = frozenset(
+    {
+        "malloc", "calloc", "realloc", "free", "alloca",
+        "memset", "strtok", "strtok_r", "realpath",
+        "access", "faccessat", "stat", "fstat", "lstat", "statat",
+        "utime", "utimes", "futimes", "lutimes", "futimens", "utimensat",
+        "connect", "bind",
+        "scanf", "fscanf", "sscanf", "vscanf", "vfscanf", "vsscanf",
+        "printf", "vprintf", "dprintf", "vdprintf",
+    }
+)
+
 # Default sanitizer/barrier functions by language
 # Flows through these functions are considered "cleaned" and filtered out
 DEFAULT_SANITIZERS = {
@@ -274,6 +288,29 @@ def _resolve_source_patterns(cfg, lang: str, explicit_patterns: Optional[list]):
         for pattern in patterns
         if pattern.rstrip("(").rsplit(".", 1)[-1]
         not in NON_INPUT_SOURCE_SETUP_CALLS
+    ]
+
+
+def _resolve_sink_patterns(
+    cfg, lang: str, explicit_patterns: Optional[list], broad: bool
+):
+    """Resolve sink patterns, retaining noisy C-family categories as opt-in."""
+    if explicit_patterns:
+        return explicit_patterns
+
+    configured = (
+        getattr(cfg.cpg, "taint_sinks", {})
+        if hasattr(cfg.cpg, "taint_sinks")
+        else {}
+    )
+    patterns = configured.get(lang, []) or DEFAULT_SINKS.get(lang.lower(), [])
+    if broad or lang.lower() not in {"c", "cpp"}:
+        return patterns
+
+    return [
+        pattern
+        for pattern in patterns
+        if pattern.rstrip("(").rsplit(".", 1)[-1] not in BROAD_C_FAMILY_SINKS
     ]
 
 
@@ -540,6 +577,7 @@ Args:
     codebase_hash: The codebase hash from generate_cpg.
     language: Programming language (c, cpp, java, python, javascript, go, csharp, php, ruby, swift, kotlin, etc). Default: uses CPG language.
     sink_patterns: Optional list of regex patterns for sink functions (e.g., ['system', 'exec']).
+    broad: Include low-signal C/C++ sink categories (default False).
     filename: Optional regex to filter by filename (relative to project root).
     limit: Max results (default 200).
 
@@ -553,7 +591,8 @@ Returns:
     }
 
 Notes:
-    - Built-in default patterns for all supported languages.
+    - C/C++ defaults are focused; set broad=true for exhaustive inventory.
+    - Explicit sink_patterns are never filtered.
     - Sinks are the destinations where tainted data causes harm.
     - Use node_id from results with find_taint_flows.
 
@@ -565,6 +604,7 @@ Examples:
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         language: Annotated[Optional[str], Field(description="Programming language (c, cpp, java, python, javascript, etc). If not provided, uses the CPG's language")] = None,
         sink_patterns: Annotated[Optional[list], Field(description="Optional list of regex patterns to match sink function names (e.g., ['system', 'popen', 'sprintf']). If not provided, uses default patterns")] = None,
+        broad: Annotated[bool, Field(description="Include low-signal C/C++ memory, metadata, setup, input, and generic-output sink categories")] = False,
         filename: Annotated[Optional[str], Field(description="Optional filename to filter results (e.g., 'shell.c', 'main.c'). Uses regex matching, so partial names work (e.g., 'shell' matches 'shell.c')")] = None,
         limit: Annotated[int, Field(description="Maximum number of results to return")] = 200,
     ) -> Dict[str, Any]:
@@ -579,16 +619,8 @@ Examples:
 
             lang = language or codebase_info.language or "c"
             
-            # Try config first, then fall back to built-in defaults
             cfg = services["config"]
-            taint_cfg = (
-                getattr(cfg.cpg, "taint_sinks", {})
-                if hasattr(cfg.cpg, "taint_sinks")
-                else {}
-            )
-
-            # Priority: 1) user-provided, 2) config, 3) built-in defaults
-            patterns = sink_patterns or taint_cfg.get(lang, []) or DEFAULT_SINKS.get(lang.lower(), [])
+            patterns = _resolve_sink_patterns(cfg, lang, sink_patterns, broad)
             if not patterns:
                 return {"success": True, "sinks": [], "total": 0, "message": f"No taint sinks configured for language {lang}. Supported: {', '.join(DEFAULT_SINKS.keys())}"}
 
@@ -596,7 +628,7 @@ Examples:
             # from qualified patterns (e.g., 'os.system' -> 'system')
             joined = _build_joern_name_pattern(patterns)
 
-            cache_params = {"lang": lang, "patterns": sorted(set(patterns)), "filename": filename, "limit": limit}
+            cache_params = {"lang": lang, "patterns": sorted(set(patterns)), "broad": broad, "filename": filename, "limit": limit}
 
             def _execute():
                 # Build query with optional file filter
@@ -635,6 +667,11 @@ Examples:
                     "total": len(sinks),
                     "limit": limit,
                     "has_more": len(sinks) >= limit,
+                    "mode": (
+                        "explicit"
+                        if sink_patterns
+                        else ("broad" if broad else "focused")
+                    ),
                 }
 
             return _cached_taint_query(services, "find_taint_sinks", codebase_hash, cache_params, _execute)

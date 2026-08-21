@@ -34,7 +34,7 @@ fixture.
   `<duplicate>N` entries while retaining the canonical definition and members.
 - [x] **T07 — `find_taint_sources` precision.** Do not classify setup calls
   such as `socket`, `bind`, and `listen` as input-bearing values by default.
-- [ ] **T08 — `find_taint_sinks` precision.** Separate memory-management and
+- [x] **T08 — `find_taint_sinks` precision.** Separate memory-management and
   other broad operations from high-signal data sinks, with an opt-in broad mode
   if needed.
 - [ ] **T09 — `find_taint_flows` result contract.** Make matched, confirmed,
