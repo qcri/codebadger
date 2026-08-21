@@ -29,7 +29,9 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code (playground/ is a mounted volume, excluded via .dockerignore).
-COPY main.py config.yaml ./
+# Use the shipped example so clean clones do not depend on ignored local config.
+COPY main.py config.example.yaml ./
+RUN cp config.example.yaml config.yaml
 COPY src/ ./src/
 
 # Per-run file logs land here; mount a volume to persist them on the host.
