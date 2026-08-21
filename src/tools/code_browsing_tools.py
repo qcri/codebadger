@@ -334,7 +334,7 @@ Examples:
             )
 
             if not result.success:
-                raise ToolError(f"QUERY_ERROR: {result.error or 'Call graph query failed'}")
+                raise ToolError(f"QUERY_ERROR: {result.error or 'Call graph query failed'} Hint: verify the CPG is ready and narrow the method/depth filters.")
             summary = unwrap_result(result)
             if detail == "compact" and len(summary) > 2000:
                 summary = summary[:2000].rstrip() + "\n...[truncated; use detail='full']"
@@ -342,10 +342,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: check direction and keep depth between 1 and 15.") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
 
 
     @mcp.tool(
