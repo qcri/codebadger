@@ -57,7 +57,7 @@ fixture.
 
 ## LLM and FastMCP presentation — after tool fixes
 
-- [ ] Add a root `AGENTS.md` describing architecture, local development,
+- [x] Add a root `AGENTS.md` describing architecture, local development,
   validation commands, fixture expectations, commit boundaries, and safe rules
   for working with generated CPG/runtime data. Add narrower nested guidance only
   where a subsystem genuinely needs different instructions.
