@@ -4,6 +4,7 @@ Security-focused tools for analyzing data flows and vulnerabilities
 """
 
 import logging
+from fastmcp.exceptions import ToolError
 import re
 from typing import Any, Callable, Dict, Optional, Union, Annotated
 from pydantic import Field
@@ -973,10 +974,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error finding taint flows: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
     @mcp.tool(
         title="Get Program Slice",
@@ -1081,10 +1082,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error getting program slice: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
 
     @mcp.tool(
