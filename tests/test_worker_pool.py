@@ -46,7 +46,7 @@ def pool(monkeypatch):
     fake.containers.list.return_value = []
     monkeypatch.setattr(jsm.docker, "from_env", lambda: fake)
     m = jsm.JoernServerManager(config=load_config())
-    m._wait_for_server = lambda port, timeout=120: True  # skip real readiness poll
+    m._wait_for_server = lambda port, timeout=120, codebase_hash="": True  # skip readiness poll
     return m, fake
 
 

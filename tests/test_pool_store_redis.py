@@ -27,7 +27,7 @@ def _make_manager(monkeypatch, budget_mb, redis_url):
     monkeypatch.setattr(jsm.docker, "from_env", lambda: fake)
     m = jsm.JoernServerManager(config=load_config(), redis_url=redis_url)
     # Stub the Docker-/network-touching bits so we exercise only coordination.
-    m._wait_for_server = lambda port, timeout=120: True
+    m._wait_for_server = lambda port, timeout=120, codebase_hash="": True
     m._port_healthy = lambda port: True
     m._plan_server = lambda h: (2, 3072)  # tier-S: 3072 MB reservation each
     return m, fake

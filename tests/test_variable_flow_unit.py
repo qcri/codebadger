@@ -59,10 +59,9 @@ Dependencies: ..."""]
             direction="backward"
         )
         
-        # Verify result is string
-        self.assertIsInstance(result, str)
-        self.assertIn("Variable Flow Analysis", result)
-        self.assertIn("Aliases: p", result)
+        self.assertIsInstance(result, dict)
+        self.assertIn("Variable Flow Analysis", result["summary"])
+        self.assertIn("Aliases: p", result["summary"])
 
     def test_parameter_detection_output(self):
         # Mock services
@@ -114,7 +113,7 @@ Dependencies:
              variable="item",
              direction="backward"
         )
-        self.assertIn("(parameter)", result)
+        self.assertIn("(parameter)", result["summary"])
         
         # Verify query executor called with correct args
         services["query_executor"].execute_query.assert_called()
@@ -173,8 +172,8 @@ Dependencies:
             direction="backward"
         )
         
-        self.assertIn("list = (Type) ptr", result)
-        self.assertIn("list->field = val", result)
+        self.assertIn("list = (Type) ptr", result["summary"])
+        self.assertIn("list->field = val", result["summary"])
         
         # Check that query loading logic worked (implicitly verified by execute_query being called)
 
