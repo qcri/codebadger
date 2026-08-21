@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import uuid
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
 from src.tools.mcp_tools import register_tools
@@ -296,14 +297,11 @@ async def test_get_program_slice_invalid_direction(fake_services_slice):
     register_tools(mcp, fake_services_slice)
 
     async with Client(mcp) as client:
-        res_text = (await client.call_tool("get_program_slice", {
-            "codebase_hash": fake_services_slice["codebase_hash"],
-            "location": "tree.c:195",
-            "direction": "both"
-        })).content[0].text
-
-        assert "Validation Error" in res_text
-        assert "direction" in res_text
+        with pytest.raises(ToolError, match="direction"):
+            await client.call_tool("get_program_slice", {
+                "codebase_hash": fake_services_slice["codebase_hash"],
+                "location": "tree.c:195", "direction": "both"
+            })
 
 
 @pytest.mark.asyncio
@@ -313,14 +311,11 @@ async def test_get_program_slice_invalid_location_format(fake_services_slice):
     register_tools(mcp, fake_services_slice)
 
     async with Client(mcp) as client:
-        res_text = (await client.call_tool("get_program_slice", {
-            "codebase_hash": fake_services_slice["codebase_hash"],
-            "location": "invalid_format",
-            "direction": "backward"
-        })).content[0].text
-
-        assert "Validation Error" in res_text
-        assert "location must be" in res_text
+        with pytest.raises(ToolError, match="location"):
+            await client.call_tool("get_program_slice", {
+                "codebase_hash": fake_services_slice["codebase_hash"],
+                "location": "invalid_format", "direction": "backward"
+            })
 
 
 # Old logic only anchored on CALL nodes; these tests exercise anchors that are
