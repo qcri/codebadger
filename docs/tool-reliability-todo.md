@@ -69,12 +69,18 @@ fixture.
   distinguish `remove_cpg(delete_files=True)` from its non-destructive mode.
 - [ ] Define strict input and output schemas for every tool, including common
   pagination, truncation, status, finding, and error models.
+  Core, browsing, and taint tools now have schemas; custom tools and shared
+  pagination/error models still need a final audit.
 - [ ] Replace successful envelopes containing error strings with FastMCP-native
   tool errors while retaining a stable, machine-readable error code and a safe
   recovery hint.
+  Browsing graphs, slices, flows, and detectors now use native errors; remaining
+  legacy/core paths still need migration.
 - [ ] Make compact structured output the default and put verbose rendered
   reports behind an explicit detail/format option so routine calls consume less
   LLM context.
+  Compact/full controls are implemented for call graphs, taint flows, slices,
+  and variable-flow reports; other rendered reports remain.
 - [x] Publish a supported-languages/workflow MCP resource for client discovery,
   per-codebase metadata/status, supported languages, and CPGQL reference data.
 - [x] Add an MCP prompt for the bounded codebase-overview workflow,
@@ -86,6 +92,9 @@ fixture.
   whether it saw all results and how to request the next page.
 - [ ] Generate the available-tools reference from the live FastMCP schemas, or
   enforce schema/documentation parity in CI.
+  Local contract tests now enforce title, description, annotations, and output
+  schema presence for the registered core/browsing/taint surface; CI wiring and
+  generated reference output remain.
 - [ ] Add an MCP contract test that inventories tools, validates annotations and
   schemas, invokes representative success/error paths, and snapshots only stable
   protocol fields.
