@@ -6,6 +6,68 @@ from ..utils.query_rendering import escape_scala_string
 
 logger = logging.getLogger(__name__)
 
+
+def _decode_parameter(raw: Any) -> Optional[Dict[str, Any]]:
+    """Decode the JSON shapes Joern uses for a parameter tuple."""
+    if isinstance(raw, dict):
+        if "_1" in raw:
+            return {
+                "name": raw.get("_1", ""),
+                "type": raw.get("_2", ""),
+                "index": raw.get("_3", -1),
+            }
+        if "name" in raw:
+            return {
+                "name": raw.get("name", ""),
+                "type": raw.get("type", raw.get("typeFullName", "")),
+                "index": raw.get("index", -1),
+            }
+        # Depending on the Joern/OverflowDB JSON encoder version, a tuple may
+        # be rendered as {"parameterName": ["type", index]}.
+        if len(raw) == 1:
+            name, values = next(iter(raw.items()))
+            if isinstance(values, (list, tuple)):
+                return {
+                    "name": name,
+                    "type": values[0] if values else "",
+                    "index": values[1] if len(values) > 1 else -1,
+                }
+
+    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+        return {"name": raw[0], "type": raw[1], "index": raw[2]}
+    return None
+
+
+def _decode_parameter_method(raw: Any) -> Optional[Dict[str, Any]]:
+    """Decode one method and its parameter list across Joern JSON versions."""
+    method_name: Any
+    raw_parameters: Any
+
+    if isinstance(raw, dict) and "_1" in raw and "_2" in raw:
+        method_name = raw.get("_1", "")
+        raw_parameters = raw.get("_2", [])
+    elif isinstance(raw, dict) and "method" in raw:
+        method_name = raw.get("method", "")
+        raw_parameters = raw.get("parameters", [])
+    elif isinstance(raw, dict) and len(raw) == 1:
+        # Current Joern serializes (methodName, parameterTuples) as
+        # {"methodName": [...]} rather than {"_1": ..., "_2": [...]}.
+        method_name, raw_parameters = next(iter(raw.items()))
+    elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+        method_name, raw_parameters = raw[0], raw[1]
+    else:
+        return None
+
+    if not isinstance(raw_parameters, (list, tuple)):
+        raw_parameters = []
+    parameters = []
+    for raw_parameter in raw_parameters:
+        parameter = _decode_parameter(raw_parameter)
+        if parameter is not None:
+            parameters.append(parameter)
+    return {"method": method_name, "parameters": parameters}
+
+
 class CodeBrowsingService:
     """Service for code browsing operations with caching support"""
 
@@ -14,20 +76,26 @@ class CodeBrowsingService:
         self.query_executor = query_executor
         self.db_manager = db_manager
 
-    def _get_cached_or_execute(self, tool_name: str, codebase_hash: str, params: Dict[str, Any], query_func):
+    def _get_cached_or_execute(
+        self, tool_name: str, codebase_hash: str, params: Dict[str, Any], query_func
+    ):
         """Helper to check cache, execute query if needed, and cache result"""
         if self.db_manager:
-            cached = self.db_manager.get_cached_tool_output(tool_name, codebase_hash, params)
+            cached = self.db_manager.get_cached_tool_output(
+                tool_name, codebase_hash, params
+            )
             if cached is not None:
                 return cached
 
         result = query_func()
-        
+
         if self.db_manager and result:
-             # Only cache successful results that are not error dicts
-             if isinstance(result, dict) and result.get("success", False):
-                 self.db_manager.cache_tool_output(tool_name, codebase_hash, params, result)
-        
+            # Only cache successful results that are not error dicts
+            if isinstance(result, dict) and result.get("success", False):
+                self.db_manager.cache_tool_output(
+                    tool_name, codebase_hash, params, result
+                )
+
         return result
 
     def list_methods(
@@ -41,9 +109,9 @@ class CodeBrowsingService:
         page: int = 1,
         page_size: int = 100,
     ) -> Dict[str, Any]:
-        
+
         validate_codebase_hash(codebase_hash)
-        
+
         # Cache key parameters (excluding pagination)
         cache_params = {
             "name_pattern": name_pattern,
@@ -56,7 +124,9 @@ class CodeBrowsingService:
         def execute_query():
             codebase_info = self.codebase_tracker.get_codebase(codebase_hash)
             if not codebase_info:
-                raise ValidationError(f"Codebase not found for codebase {codebase_hash}")
+                raise ValidationError(
+                    f"Codebase not found for codebase {codebase_hash}"
+                )
 
             query_parts = ["cpg.method"]
             if not include_external:
@@ -64,17 +134,21 @@ class CodeBrowsingService:
             if name_pattern:
                 query_parts.append(f'.name("{escape_scala_string(name_pattern)}")')
             if file_pattern:
-                query_parts.append(f'.where(_.file.name("{escape_scala_string(file_pattern)}"))')
+                query_parts.append(
+                    f'.where(_.file.name("{escape_scala_string(file_pattern)}"))'
+                )
             if callee_pattern:
-                query_parts.append(f'.where(_.callOut.name("{escape_scala_string(callee_pattern)}"))')
+                query_parts.append(
+                    f'.where(_.callOut.name("{escape_scala_string(callee_pattern)}"))'
+                )
 
             query_parts.append(
                 ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.controlStructure.size + 1, m.isExternal))"
             )
-            
+
             query_limit = min(limit, 10000)
             query = "".join(query_parts) + f".dedup.take({query_limit}).l"
-            
+
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
@@ -84,37 +158,44 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error}}
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": result.error},
+                }
 
             methods = []
             for item in result.data:
                 if isinstance(item, dict):
                     line_number = item.get("_6", -1)
                     line_number_end = item.get("_7", -1)
-                    
+
                     # Calculate number of lines
                     if line_number != -1 and line_number_end != -1:
                         number_of_lines = line_number_end - line_number + 1
                     else:
                         number_of_lines = 0
 
-                    methods.append({
-                        "name": item.get("_1", ""),
-                        "node_id": str(item.get("_2", "")),
-                        "fullName": item.get("_3", ""),
-                        "signature": item.get("_4", ""),
-                        "filename": item.get("_5", ""),
-                        "lineNumber": line_number,
-                        "lineNumberEnd": line_number_end,
-                        "cyclomaticComplexity": item.get("_8", 1),
-                        "numberOfLines": number_of_lines,
-                        "isExternal": item.get("_9", False),
-                    })
+                    methods.append(
+                        {
+                            "name": item.get("_1", ""),
+                            "node_id": str(item.get("_2", "")),
+                            "fullName": item.get("_3", ""),
+                            "signature": item.get("_4", ""),
+                            "filename": item.get("_5", ""),
+                            "lineNumber": line_number,
+                            "lineNumberEnd": line_number_end,
+                            "cyclomaticComplexity": item.get("_8", 1),
+                            "numberOfLines": number_of_lines,
+                            "isExternal": item.get("_9", False),
+                        }
+                    )
             return {"success": True, "methods": methods, "total": len(methods)}
 
         # Get full result (cached or fresh)
-        full_result = self._get_cached_or_execute("list_methods", codebase_hash, cache_params, execute_query)
-        
+        full_result = self._get_cached_or_execute(
+            "list_methods", codebase_hash, cache_params, execute_query
+        )
+
         if not full_result.get("success"):
             return full_result
 
@@ -123,7 +204,7 @@ class CodeBrowsingService:
         if limit is not None and limit > 0:
             methods = methods[:limit]
         total = len(methods)
-        
+
         # Pagination
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
@@ -135,9 +216,8 @@ class CodeBrowsingService:
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1
+            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1,
         }
-
 
     def list_calls(
         self,
@@ -148,7 +228,7 @@ class CodeBrowsingService:
         page: int = 1,
         page_size: int = 100,
     ) -> Dict[str, Any]:
-        
+
         validate_codebase_hash(codebase_hash)
         cache_params = {
             "caller_pattern": caller_pattern,
@@ -165,15 +245,17 @@ class CodeBrowsingService:
             if callee_pattern:
                 query_parts.append(f'.name("{escape_scala_string(callee_pattern)}")')
             if caller_pattern:
-                query_parts.append(f'.where(_.method.name("{escape_scala_string(caller_pattern)}"))')
+                query_parts.append(
+                    f'.where(_.method.name("{escape_scala_string(caller_pattern)}"))'
+                )
 
             query_parts.append(
                 ".map(c => (c.method.name, c.name, c.code, c.method.filename, c.lineNumber.getOrElse(-1)))"
             )
-            
+
             query_limit = min(limit, 10000)
             query = "".join(query_parts) + f".dedup.take({query_limit}).l"
-            
+
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
@@ -183,22 +265,29 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error}}
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": result.error},
+                }
 
             calls = []
             for item in result.data:
                 if isinstance(item, dict):
-                    calls.append({
-                        "caller": item.get("_1", ""),
-                        "callee": item.get("_2", ""),
-                        "code": item.get("_3", ""),
-                        "filename": item.get("_4", ""),
-                        "lineNumber": item.get("_5", -1),
-                    })
+                    calls.append(
+                        {
+                            "caller": item.get("_1", ""),
+                            "callee": item.get("_2", ""),
+                            "code": item.get("_3", ""),
+                            "filename": item.get("_4", ""),
+                            "lineNumber": item.get("_5", -1),
+                        }
+                    )
             return {"success": True, "calls": calls, "total": len(calls)}
 
-        full_result = self._get_cached_or_execute("list_calls", codebase_hash, cache_params, execute_query)
-        
+        full_result = self._get_cached_or_execute(
+            "list_calls", codebase_hash, cache_params, execute_query
+        )
+
         if not full_result.get("success"):
             return full_result
 
@@ -207,7 +296,7 @@ class CodeBrowsingService:
         if limit is not None and limit > 0:
             calls = calls[:limit]
         total = len(calls)
-        
+
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
         paged_calls = calls[start_idx:end_idx]
@@ -218,7 +307,7 @@ class CodeBrowsingService:
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1
+            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1,
         }
 
     def list_parameters(
@@ -227,9 +316,11 @@ class CodeBrowsingService:
         method_name: Optional[str] = None,
         limit: int = 1000,
     ) -> Dict[str, Any]:
-        
+
         validate_codebase_hash(codebase_hash)
-        cache_params = {"method_name": method_name}
+        # Bump this when the decoded response contract changes so successful
+        # empty results cached by an older decoder are not served indefinitely.
+        cache_params = {"method_name": method_name, "result_schema_version": 2}
 
         def execute_query():
             codebase_info = self.codebase_tracker.get_codebase(codebase_hash)
@@ -239,13 +330,13 @@ class CodeBrowsingService:
             query_parts = ["cpg.method"]
             if method_name:
                 query_parts.append(f'.name("{escape_scala_string(method_name)}")')
-            
+
             query_parts.append(
-                '.map(m => (m.name, m.parameter.map(p => (p.name, p.typeFullName, p.index)).l))'
+                ".map(m => (m.name, m.parameter.map(p => (p.name, p.typeFullName, p.index)).l))"
             )
-            
+
             query = "".join(query_parts) + f".take({limit}).l"
-            
+
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
@@ -255,24 +346,21 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error}}
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": result.error},
+                }
 
             methods = []
             for item in result.data:
-                if isinstance(item, dict) and "_1" in item and "_2" in item:
-                    params = []
-                    param_list = item.get("_2", [])
-                    for param_data in param_list:
-                        if isinstance(param_data, dict):
-                            params.append({
-                                "name": param_data.get("_1", ""),
-                                "type": param_data.get("_2", ""),
-                                "index": param_data.get("_3", -1),
-                            })
-                    methods.append({"method": item.get("_1", ""), "parameters": params})
+                method = _decode_parameter_method(item)
+                if method is not None:
+                    methods.append(method)
             return {"success": True, "methods": methods, "total": len(methods)}
 
-        return self._get_cached_or_execute("list_parameters", codebase_hash, cache_params, execute_query)
+        return self._get_cached_or_execute(
+            "list_parameters", codebase_hash, cache_params, execute_query
+        )
 
     def find_literals(
         self,
@@ -281,7 +369,7 @@ class CodeBrowsingService:
         literal_type: Optional[str] = None,
         limit: int = 50,
     ) -> Dict[str, Any]:
-        
+
         validate_codebase_hash(codebase_hash)
         cache_params = {
             "pattern": pattern,
@@ -297,14 +385,16 @@ class CodeBrowsingService:
             if pattern:
                 query_parts.append(f'.code("{escape_scala_string(pattern)}")')
             if literal_type:
-                query_parts.append(f'.typeFullName(".*{escape_scala_string(literal_type)}.*")')
+                query_parts.append(
+                    f'.typeFullName(".*{escape_scala_string(literal_type)}.*")'
+                )
 
             query_parts.append(
                 ".map(lit => (lit.code, lit.typeFullName, lit.filename, lit.lineNumber.getOrElse(-1), lit.method.name))"
             )
-            
+
             query = "".join(query_parts) + f".take({limit}).l"
-            
+
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
@@ -314,21 +404,28 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error}}
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": result.error},
+                }
 
             literals = []
             for item in result.data:
                 if isinstance(item, dict):
-                    literals.append({
-                        "value": item.get("_1", ""),
-                        "type": item.get("_2", ""),
-                        "filename": item.get("_3", ""),
-                        "lineNumber": item.get("_4", -1),
-                        "method": item.get("_5", ""),
-                    })
+                    literals.append(
+                        {
+                            "value": item.get("_1", ""),
+                            "type": item.get("_2", ""),
+                            "filename": item.get("_3", ""),
+                            "lineNumber": item.get("_4", -1),
+                            "method": item.get("_5", ""),
+                        }
+                    )
             return {"success": True, "literals": literals, "total": len(literals)}
 
-        return self._get_cached_or_execute("find_literals", codebase_hash, cache_params, execute_query)
+        return self._get_cached_or_execute(
+            "find_literals", codebase_hash, cache_params, execute_query
+        )
 
     def warm_up_cache(self, codebase_hash: str):
         """Run default queries to warm the cache.
@@ -349,7 +446,11 @@ class CodeBrowsingService:
         for func in tasks:
             try:
                 func(codebase_hash)
-                logger.info(f"Cache warm-up task {func.__name__} completed for {codebase_hash}")
+                logger.info(
+                    f"Cache warm-up task {func.__name__} completed for {codebase_hash}"
+                )
             except Exception as e:
-                logger.error(f"Cache warm-up task {func.__name__} failed for {codebase_hash}: {e}")
+                logger.error(
+                    f"Cache warm-up task {func.__name__} failed for {codebase_hash}: {e}"
+                )
         logger.info(f"Cache warm-up complete for {codebase_hash}")

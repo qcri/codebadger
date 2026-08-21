@@ -16,7 +16,7 @@ fixture.
 
 ## Tool fixes
 
-- [ ] **T01 — `list_parameters` result decoding (broken).** Accept both Joern's
+- [x] **T01 — `list_parameters` result decoding (broken).** Accept both Joern's
   method-keyed tuple JSON and legacy `_1`/`_2` tuple JSON, preserve parameter
   name/type/index, and invalidate cached empty results produced by the old
   decoder. Verify with `xmlReadMemory` in libxml2.
