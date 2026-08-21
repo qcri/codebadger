@@ -257,6 +257,7 @@ Examples:
     @mcp.tool(
         title="Get Call Graph",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Get the call graph for a specific method.
 
 Understand what functions a method calls (outgoing) or what functions
@@ -300,7 +301,7 @@ Examples:
         method_name: Annotated[str, Field(description="Name of the method to analyze (can be regex)")],
         depth: Annotated[int, Field(description="How many levels deep to traverse (max recommended: 10)")] = 5,
         direction: Annotated[str, Field(description="Either 'outgoing' (callees) or 'incoming' (callers)")] = "outgoing",
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Build the call graph showing callers or callees for a method."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -330,14 +331,16 @@ Examples:
                 limit=500,
             )
 
-            return unwrap_result(result)
+            if not result.success:
+                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error or "Call graph query failed"}}
+            return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
 
     @mcp.tool(
