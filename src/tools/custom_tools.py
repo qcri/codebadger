@@ -12,6 +12,7 @@ server start.  Restart the server after editing this file.
 
 import logging
 import re
+from fastmcp.exceptions import ToolError
 from typing import Any, Dict, List, Optional, Annotated
 from pydantic import Field
 
@@ -104,11 +105,13 @@ Examples:
                 cache_params=cache_params,
             )}
 
-        except (ValidationError, RuntimeError) as e:
-            return {"success": False, "error": str(e)}
+        except ValidationError as e:
+            raise ToolError(f"VALIDATION_ERROR: {e} Hint: verify the codebase hash and language/filter arguments.") from e
+        except RuntimeError as e:
+            raise ToolError(f"QUERY_ERROR: {e} Hint: verify the CPG is ready and narrow the result limit.") from e
         except Exception as e:
             logger.error(f"find_command_injection_sinks: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            raise ToolError(f"INTERNAL_ERROR: {e} Hint: retry after checking CPG/backend status.") from e
 
     # Add your own tools below.
     # Template:
