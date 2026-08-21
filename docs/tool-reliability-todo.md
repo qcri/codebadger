@@ -75,9 +75,9 @@ fixture.
 - [ ] Make compact structured output the default and put verbose rendered
   reports behind an explicit detail/format option so routine calls consume less
   LLM context.
-- [ ] Publish useful MCP resources or resource templates for the CPG catalog,
+- [x] Publish a supported-languages/workflow MCP resource for client discovery,
   per-codebase metadata/status, supported languages, and CPGQL reference data.
-- [ ] Add MCP prompts for common multi-step workflows such as codebase overview,
+- [x] Add an MCP prompt for the bounded codebase-overview workflow,
   call-path exploration, focused data-flow analysis, and detector triage.
 - [ ] Standardize tool descriptions around prerequisites, bounded defaults,
   result semantics, follow-up tools, and one minimal valid example. Remove
