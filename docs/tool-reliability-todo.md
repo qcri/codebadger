@@ -55,18 +55,46 @@ fixture.
   stack-overflow, TOCTOU, and command-sink tools as their neighboring code is
   changed.
 
-## General CodeBadger fixes — after tool fixes
+## LLM and FastMCP presentation — after tool fixes
+
+- [ ] Add a root `AGENTS.md` describing architecture, local development,
+  validation commands, fixture expectations, commit boundaries, and safe rules
+  for working with generated CPG/runtime data. Add narrower nested guidance only
+  where a subsystem genuinely needs different instructions.
+- [ ] Add concise FastMCP server instructions that teach an LLM the intended
+  sequence: inspect capacity, generate or select a CPG, wait until ready, browse
+  narrowly, then expand into flow or detector analysis.
+- [ ] Add tool annotations and human-readable titles, including accurate
+  read-only, destructive, idempotent, and open-world hints. In particular,
+  distinguish `remove_cpg(delete_files=True)` from its non-destructive mode.
+- [ ] Define strict input and output schemas for every tool, including common
+  pagination, truncation, status, finding, and error models.
+- [ ] Replace successful envelopes containing error strings with FastMCP-native
+  tool errors while retaining a stable, machine-readable error code and a safe
+  recovery hint.
+- [ ] Make compact structured output the default and put verbose rendered
+  reports behind an explicit detail/format option so routine calls consume less
+  LLM context.
+- [ ] Publish useful MCP resources or resource templates for the CPG catalog,
+  per-codebase metadata/status, supported languages, and CPGQL reference data.
+- [ ] Add MCP prompts for common multi-step workflows such as codebase overview,
+  call-path exploration, focused data-flow analysis, and detector triage.
+- [ ] Standardize tool descriptions around prerequisites, bounded defaults,
+  result semantics, follow-up tools, and one minimal valid example. Remove
+  duplicated prose that can drift from schemas.
+- [ ] Expose pagination and truncation metadata consistently so an LLM knows
+  whether it saw all results and how to request the next page.
+- [ ] Generate the available-tools reference from the live FastMCP schemas, or
+  enforce schema/documentation parity in CI.
+- [ ] Add an MCP contract test that inventories tools, validates annotations and
+  schemas, invokes representative success/error paths, and snapshots only stable
+  protocol fields.
+
+## General CodeBadger fixes — after tool and presentation fixes
 
 - [ ] Make ordinary queries reliably reactivate sleeping/evicted CPG workers.
 - [ ] Make stale-worker/container recovery idempotent and race-safe.
-- [ ] Return real MCP errors for failed tool calls instead of successful
-  envelopes containing error text.
-- [ ] Add strict output schemas and consistent structured error envelopes.
-- [ ] Add MCP server instructions plus useful tool annotations.
-- [ ] Evaluate MCP resources/prompts for codebase discovery and common analysis
-  workflows.
 - [ ] Reconcile tool documentation and argument names with the live schemas.
 - [ ] Fix clean-clone container builds that currently depend on ignored local
   configuration files.
 - [ ] Add CI coverage for the clean-clone Docker and live MCP smoke paths.
-
