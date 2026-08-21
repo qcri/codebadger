@@ -1082,6 +1082,8 @@ Examples:
 
 
     @mcp.tool(
+        title="Get Variable Flow",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Analyze data dependencies for a variable at a specific location.
 
 Finds code locations that influence (backward) or are influenced by (forward)
