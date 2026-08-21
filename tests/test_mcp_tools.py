@@ -8,6 +8,7 @@ import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from src.models import CodebaseInfo, Config, QueryResult
 from src.services.codebase_tracker import CodebaseTracker
@@ -1497,3 +1498,23 @@ class TestCpgBuildFailureLabeling:
         assert d["status"] == "failed"
         assert d["error_code"] == "OOM"
         assert "memory" in d["error"]
+
+    @pytest.mark.asyncio
+    async def test_contract_representative_success_and_native_error(self, mock_services):
+        from src.tools.core_tools import register_core_tools
+        from src.tools.code_browsing_tools import register_code_browsing_tools
+
+        mock_services["codebase_tracker"].get_codebase.return_value = CodebaseInfo(
+            codebase_hash="0123456789abcdef", source_type="local", source_path="/x",
+            language="c", cpg_path="/x/cpg.bin", metadata={"status": "ready"},
+        )
+        mcp = FastMCP("contract")
+        register_core_tools(mcp, mock_services)
+        register_code_browsing_tools(mcp, mock_services)
+        async with Client(mcp) as client:
+            success = await client.call_tool("get_cpg_status", {"codebase_hash": "0123456789abcdef"})
+            assert success.content and success.content[0].type == "text"
+            with pytest.raises(ToolError, match="VALIDATION_ERROR"):
+                await client.call_tool("get_call_graph", {
+                    "codebase_hash": "0123456789abcdef", "method_name": "main", "depth": 99,
+                })
