@@ -2216,6 +2216,20 @@ Examples:
 
     @mcp.tool(
         title="Get CPG Status",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "codebase_hash": {"type": "string"},
+                "status": {"type": "string"},
+                "phase": {"type": "string"},
+                "joern_port": {"type": ["integer", "null"]},
+                "elapsed_seconds": {"type": "number"},
+                "deadline_seconds": {"type": "number"},
+                "error_code": {"type": "string"},
+                "error": {"type": "string"},
+            },
+            "additionalProperties": True,
+        },
         annotations={
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -2470,6 +2484,22 @@ Examples:
 
     @mcp.tool(
         title="Get Backend Status",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "build_workers": {"type": ["integer", "null"]},
+                "queue_depth": {"type": "integer"},
+                "in_flight": {"type": "integer"},
+                "active_servers": {"type": "integer"},
+                "cpg_count": {"type": "integer"},
+                "cpgs": {"type": "array"},
+                "cpg_page": {"type": "integer"},
+                "cpg_page_size": {"type": "integer"},
+                "cpg_total_pages": {"type": "integer"},
+                "cpg_truncated": {"type": "boolean"},
+            },
+            "additionalProperties": True,
+        },
         annotations={
             "readOnlyHint": True,
             "destructiveHint": False,

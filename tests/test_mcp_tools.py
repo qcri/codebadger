@@ -947,6 +947,9 @@ class TestMCPTools:
         assert by_name["get_cpg_status"].annotations.readOnlyHint is True
         assert by_name["get_backend_status"].annotations.destructiveHint is False
         assert by_name["remove_cpg"].annotations.destructiveHint is True
+        assert by_name["get_cpg_status"].outputSchema["type"] == "object"
+        assert by_name["get_cpg_status"].outputSchema["additionalProperties"] is True
+        assert by_name["get_backend_status"].outputSchema["type"] == "object"
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
