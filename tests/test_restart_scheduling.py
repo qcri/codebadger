@@ -105,6 +105,24 @@ async def test_restart_marks_ready_when_reload_succeeds():
     assert SessionStatus.FAILED not in statuses
 
 
+@pytest.mark.asyncio
+async def test_stale_restart_failure_does_not_overwrite_ready():
+    mgr = MagicMock()
+    mgr.reload_with_retry.return_value = None
+    tracker = MagicMock()
+    tracker.get_codebase.return_value = CodebaseInfo(
+        codebase_hash=HASH, source_type="local", source_path="/src", language="c",
+        cpg_path="/tmp/x.cpg", joern_port=14000,
+        metadata={"status": SessionStatus.READY},
+    )
+
+    await core_tools._restart_server_async(HASH, "/playground/cpgs/x/cpg.bin", {
+        "joern_server_manager": mgr, "codebase_tracker": tracker,
+    })
+
+    assert tracker.update_codebase.call_count == 0
+
+
 # ── get_cpg_status zombie reconciliation ──────────────────────────────────────
 
 @pytest.mark.asyncio

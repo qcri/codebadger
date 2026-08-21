@@ -944,6 +944,22 @@ def _schedule_warmup(services: dict, codebase_hash: str) -> None:
     fut.add_done_callback(_done)
 
 
+def _restart_failure_is_stale(codebase_tracker, codebase_hash: str) -> bool:
+    """Return true when this restart no longer owns the codebase state.
+
+    A watchdog restart can overlap a fresh generation (or another restart).  In
+    that case its late failure must not overwrite the newer READY state.
+    """
+    try:
+        info = codebase_tracker.get_codebase(codebase_hash)
+        metadata = getattr(info, "metadata", None)
+        return isinstance(metadata, dict) and metadata.get("status") not in {
+            SessionStatus.LOADING, "loading"
+        }
+    except Exception:
+        return False
+
+
 async def _restart_server_async(
     codebase_hash: str,
     container_cpg_path: str,
@@ -971,6 +987,9 @@ async def _restart_server_async(
             # terminated). Mark FAILED so we don't leave a "ready" codebase whose
             # server is dead — that caused the restart-fail churn (server not
             # running for ready codebase -> retry -> fail -> repeat).
+            if _restart_failure_is_stale(codebase_tracker, codebase_hash):
+                logger.warning(f"Async: ignoring stale reload failure for {codebase_hash}")
+                return
             logger.error(f"Async: CPG reload failed for {codebase_hash}; marking failed")
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash,
@@ -998,6 +1017,9 @@ async def _restart_server_async(
         logger.error(f"Async: failed to restart server for {codebase_hash}: {e}", exc_info=True)
         try:
             codebase_tracker = services["codebase_tracker"]
+            if _restart_failure_is_stale(codebase_tracker, codebase_hash):
+                logger.warning(f"Async: ignoring stale restart error for {codebase_hash}")
+                return
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error": f"Server restart failed: {e}"}
