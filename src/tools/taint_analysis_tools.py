@@ -726,6 +726,7 @@ Examples:
     @mcp.tool(
         title="Find Taint Flows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
 Detects data flow from a specific source node to a specific sink node.
@@ -798,7 +799,7 @@ Examples:
         source_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
         sink_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
         depth: Annotated[Optional[int], Field(description="DEPRECATED: Do not use")] = None,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Find data flow paths between source and sink using Joern's native taint analysis."""
         try:
             # Check for legacy arguments that LLMs might hallucinate
@@ -824,7 +825,7 @@ Examples:
 
             # --- AUTO MODE ---
             if mode == "auto":
-                return _find_taint_flows_auto(
+                return {"success": True, "summary": str(_find_taint_flows_auto(
                     services=services,
                     codebase_hash=codebase_hash,
                     codebase_info=codebase_info,
@@ -836,7 +837,7 @@ Examples:
                     filename=filename,
                     max_results=max_results,
                     timeout=timeout if timeout != 120 else 300,  # default to 300s for auto mode (large codebases need more time)
-                )
+                ))}
 
             # --- MANUAL MODE ---
             if mode is not None:
@@ -964,14 +965,14 @@ Examples:
 
                 return unwrap_result(result)
 
-            return _cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute)
+            return {"success": True, "summary": str(_cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute))}
 
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error finding taint flows: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
     @mcp.tool(
         title="Get Program Slice",
