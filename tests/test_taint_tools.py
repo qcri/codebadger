@@ -6,6 +6,8 @@ import uuid
 import pytest
 
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
+from src.config import load_config
+from src.tools.taint_analysis_tools import DEFAULT_SOURCES
 from src.tools.mcp_tools import register_tools
 from src.tools.queries import QueryLoader
 
@@ -91,6 +93,57 @@ async def test_find_taint_sources_success(fake_services):
         assert "sources" in res
         assert isinstance(res["sources"], list)
         assert res["total"] == 1
+
+
+def test_default_c_sources_exclude_setup_and_handle_calls():
+    setup_calls = {"socket", "bind", "listen", "connect", "accept", "fopen"}
+
+    assert setup_calls.isdisjoint(DEFAULT_SOURCES["c"])
+
+    config = load_config("config.example.yaml")
+    assert setup_calls.isdisjoint(config.cpg.taint_sources["c"])
+    assert setup_calls.isdisjoint(config.cpg.taint_sources["cpp"])
+
+
+@pytest.mark.asyncio
+async def test_find_taint_sources_filters_setup_calls_from_existing_config(
+    fake_services,
+):
+    fake_services["config"].cpg.taint_sources = {
+        "c": ["getenv", "socket", "bind", "listen"]
+    }
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "find_taint_sources",
+            {"codebase_hash": fake_services["codebase_hash"], "language": "c"},
+        )
+
+    query = fake_services["query_executor"].last_query
+    assert "getenv" in query
+    assert "socket" not in query
+    assert "bind" not in query
+    assert "listen" not in query
+
+
+@pytest.mark.asyncio
+async def test_find_taint_sources_allows_explicit_setup_call_opt_in(fake_services):
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "find_taint_sources",
+            {
+                "codebase_hash": fake_services["codebase_hash"],
+                "language": "c",
+                "source_patterns": ["socket"],
+            },
+        )
+
+    assert "socket" in fake_services["query_executor"].last_query
 
 
 @pytest.mark.asyncio
@@ -364,4 +417,3 @@ async def test_find_taint_flows_validation_error(fake_services):
         # Should return validation error about missing source
         assert "Validation Error" in result
         assert "source" in result.lower()
-

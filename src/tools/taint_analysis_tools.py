@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SOURCES = {
     "c": [
         "getenv", "fgets", "scanf", "read", "recv", "fread", "gets", "getchar",
-        "fscanf", "recvfrom", "recvmsg", "getopt", "getpass", "socket", "accept",
-        "fopen", "getline", "realpath", "getaddrinfo", "gethostbyname",
+        "fscanf", "recvfrom", "recvmsg", "getopt", "getpass", "getline",
+        "realpath", "getaddrinfo", "gethostbyname",
     ],
     "cpp": [
         "getenv", "fgets", "scanf", "read", "recv", "fread", "gets", "getchar",
@@ -80,6 +80,13 @@ DEFAULT_SOURCES = {
         "GetCommandLine", "GetEnvironmentVariable", "ReadFile", "Recv",
     ],
 }
+
+# These APIs create handles or configure a channel; they do not themselves
+# return payload bytes. Keep old copied configs precise while still allowing a
+# caller to opt in through the tool's explicit source_patterns argument.
+NON_INPUT_SOURCE_SETUP_CALLS = frozenset(
+    {"socket", "bind", "listen", "connect", "accept", "fopen"}
+)
 
 # Default taint sinks by language (used when config is empty)
 DEFAULT_SINKS = {
@@ -248,6 +255,28 @@ def _build_joern_name_pattern(patterns: list) -> str:
     return "|".join(re.escape(name) for name in unique)
 
 
+def _resolve_source_patterns(cfg, lang: str, explicit_patterns: Optional[list]):
+    """Resolve source defaults and remove non-payload setup APIs."""
+    if explicit_patterns:
+        return explicit_patterns
+
+    configured = (
+        getattr(cfg.cpg, "taint_sources", {})
+        if hasattr(cfg.cpg, "taint_sources")
+        else {}
+    )
+    patterns = configured.get(lang, []) or DEFAULT_SOURCES.get(lang.lower(), [])
+    if lang.lower() not in {"c", "cpp"}:
+        return patterns
+
+    return [
+        pattern
+        for pattern in patterns
+        if pattern.rstrip("(").rsplit(".", 1)[-1]
+        not in NON_INPUT_SOURCE_SETUP_CALLS
+    ]
+
+
 def _cached_taint_query(
     services: dict,
     tool_name: str,
@@ -316,12 +345,7 @@ def _find_taint_flows_auto(
 
     # Resolve source patterns: user-provided -> config -> built-in defaults
     cfg = services["config"]
-    taint_src_cfg = (
-        getattr(cfg.cpg, "taint_sources", {})
-        if hasattr(cfg.cpg, "taint_sources")
-        else {}
-    )
-    src_patterns = source_patterns or taint_src_cfg.get(lang, []) or DEFAULT_SOURCES.get(lang.lower(), [])
+    src_patterns = _resolve_source_patterns(cfg, lang, source_patterns)
     if not src_patterns:
         return f"No taint source patterns available for language '{lang}'. Supported: {', '.join(DEFAULT_SOURCES.keys())}"
 
@@ -410,6 +434,9 @@ Returns:
 
 Notes:
     - Built-in default patterns for all supported languages.
+    - Setup/handle calls such as socket, bind, listen, connect, accept, and fopen
+      are excluded by default because they do not themselves produce input data.
+      Pass source_patterns explicitly to include one for a specialized analysis.
     - Sources are the starting points for taint analysis.
     - Use node_id from results with find_taint_flows.
 
@@ -438,14 +465,8 @@ Examples:
             
             # Try config first, then fall back to built-in defaults
             cfg = services["config"]
-            taint_cfg = (
-                getattr(cfg.cpg, "taint_sources", {})
-                if hasattr(cfg.cpg, "taint_sources")
-                else {}
-            )
-
-            # Priority: 1) user-provided, 2) config, 3) built-in defaults
-            patterns = source_patterns or taint_cfg.get(lang, []) or DEFAULT_SOURCES.get(lang.lower(), [])
+            # Priority: explicit caller patterns, then filtered config/defaults.
+            patterns = _resolve_source_patterns(cfg, lang, source_patterns)
             if not patterns:
                 return {"success": True, "sources": [], "total": 0, "message": f"No taint sources configured for language {lang}. Supported: {', '.join(DEFAULT_SOURCES.keys())}"}
 

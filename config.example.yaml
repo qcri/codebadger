@@ -235,8 +235,6 @@ cpg:
       - scanf
       - read
       - recv
-      - accept
-      - fopen
       - gets
       - getchar
       - fscanf
@@ -250,18 +248,12 @@ cpg:
       - getgrgid
       - gethostbyname
       - getaddrinfo
-      - socket
-      - listen
-      - bind
-      - connect
     cpp:
       - getenv
       - fgets
       - scanf
       - read
       - recv
-      - accept
-      - fopen
       - gets
       - getchar
       - fscanf
@@ -277,10 +269,6 @@ cpg:
       - getgrgid
       - gethostbyname
       - getaddrinfo
-      - socket
-      - listen
-      - bind
-      - connect
     java:
       - getParameter
       - getQueryString
