@@ -945,6 +945,13 @@ class TestMCPTools:
         async with Client(mcp) as client:
             tools = await client.list_tools()
 
+            assert tools, "No MCP tools registered"
+            for tool in tools:
+                assert tool.title, f"Missing title for {tool.name}"
+                assert tool.description, f"Missing description for {tool.name}"
+                assert tool.annotations is not None, f"Missing annotations for {tool.name}"
+                assert tool.outputSchema is not None, f"Missing output schema for {tool.name}"
+
         by_name = {tool.name: tool for tool in tools}
         assert by_name["get_cpg_status"].title == "Get CPG Status"
         assert by_name["get_backend_status"].title == "Get Backend Status"
