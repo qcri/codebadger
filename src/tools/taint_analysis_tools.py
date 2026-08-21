@@ -1026,6 +1026,7 @@ Examples:
         max_depth: Annotated[int, Field(description="Maximum depth for recursive dependency tracking")] = 5,
         include_control_flow: Annotated[bool, Field(description="Include control dependencies (if/while conditions)")] = True,
         timeout: Annotated[int, Field(description="Maximum execution time in seconds")] = 60,
+        detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact bounds the rendered slice report")] = "compact",
     ) -> Dict[str, Any]:
         """Get program slice showing code affecting (backward) or affected by (forward) a specific call."""
         try:
@@ -1085,7 +1086,10 @@ Examples:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))}
+            summary = str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))
+            if detail == "compact" and len(summary) > 3000:
+                summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
+            return {"success": True, "summary": summary}
 
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")
@@ -1129,6 +1133,7 @@ Examples:
         location: str,
         variable: str,
         direction: str = "backward",
+        detail: Literal["compact", "full"] = "compact",
     ) -> Dict[str, Any]:
         """Analyze variable data dependencies in backward or forward direction."""
         try:
@@ -1182,7 +1187,10 @@ Examples:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))}
+            summary = str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))
+            if detail == "compact" and len(summary) > 2500:
+                summary = summary[:2500].rstrip() + "\n...[truncated; use detail='full']"
+            return {"success": True, "summary": summary}
 
         except ValidationError as e:
             logger.error(f"Error getting data dependencies: {e}")
