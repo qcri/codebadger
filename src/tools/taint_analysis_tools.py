@@ -448,6 +448,23 @@ def register_taint_analysis_tools(mcp, services: dict):
     """Register taint analysis MCP tools with the FastMCP server"""
 
     @mcp.tool(
+        title="Find Taint Sources",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "sources": {"type": "array", "items": {"type": "object", "properties": {
+                    "node_id": {}, "name": {"type": ["string", "null"]}, "code": {"type": ["string", "null"]},
+                    "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
+                    "method": {"type": ["string", "null"]},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "limit": {"type": "integer"},
+                "has_more": {"type": "boolean"}, "message": {"type": "string"},
+                "error": {"type": ["string", "object"]},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""Locate likely external input points (taint sources).
 
 Search for function calls that could be entry points for untrusted data,

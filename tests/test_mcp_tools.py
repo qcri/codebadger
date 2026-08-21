@@ -935,10 +935,12 @@ class TestMCPTools:
     async def test_core_status_tools_expose_titles_and_safe_annotations(self, mock_services):
         from src.tools.core_tools import register_core_tools
         from src.tools.code_browsing_tools import register_code_browsing_tools
+        from src.tools.taint_analysis_tools import register_taint_analysis_tools
 
         mcp = FastMCP("TestServer")
         register_core_tools(mcp, mock_services)
         register_code_browsing_tools(mcp, mock_services)
+        register_taint_analysis_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
             tools = await client.list_tools()
@@ -966,6 +968,7 @@ class TestMCPTools:
         assert by_name["get_type_definition"].outputSchema["properties"]["types"]["type"] == "array"
         assert by_name["list_parameters"].outputSchema["properties"]["methods"]["type"] == "array"
         assert by_name["run_cpgql_query"].outputSchema["properties"]["data"] == {}
+        assert by_name["find_taint_sources"].outputSchema["properties"]["sources"]["type"] == "array"
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
