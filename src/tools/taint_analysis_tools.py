@@ -1093,10 +1093,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid relative filename:line location.") from e
         except Exception as e:
             logger.error(f"Unexpected error getting program slice: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status and narrowing the slice.") from e
 
 
     @mcp.tool(
@@ -1280,10 +1280,10 @@ Notes:
 
         except ValidationError as e:
             logger.error(f"Error detecting use-after-free: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
         except Exception as e:
             logger.error(f"Unexpected error detecting use-after-free: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
 
     @mcp.tool(
         title="Find Double-Free Issues",
