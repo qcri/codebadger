@@ -187,6 +187,8 @@ void npd_reassigned(char *o){
 UNINIT_FIXTURE = r"""
 #include <stdio.h>
 #include <string.h>
+typedef struct NetworkContext { int fd; } NetworkContext;
+int consume(int a, int b);
 void ur_true(void){
     int x;
     printf("%d", x);
@@ -206,6 +208,12 @@ void ur_assigned(void){
     x = 5;
     printf("%d", x);
 }
+void ur_synthetic_names(void){
+    int enabled = false;
+    int fd = consume(AF_INET, SOCK_STREAM);
+    int bytes = sizeof(NetworkContext);
+    printf("%d %d %d", enabled, fd, bytes);
+}
 """
 
 
@@ -217,6 +225,8 @@ def test_uninitialized_read_matrix(server):
     assert not fire("ur_memset"), "memset(&x, ...) initializes x"
     assert not fire("ur_addrof"), "scanf(\"%d\", &x) initializes x"
     assert not fire("ur_assigned"), "x = 5 initializes x"
+    for synthetic in ("false", "AF_INET", "SOCK_STREAM", "NetworkContext"):
+        assert f"Variable:    {synthetic} " not in out
 
 
 UAF_MEMBER_FIXTURE = r"""

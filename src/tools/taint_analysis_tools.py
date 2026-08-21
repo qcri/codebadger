@@ -1724,7 +1724,11 @@ Examples:
 
             codebase_info = require_cpg(services, codebase_hash)
 
-            cache_params = {"filename": filename, "limit": limit}
+            cache_params = {
+                "filename": filename,
+                "limit": limit,
+                "analysis_version": 2,
+            }
 
             def _execute():
                 query = QueryLoader.load(

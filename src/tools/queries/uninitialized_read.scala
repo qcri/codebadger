@@ -13,6 +13,19 @@
     "(^|.*/)" + escaped + "$"
   }
 
+  val nonVariableNames = Set(
+    "true", "false", "NULL", "nullptr", "this", "self", "super"
+  )
+  val knownTypeNames = cpg.typeDecl.name.toSet
+
+  def isSyntheticLocal(local: Local): Boolean = {
+    val name = local.name.trim
+    val typeLeaf = local.typeFullName.split("[.:<>]").lastOption.getOrElse("")
+    val constantStyle = name.matches("[A-Z_][A-Z0-9_]*")
+    nonVariableNames.contains(name) || constantStyle ||
+      knownTypeNames.contains(name) || (name.nonEmpty && name == typeLeaf)
+  }
+
   output.append("Uninitialized Read Analysis\n")
   output.append("=" * 60 + "\n\n")
 
@@ -69,8 +82,10 @@
         val varType  = local.typeFullName
         val declLine = local.lineNumber.getOrElse(-1)
 
-        // Skip fixed-size arrays (covered by stack_overflow analysis)
-        if (!varType.matches(".*\\[\\d*\\].*")) {
+        // Skip fixed-size arrays (covered by stack_overflow analysis) and
+        // synthetic LOCAL nodes that C2CPG creates for unresolved constants,
+        // language literals, enum/macro names, and type references.
+        if (!varType.matches(".*\\[\\d*\\].*") && !isSyntheticLocal(local)) {
           val firstAssignLine: Option[Int] = assignLinesByVar.get(varName).flatMap(_.headOption)
           val firstAddrLine: Option[Int]   = addrOfLinesByVar.get(varName).flatMap(_.headOption)
           // Earliest point the variable may become initialized — by a plain
@@ -122,6 +137,7 @@
       output.append("  - Local variables declared but never assigned (used with garbage value)\n")
       output.append("\nFiltered out:\n")
       output.append("  - Fixed-size array declarations (tracked by stack overflow analysis)\n")
+      output.append("  - Constants, language literals, and type-reference pseudo-locals\n")
       output.append("  - Identifier reads that are the direct LHS of an assignment\n")
     } else {
       output.append(s"Found ${dedupIssues.size} potential uninitialized read issue(s):\n\n")

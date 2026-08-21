@@ -23,7 +23,7 @@ fixture.
 - [x] **T02 — `find_use_after_free` false negatives (broken).** Detect the
   bundled `dma_detach_buffer` and `dma_shadow_refresh` cases without reporting
   `dma_remap_buffer`, whose pointer is reassigned after `free`.
-- [ ] **T03 — `find_uninitialized_reads` false positives.** Exclude language
+- [x] **T03 — `find_uninitialized_reads` false positives.** Exclude language
   literals, macros/constants, and type names such as `true`, `false`,
   `AF_INET`, `SOCK_STREAM`, and `NetworkContext` from variable findings.
 - [ ] **T04 — `list_methods` result totals.** Separate the number of matches
