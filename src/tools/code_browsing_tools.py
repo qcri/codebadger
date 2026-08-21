@@ -341,6 +341,22 @@ Examples:
 
 
     @mcp.tool(
+        title="List Parameters",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "methods": {"type": "array", "items": {"type": "object", "properties": {
+                    "method": {"type": "string"},
+                    "parameters": {"type": "array", "items": {"type": "object", "properties": {
+                        "name": {"type": "string"}, "type": {"type": "string"}, "index": {"type": "integer"},
+                    }, "additionalProperties": False}},
+                }, "required": ["method", "parameters"], "additionalProperties": False}},
+                "total": {"type": "integer"}, "error": {"type": ["string", "object"]},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""List parameters of a specific method.
 
 Get detailed information about method parameters including their names,
