@@ -2457,8 +2457,12 @@ Returns:
         "active_servers": live Joern query servers,
         "max_active_servers": server admission cap,
         "memory": {budget_mb, reserved_mb, free_mb, utilization_pct, ...},
-        "cpgs": [{codebase_label, status, phase, language, last_accessed}, ...],
-        "cpg_count": total tracked CPGs
+    "cpgs": [{codebase_label, status, phase, language, last_accessed}, ...],
+        "cpg_count": total tracked CPGs,
+        "cpg_page": 1,
+        "cpg_page_size": 50,
+        "cpg_total_pages": ...,
+        "cpg_truncated": true when more CPGs are available
     }
 
 Notes:
@@ -2469,7 +2473,10 @@ Notes:
     - Filesystem paths are not exposed; CPGs are identified by `codebase_label`.
 """,
     )
-    def get_backend_status() -> Dict[str, Any]:
+    def get_backend_status(
+        page: Annotated[int, Field(description="1-based page of tracked CPGs to return")] = 1,
+        page_size: Annotated[int, Field(description="Number of CPG summaries per page, capped at 200")] = 50,
+    ) -> Dict[str, Any]:
         """Report build-queue, Joern-server and memory load for agent self-pacing."""
         try:
             config = services.get("config")
@@ -2516,8 +2523,19 @@ Notes:
                             "language": cb.language,
                             "last_accessed": cb.last_accessed.isoformat() if cb.last_accessed else None,
                         })
-                    response["cpgs"] = cpgs
                     response["cpg_count"] = len(cpgs)
+                    safe_page = max(1, page)
+                    safe_page_size = max(1, min(page_size, 200))
+                    start = (safe_page - 1) * safe_page_size
+                    response["cpgs"] = cpgs[start:start + safe_page_size]
+                    response["cpg_page"] = safe_page
+                    response["cpg_page_size"] = safe_page_size
+                    response["cpg_returned"] = len(response["cpgs"])
+                    response["cpg_total_pages"] = (
+                        (len(cpgs) + safe_page_size - 1) // safe_page_size
+                        if cpgs else 1
+                    )
+                    response["cpg_truncated"] = start + len(response["cpgs"]) < len(cpgs)
                 except Exception as e:
                     logger.debug(f"get_backend_status: codebase listing failed: {e}")
 

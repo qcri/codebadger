@@ -874,6 +874,43 @@ class TestMCPTools:
             assert r["cpg_count"] == 1
             assert r["cpgs"][0]["codebase_label"] == "repo@55364287"
             assert r["cpgs"][0]["status"] == "ready"
+            assert r["cpg_page"] == 1
+            assert r["cpg_page_size"] == 50
+            assert r["cpg_total_pages"] == 1
+            assert r["cpg_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
+        from datetime import datetime, timezone
+        from src.tools.core_tools import register_core_tools
+
+        now = datetime.now(timezone.utc)
+        mock_services["codebase_tracker"].list_codebases_full.return_value = [
+            CodebaseInfo(
+                codebase_hash=f"{index:016x}", source_type="local",
+                source_path="/tmp/repo", language="c", cpg_path="/tmp/test.cpg",
+                last_accessed=now, metadata={"status": "ready"},
+            )
+            for index in range(55)
+        ]
+
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "get_backend_status", {"page": 2, "page_size": 20}
+            )
+            import json
+            response = json.loads(result.content[0].text)
+
+        assert response["cpg_count"] == 55
+        assert len(response["cpgs"]) == 20
+        assert response["cpg_page"] == 2
+        assert response["cpg_page_size"] == 20
+        assert response["cpg_returned"] == 20
+        assert response["cpg_total_pages"] == 3
+        assert response["cpg_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_get_cpg_status_not_found(self, mock_services):
