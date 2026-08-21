@@ -2235,8 +2235,8 @@ Returns:
         "joern_port": port number or null,
         "language": "programming language",
         "phase": "queued" | "frontend" | "loading" | "ready" | ...,  # finer-grained than status
-        "elapsed_seconds": seconds since the build started,
-        "deadline_seconds": seconds of budget left before timeout reconciliation (0 = overdue),
+        "elapsed_seconds": live build time (or recorded duration for terminal states),
+        "deadline_seconds": seconds of budget left while building (0 outside active builds),
         "queue_position": 1-based position behind other queued builds (only while queued),
         "user_method_count": verified user-defined methods in the loaded CPG (coverage check)
     }
@@ -2398,15 +2398,36 @@ Examples:
             if meta.get("user_method_count") is not None:
                 response["user_method_count"] = meta["user_method_count"]
 
-            started = _parse_iso(meta.get("generation_started_at")) or codebase_info.created_at
-            if started is not None:
+            active_status = status in (
+                "generating", SessionStatus.GENERATING,
+                "loading", SessionStatus.LOADING,
+            )
+            started_key = (
+                "generation_started_at"
+                if status in ("generating", SessionStatus.GENERATING)
+                else "load_started_at"
+            )
+            started = _parse_iso(meta.get(started_key))
+            if active_status and started is not None:
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=timezone.utc)
-                response["elapsed_seconds"] = round((_now_utc() - started).total_seconds(), 1)
+                response["elapsed_seconds"] = max(
+                    0.0, round((_now_utc() - started).total_seconds(), 1)
+                )
+            else:
+                recorded_elapsed = meta.get("generation_elapsed_seconds", 0.0)
+                try:
+                    response["elapsed_seconds"] = max(0.0, round(float(recorded_elapsed), 1))
+                except (TypeError, ValueError):
+                    response["elapsed_seconds"] = 0.0
 
             deadline = _parse_iso(meta.get("generation_deadline"))
-            if deadline is not None:
-                response["deadline_seconds"] = max(0.0, round((deadline - _now_utc()).total_seconds(), 1))
+            if active_status and deadline is not None:
+                response["deadline_seconds"] = max(
+                    0.0, round((deadline - _now_utc()).total_seconds(), 1)
+                )
+            else:
+                response["deadline_seconds"] = 0.0
 
             # Queue position only makes sense while still queued; surface it so a
             # caller knows it's behind N others rather than actively parsing.

@@ -44,7 +44,7 @@ fixture.
   interprocedural dependencies.
 - [x] **T11 — `get_backend_status` bounded output.** Add pagination or summary
   defaults so a large historical CPG catalog does not dominate LLM context.
-- [ ] **T12 — `get_cpg_status` stable status fields.** Make elapsed/deadline
+- [x] **T12 — `get_cpg_status` stable status fields.** Make elapsed/deadline
   fields meaningful outside active builds and sanitize recovery failures.
 
 ## Confirmation passes for tools currently scored as working

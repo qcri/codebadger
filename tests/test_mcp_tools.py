@@ -466,6 +466,58 @@ class TestMCPTools:
                 assert result_dict["source_path"] == "<redacted:local-source>"
                 assert result_dict["container_codebase_path"] == "<redacted:container-path>"
                 assert result_dict["container_cpg_path"] == "<redacted:container-path>"
+                assert result_dict["elapsed_seconds"] == 0.0
+                assert result_dict["deadline_seconds"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_get_cpg_status_uses_recorded_terminal_duration(self, mock_services):
+        from src.tools.core_tools import register_core_tools
+
+        mock_services["codebase_tracker"].get_codebase.return_value.metadata = {
+            "status": "failed",
+            "generation_elapsed_seconds": 12.5,
+            "error_code": "BUILD_ERROR",
+            "error": "frontend failed",
+        }
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "get_cpg_status", {"codebase_hash": "553642871dd4251d"}
+            )
+            import json
+            response = json.loads(result.content[0].text)
+
+        assert response["status"] == "failed"
+        assert response["elapsed_seconds"] == 12.5
+        assert response["deadline_seconds"] == 0.0
+        assert response["error_code"] == "BUILD_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_get_cpg_status_loading_does_not_reuse_generation_timestamp(self, mock_services):
+        from datetime import datetime, timedelta, timezone
+        from src.tools.core_tools import register_core_tools
+
+        mock_services["codebase_tracker"].get_codebase.return_value.metadata = {
+            "status": "loading",
+            "generation_started_at": (
+                datetime.now(timezone.utc) - timedelta(days=2)
+            ).isoformat(),
+        }
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "get_cpg_status", {"codebase_hash": "553642871dd4251d"}
+            )
+            import json
+            response = json.loads(result.content[0].text)
+
+        assert response["status"] == "failed"
+        assert response["elapsed_seconds"] == 0.0
+        assert response["deadline_seconds"] == 0.0
 
     @pytest.mark.asyncio
     async def test_get_cpg_status_reports_progress_fields(self, mock_services):
