@@ -382,3 +382,25 @@ Total: 3 potential UAF issue(s) found
         assert "free(ptr)" in result
         assert "xmlFree(xmlStr)" in result
         assert "g_free(gptr)" in result
+
+
+@pytest.mark.asyncio
+async def test_find_use_after_free_versions_cached_analysis(uaf_services):
+    db_manager = MagicMock()
+    db_manager.get_cached_tool_output.return_value = None
+    uaf_services["db_manager"] = db_manager
+
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, uaf_services)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "find_use_after_free",
+            {"codebase_hash": uaf_services["codebase_hash"]},
+        )
+
+    db_manager.get_cached_tool_output.assert_called_once_with(
+        "find_use_after_free",
+        uaf_services["codebase_hash"],
+        {"filename": None, "limit": 100, "analysis_version": 2},
+    )

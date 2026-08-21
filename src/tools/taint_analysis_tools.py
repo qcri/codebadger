@@ -1131,6 +1131,9 @@ Notes:
             cache_params = {
                 "filename": filename,
                 "limit": limit,
+                # Invalidate successful no-finding results cached before the
+                # delegated/member-alias analysis was added.
+                "analysis_version": 2,
             }
 
             def _execute():

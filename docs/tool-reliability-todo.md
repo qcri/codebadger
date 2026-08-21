@@ -20,7 +20,7 @@ fixture.
   method-keyed tuple JSON and legacy `_1`/`_2` tuple JSON, preserve parameter
   name/type/index, and invalidate cached empty results produced by the old
   decoder. Verify with `xmlReadMemory` in libxml2.
-- [ ] **T02 — `find_use_after_free` false negatives (broken).** Detect the
+- [x] **T02 — `find_use_after_free` false negatives (broken).** Detect the
   bundled `dma_detach_buffer` and `dma_shadow_refresh` cases without reporting
   `dma_remap_buffer`, whose pointer is reassigned after `free`.
 - [ ] **T03 — `find_uninitialized_reads` false positives.** Exclude language

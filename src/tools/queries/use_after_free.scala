@@ -14,6 +14,24 @@
     "(^|.*/)" + escaped + "$"
   }
 
+  def stripCastsAndAddress(code: String): String = {
+    var value = code.trim
+    var previous = ""
+    while (value != previous && value.startsWith("(")) {
+      previous = value
+      value = value.replaceFirst("^\\([^)]*\\)\\s*", "").trim
+    }
+    value.stripPrefix("&").trim
+  }
+
+  def fieldName(code: String): Option[String] = {
+    val Field = ".*(?:->|\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*$".r
+    stripCastsAndAddress(code) match {
+      case Field(name) => Some(name)
+      case _ => None
+    }
+  }
+
   /** Check if two line numbers are in mutually exclusive branches of the same IF.
     * Returns true if lineA is inside the THEN block and lineB inside ELSE (or vice versa),
     * meaning they cannot both execute in the same control flow path.
@@ -56,6 +74,34 @@
   val csCache    = mutable.Map[String, List[ControlStructure]]()
   val retCache   = mutable.Map[String, List[Return]]()
   val entryPointCache = mutable.Map[String, Option[String]]()
+  val executionOrderCache = mutable.Map[(String, String), Boolean]()
+
+  def mayExecuteAfter(freeMethodName: String, usageMethodName: String): Boolean = {
+    if (freeMethodName == usageMethodName) true
+    else executionOrderCache.getOrElseUpdate((freeMethodName, usageMethodName), {
+      val freeSites = cpg.method.nameExact(freeMethodName).callIn.l
+      val usageSites = cpg.method.nameExact(usageMethodName).callIn.l
+      if (usageSites.isEmpty) {
+        // Keep dormant consumer methods visible as potential paths when the
+        // deallocator itself is reachable. Terminal lifecycle methods do not
+        // imply a later use merely because a dormant consumer exists.
+        val terminalFree = freeMethodName.toLowerCase.matches(".*(destroy|cleanup|finalize).*")
+        freeSites.nonEmpty && !terminalFree
+      } else {
+        freeSites.exists { freeSite =>
+          usageSites.exists { usageSite =>
+            val sameCaller = freeSite.method.fullName == usageSite.method.fullName
+            val freeLine = freeSite.lineNumber.getOrElse(-1)
+            val usageLine = usageSite.lineNumber.getOrElse(-1)
+            val callerCanRepeat = freeSite.method.ast.isControlStructure.l.exists { cs =>
+              Set("WHILE", "FOR", "DO").contains(cs.controlStructureType)
+            }
+            sameCaller && (callerCanRepeat || freeLine <= usageLine)
+          }
+        }
+      }
+    })
+  }
 
   def findEntryPoint(methodName: String, maxDepth: Int = 10): Option[String] = {
     entryPointCache.getOrElseUpdate(methodName, {
@@ -205,7 +251,12 @@
             val assignLine = assign.lineNumber.getOrElse(-1)
             if (assignLine > freeLine) {
               val srcCode = assign.source.code.trim
-              if (aliases.contains(srcCode)) {
+              val sourceReassignedBefore = method.assignment.l.exists { prior =>
+                val priorLine = prior.lineNumber.getOrElse(-1)
+                priorLine > freeLine && priorLine < assignLine &&
+                  prior.target.code.trim == srcCode
+              }
+              if (aliases.contains(srcCode) && !sourceReassignedBefore) {
                 val targetCode = assign.target.code.trim
                 if (!targetCode.contains("(") && !targetCode.contains("[") && targetCode.length < 50) {
                   postFreeAliasAssignments += ((targetCode, assignLine))
@@ -394,6 +445,140 @@
         }
       }
     }
+
+    // === PHASE 4: Deallocation delegated through a helper ===
+    // Example: alias = obj->ptr; release_slot(&obj->ptr); return alias.
+    // The free occurs in release_slot(), so ordinary forward dataflow from the
+    // helper's `*slot` parameter cannot reach the caller's return. Map the
+    // deallocator parameter back to each call-site argument and inspect aliases
+    // that were established before that call.
+    freeCallsFiltered.foreach { innerFree =>
+      val helper = innerFree.method
+      val freeArgOpt = innerFree.argument.argumentIndex(1).l.headOption
+      freeArgOpt.foreach { freeArg =>
+        val referencedNames = freeArg.ast.isIdentifier.name.toSet
+        val freedParams = helper.parameter.l.filter(p => referencedNames.contains(p.name))
+
+        freedParams.foreach { freedParam =>
+          helper.callIn.l.foreach { helperCall =>
+            val caller = helperCall.method
+            val callLine = helperCall.lineNumber.getOrElse(-1)
+            val callerFile = helperCall.file.name.headOption.getOrElse("unknown")
+            val actualOpt = helperCall.argument.argumentIndex(freedParam.index).l.headOption
+
+            actualOpt.foreach { actualNode =>
+              val actual = stripCastsAndAddress(actualNode.code)
+              if (actual.nonEmpty && actual.length < 80) {
+                val aliases = caller.assignment.l
+                  .filter(_.lineNumber.getOrElse(-1) < callLine)
+                  .filter(a => stripCastsAndAddress(a.source.code) == actual)
+                  .map(_.target.code.trim)
+                  .filter(a => a.nonEmpty && !a.contains("(") && !a.contains("["))
+                  .distinct
+
+                val delegatedUsages = aliases.flatMap { alias =>
+                  val reassignmentLines = caller.assignment.l
+                    .filter(_.target.code.trim == alias)
+                    .map(_.lineNumber.getOrElse(-1))
+                    .filter(_ > callLine)
+
+                  caller.ast.isReturn.l
+                    .filter(_.lineNumber.getOrElse(-1) >= callLine)
+                    .filter(_.ast.isIdentifier.nameExact(alias).nonEmpty)
+                    .filter { ret =>
+                      val retLine = ret.lineNumber.getOrElse(-1)
+                      !reassignmentLines.exists(line => line < retLine)
+                    }
+                    .map { ret =>
+                      (ret.lineNumber.getOrElse(-1), ret.code, callerFile,
+                        caller.name, s"delegated-free-alias($alias)")
+                    }
+                }.distinct
+
+                if (delegatedUsages.nonEmpty && !uafIssues.exists(issue =>
+                    issue._1 == callerFile && issue._2 == callLine && issue._5 == caller.name)) {
+                  uafIssues += ((callerFile, callLine, helperCall.code, actual,
+                    caller.name, delegatedUsages))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // === PHASE 5: Member aliases that outlive a freed sibling member ===
+    // Example: obj->shadow = obj->buffer; free(obj->buffer); use(obj->shadow).
+    // Joern does not currently carry this field-alias relationship through a
+    // separate deallocator and consumer method, so retain a conservative,
+    // field-name-based candidate. A method that refreshes the alias after the
+    // free (free(buffer); buffer=malloc(...); shadow=buffer) is suppressed.
+    sortedFreeCallsFiltered.foreach { freeCall =>
+      val freedArgOpt = freeCall.argument.argumentIndex(1).l.headOption
+      freedArgOpt.foreach { freedArg =>
+        fieldName(freedArg.code).foreach { freedField =>
+          val freeLine = freeCall.lineNumber.getOrElse(-1)
+          val freeMethod = freeCall.method
+          val freeFile = freeCall.file.name.headOption.getOrElse("unknown")
+
+          val aliasFields = cpg.assignment.l.flatMap { assignment =>
+            val sourceField = fieldName(assignment.source.code)
+            val targetField = fieldName(assignment.target.code)
+            if (sourceField.contains(freedField) && targetField.exists(_ != freedField)) {
+              targetField
+            } else None
+          }.distinct
+
+          aliasFields.foreach { aliasField =>
+            val aliasRefreshedAfterFree = freeMethod.assignment.l.exists { assignment =>
+              assignment.lineNumber.getOrElse(-1) > freeLine &&
+                fieldName(assignment.target.code).contains(aliasField)
+            }
+
+            if (!aliasRefreshedAfterFree) {
+              val directMemberUsages = cpg.call.l
+                .filterNot(call => call.name.startsWith("<operator>"))
+                .filter { call =>
+                  call.argument.l.exists(arg => fieldName(arg.code).contains(aliasField))
+                }
+                .filter(call => mayExecuteAfter(freeMethod.name, call.method.name))
+                .filter { call =>
+                  val usageMethod = call.method
+                  val usageLine = call.lineNumber.getOrElse(-1)
+                  !usageMethod.assignment.l.exists { assignment =>
+                    assignment.lineNumber.getOrElse(-1) < usageLine &&
+                      fieldName(assignment.target.code).contains(aliasField)
+                  }
+                }
+                .map { call =>
+                  (call.lineNumber.getOrElse(-1), call.code,
+                    call.file.name.headOption.getOrElse("unknown"), call.method.name,
+                    s"member-alias($aliasField)")
+                }
+                .distinct
+
+              val loadedMemberUsages = cpg.assignment.l
+                .filter(assignment => fieldName(assignment.source.code).contains(aliasField))
+                .filter(assignment => mayExecuteAfter(freeMethod.name, assignment.method.name))
+                .map { assignment =>
+                  (assignment.lineNumber.getOrElse(-1), assignment.code,
+                    assignment.file.name.headOption.getOrElse("unknown"),
+                    assignment.method.name, s"member-alias($aliasField)")
+                }
+                .distinct
+
+              val memberUsages = (loadedMemberUsages ++ directMemberUsages).distinct.take(10)
+
+              if (memberUsages.nonEmpty && !uafIssues.exists(issue =>
+                  issue._1 == freeFile && issue._2 == freeLine && issue._5 == freeMethod.name)) {
+                uafIssues += ((freeFile, freeLine, freeCall.code, freedArg.code.trim,
+                  freeMethod.name, memberUsages))
+              }
+            }
+          }
+        }
+      }
+    }
     
     if (uafIssues.isEmpty) {
       output.append("No potential Use-After-Free issues detected.\n")
@@ -409,7 +594,7 @@
         // Compute confidence based on flow types present
         val hasDirectDeref = usages.exists(u => u._5 == "direct")
         val hasConfirmedInterproc = usages.exists(u => u._5 == "interproc" || u._5 == "deep-interproc")
-        val hasAliasOnly = usages.forall(u => u._5.startsWith("alias") || u._5.startsWith("post-free-alias"))
+        val hasAliasOnly = usages.forall(u => u._5.contains("alias"))
         val baseConfidence = if (hasDirectDeref || hasConfirmedInterproc) "HIGH"
                              else if (hasAliasOnly) "MEDIUM"
                              else "MEDIUM"
@@ -432,7 +617,7 @@
             case "direct" => ""
             case "interproc" => " [CROSS-FUNC]"
             case "deep-interproc" => " [DEEP]"
-            case other if other.startsWith("alias") || other.startsWith("post-free-alias") => s" [$other]"
+            case other if other.contains("alias") => s" [$other]"
             case _ => ""
           }
           output.append(s"  [$file:$line] $codeSnippet$flowTag\n")
@@ -475,6 +660,8 @@
       output.append("  - direct: Same-function usage of freed pointer\n")
       output.append("  - alias(X): Usage of pre-free alias X (X = ptr before free)\n")
       output.append("  - post-free-alias(X): Usage of X after X = ptr was assigned post-free\n")
+      output.append("  - delegated-free-alias(X): Alias X survives a helper deallocation\n")
+      output.append("  - member-alias(X): Member X may still alias a freed sibling member\n")
       output.append("  - [CROSS-FUNC]: Usage in directly called function\n")
       output.append("  - [DEEP]: Usage across multiple function call levels\n")
     }
