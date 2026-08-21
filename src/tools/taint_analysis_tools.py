@@ -724,6 +724,8 @@ Examples:
             }
 
     @mcp.tool(
+        title="Find Taint Flows",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
 Detects data flow from a specific source node to a specific sink node.
