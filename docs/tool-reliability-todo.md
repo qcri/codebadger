@@ -64,7 +64,7 @@ fixture.
 - [x] Add concise FastMCP server instructions that teach an LLM the intended
   sequence: inspect capacity, generate or select a CPG, wait until ready, browse
   narrowly, then expand into flow or detector analysis.
-- [ ] Add tool annotations and human-readable titles, including accurate
+- [x] Add tool annotations and human-readable titles, including accurate
   read-only, destructive, idempotent, and open-world hints. In particular,
   distinguish `remove_cpg(delete_files=True)` from its non-destructive mode.
 - [ ] Define strict input and output schemas for every tool, including common

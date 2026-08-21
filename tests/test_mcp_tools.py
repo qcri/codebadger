@@ -932,6 +932,23 @@ class TestMCPTools:
             assert r["cpg_truncated"] is False
 
     @pytest.mark.asyncio
+    async def test_core_status_tools_expose_titles_and_safe_annotations(self, mock_services):
+        from src.tools.core_tools import register_core_tools
+
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        by_name = {tool.name: tool for tool in tools}
+        assert by_name["get_cpg_status"].title == "Get CPG Status"
+        assert by_name["get_backend_status"].title == "Get Backend Status"
+        assert by_name["get_cpg_status"].annotations.readOnlyHint is True
+        assert by_name["get_backend_status"].annotations.destructiveHint is False
+        assert by_name["remove_cpg"].annotations.destructiveHint is True
+
+    @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
         from datetime import datetime, timezone
         from src.tools.core_tools import register_core_tools

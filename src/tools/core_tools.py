@@ -2215,6 +2215,13 @@ Examples:
             }
 
     @mcp.tool(
+        title="Get CPG Status",
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         description="""Get the current status of a CPG and its Joern server.
 
 USE THIS TO WAIT FOR generate_cpg: generate_cpg starts the build in the background
@@ -2462,6 +2469,13 @@ Examples:
             }
 
     @mcp.tool(
+        title="Get Backend Status",
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         description="""Inspect backend capacity and load so you can self-pace CPG generation.
 
 Read-only. Use this BEFORE fanning out many generate_cpg calls (or when builds
@@ -2573,6 +2587,13 @@ Notes:
             return {"success": False, "error": str(e)}
 
     @mcp.tool(
+        title="Remove or Evict CPG",
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         description="""Free resources held by a codebase.
 
 delete_files=False (default):
