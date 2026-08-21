@@ -820,15 +820,15 @@ Examples:
             )
 
             if not result.success:
-                raise ToolError(f"QUERY_ERROR: {result.error or 'CFG query failed'}")
+                raise ToolError(f"QUERY_ERROR: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower max_nodes for large methods.")
             return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
             logger.error(f"Error getting CFG: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid codebase hash and method name.") from e
         except Exception as e:
             logger.error(f"Unexpected error getting CFG: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
 
 
     @mcp.tool(
