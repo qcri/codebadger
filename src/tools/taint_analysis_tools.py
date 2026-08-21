@@ -1428,10 +1428,10 @@ Notes:
 
         except ValidationError as e:
             logger.error(f"Error detecting null pointer dereference: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error detecting null pointer dereference: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
     @mcp.tool(
         title="Find Integer Overflows",
