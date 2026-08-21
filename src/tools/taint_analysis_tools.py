@@ -1179,10 +1179,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting data dependencies: {e}")
-            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
+            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
 
     @mcp.tool(
         title="Find Use-After-Free Issues",
