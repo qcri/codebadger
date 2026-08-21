@@ -5,20 +5,26 @@ on:
   pull_request:
 
 jobs:
-  contract:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build clean-clone MCP image
+      - name: Build MCP image
         run: docker build -f Dockerfile.mcp -t codebadger-mcp:ci .
-      - name: Run MCP contract tests
-        run: docker run --rm -v "$PWD:/workspace" -w /workspace codebadger-mcp:ci pytest -q tests/test_mcp_tools.py tests/test_presentation_tools.py
+      - name: Run unit and contract tests
+        run: >-
+          docker run --rm
+          -v "$PWD:/workspace"
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -w /workspace
+          codebadger-mcp:ci
+          pytest -q tests --ignore=tests/integration
 
-  live-smoke:
+  integration:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build MCP service image
+      - name: Build MCP image
         run: docker build -f Dockerfile.mcp -t codebadger-mcp:latest .
       - name: Start compose services
         run: docker compose up -d codebadger-postgres codebadger-redis codebadger-joern-server codebadger-mcp
@@ -30,6 +36,22 @@ jobs:
           done
           docker compose logs codebadger-mcp
           exit 1
+      - name: Run live integration and detector tests
+        run: >-
+          docker run --rm --network host
+          -v "$PWD:/workspace"
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -w /workspace
+          -e CODEBADGER_LIVE_JOERN=1
+          -e CODEBADGER_TEST_PG_DSN=postgresql://codebadger:codebadger@127.0.0.1:55432/codebadger
+          -e CODEBADGER_TEST_REDIS_URL=redis://127.0.0.1:56379/0
+          codebadger-mcp:latest
+          pytest -q tests/integration tests/test_detectors_live.py tests/test_coordination.py
+          tests/test_durable_queue.py tests/test_health.py tests/test_pool_store_redis.py
+          tests/test_postgres_db_manager.py tests/test_postgres_job_store.py
+      - name: Collect service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
       - name: Tear down compose services
         if: always()
         run: docker compose down -v
