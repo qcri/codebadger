@@ -1268,6 +1268,7 @@ Notes:
     @mcp.tool(
         title="Find Double-Free Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Double-Free vulnerabilities by finding multiple free() calls on the same pointer.
 
 Analyzes the codebase for potential double-free issues using:
@@ -1300,7 +1301,7 @@ Returns:
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
         limit: Annotated[int, Field(description="Maximum results to return")] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 300,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Detect potential Double-Free vulnerabilities in the codebase."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -1331,14 +1332,14 @@ Returns:
 
                 return unwrap_result(result)
 
-            return _cached_taint_query(services, "find_double_free", codebase_hash, cache_params, _execute)
+            return {"success": True, "summary": str(_cached_taint_query(services, "find_double_free", codebase_hash, cache_params, _execute))}
 
         except ValidationError as e:
             logger.error(f"Error detecting double-free: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error detecting double-free: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
     @mcp.tool(
         title="Find Null Pointer Dereferences",
