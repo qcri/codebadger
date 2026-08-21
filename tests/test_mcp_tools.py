@@ -982,6 +982,9 @@ class TestMCPTools:
         methods_schema = by_name["list_methods"].outputSchema
         assert methods_schema["required"] == ["success"]
         assert methods_schema["properties"]["truncated"]["type"] == "boolean"
+        for name in ("list_methods", "list_calls", "find_taint_sources", "find_taint_sinks"):
+            props = by_name[name].outputSchema["properties"]
+            assert "total" in props and "returned" in props and "truncated" in props
         calls_schema = by_name["list_calls"].outputSchema
         assert calls_schema["properties"]["calls"]["items"]["properties"]["callee"]["type"] == "string"
         assert by_name["get_type_definition"].outputSchema["properties"]["types"]["type"] == "array"
