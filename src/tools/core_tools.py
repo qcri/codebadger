@@ -1660,6 +1660,13 @@ def register_core_tools(mcp, services: dict):
     """Register core MCP tools with the FastMCP server"""
 
     @mcp.tool(
+        title="Generate Code Property Graph",
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
         description="""Generate a Code Property Graph (CPG) for a codebase.
 
 This tool initiates the analysis process by generating a CPG for the specified codebase.
