@@ -1725,6 +1725,8 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find TOCTOU Issues",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect TOCTOU (Time-of-Check-Time-of-Use) race condition vulnerabilities (CWE-367) where a file is checked with access()/stat()/lstat() and then opened or operated on in a separate step.
 
 Analyzes the codebase for the classic TOCTOU pattern:
