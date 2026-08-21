@@ -6,7 +6,7 @@ Tools for exploring and navigating codebase structure
 import logging
 import os
 import re
-from typing import Any, Dict, Optional, Annotated
+from typing import Any, Dict, Optional, Annotated, Literal
 from pydantic import Field
 from fastmcp.exceptions import ToolError
 
@@ -302,6 +302,7 @@ Examples:
         method_name: Annotated[str, Field(description="Name of the method to analyze (can be regex)")],
         depth: Annotated[int, Field(description="How many levels deep to traverse (max recommended: 10)")] = 5,
         direction: Annotated[str, Field(description="Either 'outgoing' (callees) or 'incoming' (callers)")] = "outgoing",
+        detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact returns a bounded summary")] = "compact",
     ) -> Dict[str, Any]:
         """Build the call graph showing callers or callees for a method."""
         try:
@@ -334,7 +335,10 @@ Examples:
 
             if not result.success:
                 raise ToolError(f"QUERY_ERROR: {result.error or 'Call graph query failed'}")
-            return {"success": True, "summary": unwrap_result(result)}
+            summary = unwrap_result(result)
+            if detail == "compact" and len(summary) > 2000:
+                summary = summary[:2000].rstrip() + "\n...[truncated; use detail='full']"
+            return {"success": True, "summary": summary}
 
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
