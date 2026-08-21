@@ -623,6 +623,16 @@ Examples:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Get CPGQL Syntax Help",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"}, "syntax_helpers": {},
+                "error_guide": {}, "quick_reference": {}, "error": {"type": "string"},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""Get comprehensive CPGQL syntax help and examples.
 
 Provides syntax documentation, common patterns, node types, and error solutions.
