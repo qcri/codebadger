@@ -7,12 +7,36 @@ PLAYGROUND_PATH="./playground"
 CODEBASES_PATH="$PLAYGROUND_PATH/codebases"
 CPGS_PATH="$PLAYGROUND_PATH/cpgs"
 
+# Docker-created artifacts may be owned by root on the host.  Retry deletion
+# inside a disposable container, but only against the two explicitly scoped
+# artifact directories (never the repository root).
+remove_root_owned_children() {
+    local directory="$1"
+    local preserve_name="${2:-}"
+    local absolute
+    absolute="$(cd "$directory" && pwd)"
+    if ! command -v docker >/dev/null 2>&1; then
+        return 1
+    fi
+    if [ -n "$preserve_name" ]; then
+        docker run --rm -v "$absolute:/data" alpine sh -c \
+            "find /data -mindepth 1 -maxdepth 1 ! -name '$preserve_name' -exec rm -rf {} +" \
+            >/dev/null 2>&1
+    else
+        docker run --rm -v "$absolute:/data" alpine sh -c \
+            "find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +" \
+            >/dev/null 2>&1
+    fi
+}
+
 echo "🧹 CodeBadger Cleanup"
 echo "=============================="
 
 if [ -d "$CODEBASES_PATH" ]; then
     echo "Cleaning codebases (keeping core)..."
     find "$CODEBASES_PATH" -maxdepth 1 -type d ! -name "core" ! -name "codebases" -exec rm -rf {} + 2>/dev/null || true
+    # The host-side rm can leave root-owned entries behind.
+    remove_root_owned_children "$CODEBASES_PATH" core || true
     echo "✓ Codebases cleaned"
 else
     echo "⚠ Codebases directory not found"
@@ -20,7 +44,8 @@ fi
 
 if [ -d "$CPGS_PATH" ]; then
     echo "Cleaning CPGs..."
-    rm -rf "$CPGS_PATH"/*
+    rm -rf "$CPGS_PATH"/* 2>/dev/null || true
+    remove_root_owned_children "$CPGS_PATH" || true
     echo "✓ CPGs cleaned"
 else
     echo "⚠ CPGs directory not found"
