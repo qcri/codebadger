@@ -778,6 +778,19 @@ Examples:
     @mcp.tool(
         title="Get Type Definition",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "types": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": ["string", "null"]}, "fullName": {"type": ["string", "null"]},
+                    "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
+                    "members": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "error": {"type": ["string", "object"]},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""Get type/struct definition with members.
 
 Inspect struct or class memory layouts.
