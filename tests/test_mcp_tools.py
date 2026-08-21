@@ -957,7 +957,7 @@ class TestMCPTools:
         assert by_name["get_cpg_status"].outputSchema["additionalProperties"] is True
         assert by_name["get_backend_status"].outputSchema["type"] == "object"
 
-        for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition"):
+        for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition", "list_parameters", "run_cpgql_query", "get_cfg", "find_bounds_checks", "get_cpgql_syntax_help"):
             assert by_name[name].title
             assert by_name[name].annotations.readOnlyHint is True
         methods_schema = by_name["list_methods"].outputSchema
