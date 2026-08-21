@@ -6,7 +6,7 @@ Security-focused tools for analyzing data flows and vulnerabilities
 import logging
 from fastmcp.exceptions import ToolError
 import re
-from typing import Any, Callable, Dict, Optional, Union, Annotated
+from typing import Any, Callable, Dict, Optional, Union, Annotated, Literal
 from pydantic import Field
 
 from ..exceptions import (
@@ -794,6 +794,7 @@ Examples:
         sink_node_id: Annotated[Optional[int], Field(description="(Manual mode) Node ID from find_taint_sinks output")] = None,
         max_results: Annotated[int, Field(description="Maximum flows to return")] = 20,
         timeout: Annotated[int, Field(description="Query timeout in seconds (default 120 for manual, 300 for auto)")] = 120,
+        detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact bounds the rendered flow report")] = "compact",
         mode: Annotated[Optional[str], Field(description="Set to 'auto' for batch analysis with all default sources/sinks. Omit for manual mode.")] = None,
         language: Annotated[Optional[str], Field(description="(Auto mode) Programming language for default patterns. Auto-detected if omitted.")] = None,
         source_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default source function names (e.g., ['getenv', 'read'])")] = None,
@@ -830,7 +831,7 @@ Examples:
 
             # --- AUTO MODE ---
             if mode == "auto":
-                return {"success": True, "summary": str(_find_taint_flows_auto(
+                summary = str(_find_taint_flows_auto(
                     services=services,
                     codebase_hash=codebase_hash,
                     codebase_info=codebase_info,
@@ -842,7 +843,10 @@ Examples:
                     filename=filename,
                     max_results=max_results,
                     timeout=timeout if timeout != 120 else 300,  # default to 300s for auto mode (large codebases need more time)
-                ))}
+                ))
+                if detail == "compact" and len(summary) > 3000:
+                    summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
+                return {"success": True, "summary": summary}
 
             # --- MANUAL MODE ---
             if mode is not None:
@@ -970,7 +974,10 @@ Examples:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute))}
+            summary = str(_cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute))
+            if detail == "compact" and len(summary) > 3000:
+                summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
+            return {"success": True, "summary": summary}
 
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")
