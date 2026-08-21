@@ -993,6 +993,7 @@ class TestMCPTools:
         assert by_name["find_null_pointer_deref"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_integer_overflow"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_format_string_vulns"].outputSchema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_heap_overflow"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio
