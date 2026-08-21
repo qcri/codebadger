@@ -21,6 +21,10 @@ actionable:
 6. Treat every result as bounded. Follow `total_pages`, `available`,
    `returned`, `has_more`, or `truncated` instead of assuming the first page is
    complete.
+7. Rendered analysis tools default to compact output. Request
+   `detail="full"` only when the bounded summary is insufficient; otherwise
+   keep `detail="compact"` to reduce context usage. Native tool failures expose
+   stable error-code prefixes such as `VALIDATION_ERROR` and `QUERY_ERROR`.
 
 `remove_cpg(delete_files=false)` only releases the Joern worker and preserves
    the CPG. `delete_files=true` removes the CPG, copied source, and catalog
