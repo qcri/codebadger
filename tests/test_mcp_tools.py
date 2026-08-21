@@ -986,6 +986,7 @@ class TestMCPTools:
         assert by_name["find_taint_flows"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_cfg"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_bounds_checks"].outputSchema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_program_slice"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio

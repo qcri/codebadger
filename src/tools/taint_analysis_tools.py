@@ -977,6 +977,7 @@ Examples:
     @mcp.tool(
         title="Get Program Slice",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Build a program slice from a specific call location.
 
 Creates a program slice showing code that affects (backward) or is affected by (forward)
@@ -1013,7 +1014,7 @@ Examples:
         max_depth: Annotated[int, Field(description="Maximum depth for recursive dependency tracking")] = 5,
         include_control_flow: Annotated[bool, Field(description="Include control dependencies (if/while conditions)")] = True,
         timeout: Annotated[int, Field(description="Maximum execution time in seconds")] = 60,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Get program slice showing code affecting (backward) or affected by (forward) a specific call."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -1072,14 +1073,14 @@ Examples:
 
                 return unwrap_result(result)
 
-            return _cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute)
+            return {"success": True, "summary": str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))}
 
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error getting program slice: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
 
     @mcp.tool(
