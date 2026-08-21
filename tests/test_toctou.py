@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import uuid
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
 from src.tools.mcp_tools import register_tools
@@ -227,13 +228,8 @@ async def test_find_toctou_invalid_hash(toctou_services):
     register_tools(mcp, services)
 
     async with Client(mcp) as client:
-        res = await client.call_tool(
-            "find_toctou",
-            {"codebase_hash": "invalid_hash_12345"},
-        )
-        result = res.content[0].text
-
-        assert "Error" in result or "not found" in result.lower()
+        with pytest.raises(ToolError, match="codebase_hash"):
+            await client.call_tool("find_toctou", {"codebase_hash": "invalid_hash_12345"})
 
 
 @pytest.mark.asyncio
