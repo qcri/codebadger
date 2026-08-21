@@ -21,7 +21,7 @@ jobs:
       - name: Build MCP service image
         run: docker build -f Dockerfile.mcp -t codebadger-mcp:latest .
       - name: Start compose services
-        run: docker compose up -d postgres redis codebadger-joern-server codebadger-mcp
+        run: docker compose up -d codebadger-postgres codebadger-redis codebadger-joern-server codebadger-mcp
       - name: Probe health endpoint
         run: |
           for i in $(seq 1 30); do
