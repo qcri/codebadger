@@ -975,6 +975,7 @@ class TestMCPTools:
         assert by_name["get_variable_flow"].title == "Get Variable Flow"
         assert by_name["find_use_after_free"].title == "Find Use-After-Free Issues"
         assert by_name["find_double_free"].title == "Find Double-Free Issues"
+        assert by_name["find_null_pointer_deref"].title == "Find Null Pointer Dereferences"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio

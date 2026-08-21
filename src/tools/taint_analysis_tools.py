@@ -1337,6 +1337,8 @@ Returns:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Null Pointer Dereferences",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Null Pointer Dereference vulnerabilities (CWE-476) by finding unchecked return values from allocation functions.
 
 Analyzes the codebase for cases where:
