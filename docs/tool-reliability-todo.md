@@ -28,7 +28,7 @@ fixture.
   `AF_INET`, `SOCK_STREAM`, and `NetworkContext` from variable findings.
 - [x] **T04 — `list_methods` result totals.** Separate the number of matches
   available from the caller's response cap and make truncation explicit.
-- [ ] **T05 — `list_calls` result totals.** Apply the same total/truncation
+- [x] **T05 — `list_calls` result totals.** Apply the same total/truncation
   contract as `list_methods`.
 - [ ] **T06 — `get_type_definition` duplicate types.** Deduplicate Joern
   `<duplicate>N` entries while retaining the canonical definition and members.

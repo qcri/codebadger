@@ -298,6 +298,7 @@ class CodeBrowsingService:
             "caller_pattern": caller_pattern,
             "callee_pattern": callee_pattern,
             "limit": limit,
+            "result_schema_version": 2,
         }
 
         def execute_query():
@@ -313,12 +314,34 @@ class CodeBrowsingService:
                     f'.where(_.method.name("{escape_scala_string(caller_pattern)}"))'
                 )
 
-            query_parts.append(
+            projection = (
                 ".map(c => (c.method.name, c.name, c.code, c.method.filename, c.lineNumber.getOrElse(-1)))"
             )
+            base_query = "".join(query_parts) + projection + ".dedup"
+            count_result = self.query_executor.execute_query(
+                codebase_hash=codebase_hash,
+                cpg_path=codebase_info.cpg_path,
+                query=f"{base_query}.size",
+                timeout=30,
+            )
+            if not count_result.success:
+                return {
+                    "success": False,
+                    "error": {"code": "QUERY_ERROR", "message": count_result.error},
+                }
 
-            query_limit = min(limit, 10000)
-            query = "".join(query_parts) + f".dedup.take({query_limit}).l"
+            total = _decode_count(count_result.data)
+            if total is None:
+                return {
+                    "success": False,
+                    "error": {
+                        "code": "QUERY_ERROR",
+                        "message": "Joern returned an invalid call count",
+                    },
+                }
+
+            query_limit = max(0, min(limit, 10000))
+            query = f"{base_query}.take({query_limit}).l"
 
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
@@ -346,7 +369,13 @@ class CodeBrowsingService:
                             "lineNumber": item.get("_5", -1),
                         }
                     )
-            return {"success": True, "calls": calls, "total": len(calls)}
+            return {
+                "success": True,
+                "calls": calls,
+                "total": total,
+                "result_cap": query_limit,
+                "truncated": total > query_limit,
+            }
 
         full_result = self._get_cached_or_execute(
             "list_calls", codebase_hash, cache_params, execute_query
@@ -356,10 +385,9 @@ class CodeBrowsingService:
             return full_result
 
         calls = full_result.get("calls", [])
-        # Apply the provided limit to final result set
-        if limit is not None and limit > 0:
-            calls = calls[:limit]
-        total = len(calls)
+        total = full_result.get("total", len(calls))
+        result_cap = full_result.get("result_cap", max(0, min(limit, 10000)))
+        available = len(calls)
 
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
@@ -369,9 +397,15 @@ class CodeBrowsingService:
             "success": True,
             "calls": paged_calls,
             "total": total,
+            "available": available,
+            "returned": len(paged_calls),
+            "result_cap": result_cap,
+            "truncated": full_result.get("truncated", total > available),
             "page": page,
             "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 1,
+            "total_pages": (
+                (available + page_size - 1) // page_size if page_size > 0 else 1
+            ),
         }
 
     def list_parameters(

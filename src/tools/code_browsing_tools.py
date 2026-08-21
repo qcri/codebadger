@@ -118,9 +118,16 @@ Returns:
     {
         "success": true,
         "calls": [
-            {"caller": "main", "callee": "printf", "fileName": "main.c", "lineNumber": 10}
+            {"caller": "main", "callee": "printf", "filename": "main.c", "lineNumber": 10}
         ],
-        "total": 1
+        "total": 25000,
+        "available": 1000,
+        "returned": 100,
+        "result_cap": 1000,
+        "truncated": true,
+        "page": 1,
+        "page_size": 100,
+        "total_pages": 10
     }
 
 Notes:
@@ -134,7 +141,7 @@ Examples:
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         caller_pattern: Annotated[Optional[str], Field(description="Optional regex to filter caller method names")] = None,
         callee_pattern: Annotated[Optional[str], Field(description="Optional regex to filter callee method names")] = None,
-        limit: Annotated[int, Field(description="Maximum number of results to fetch for caching")] = 1000,
+        limit: Annotated[int, Field(description="Maximum number of matching calls made available for pagination (capped at 10000); total still reports the exact match count")] = 1000,
         page: Annotated[int, Field(description="Page number")] = 1,
         page_size: Annotated[int, Field(description="Number of results per page")] = 100,
     ) -> Dict[str, Any]:
@@ -772,4 +779,3 @@ Examples:
                 "success": False,
                 "error": str(e),
             }
-

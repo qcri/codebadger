@@ -38,6 +38,79 @@ def _method_row(index):
     }
 
 
+def _call_row(index):
+    return {
+        "_1": f"caller_{index}",
+        "_2": f"callee_{index}",
+        "_3": f"callee_{index}()",
+        "_4": "example.c",
+        "_5": index + 1,
+    }
+
+
+def test_list_calls_reports_exact_total_and_explicit_result_cap():
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data='val res8: String = "42"', row_count=1),
+        QueryResult(success=True, data=[_call_row(i) for i in range(10)], row_count=10),
+    ]
+
+    result = service.list_calls(CODEBASE_HASH, limit=10, page=3, page_size=4)
+
+    assert result["total"] == 42
+    assert result["available"] == 10
+    assert result["returned"] == 2
+    assert result["result_cap"] == 10
+    assert result["truncated"] is True
+    assert result["total_pages"] == 3
+    assert [call["callee"] for call in result["calls"]] == [
+        "callee_8",
+        "callee_9",
+    ]
+
+    count_call, calls_call = executor.execute_query.call_args_list
+    assert count_call.kwargs["query"].endswith(".dedup.size")
+    assert calls_call.kwargs["query"].endswith(".dedup.take(10).l")
+
+
+def test_list_calls_reports_untruncated_results():
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=3, row_count=1),
+        QueryResult(success=True, data=[_call_row(i) for i in range(3)], row_count=3),
+    ]
+
+    result = service.list_calls(CODEBASE_HASH, limit=10)
+
+    assert result["total"] == 3
+    assert result["available"] == 3
+    assert result["returned"] == 3
+    assert result["truncated"] is False
+    assert result["total_pages"] == 1
+
+
+def test_list_calls_versions_its_cache_key():
+    db_manager = MagicMock()
+    db_manager.get_cached_tool_output.return_value = None
+    service, executor = _service([], db_manager=db_manager)
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=0, row_count=1),
+        QueryResult(success=True, data=[], row_count=0),
+    ]
+
+    service.list_calls(CODEBASE_HASH)
+
+    expected_params = {
+        "caller_pattern": None,
+        "callee_pattern": None,
+        "limit": 1000,
+        "result_schema_version": 2,
+    }
+    db_manager.get_cached_tool_output.assert_called_once_with(
+        "list_calls", CODEBASE_HASH, expected_params
+    )
+
+
 def test_list_methods_reports_exact_total_and_explicit_result_cap():
     service, executor = _service([])
     executor.execute_query.side_effect = [
