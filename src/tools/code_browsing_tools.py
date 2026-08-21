@@ -57,6 +57,8 @@ def register_code_browsing_tools(mcp, services: dict):
 
 
     @mcp.tool(
+        title="List Methods",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""List methods/functions in the codebase.
 
 Discover all methods and functions defined in the analyzed code.
@@ -130,6 +132,8 @@ Examples:
 
 
     @mcp.tool(
+        title="List Calls",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""List function/method calls in the codebase.
 
 Discover call relationships between functions.
@@ -198,6 +202,8 @@ Examples:
 
 
     @mcp.tool(
+        title="Get Call Graph",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Get the call graph for a specific method.
 
 Understand what functions a method calls (outgoing) or what functions
@@ -717,6 +723,8 @@ Examples:
 
 
     @mcp.tool(
+        title="Get Type Definition",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Get type/struct definition with members.
 
 Inspect struct or class memory layouts.

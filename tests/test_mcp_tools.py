@@ -934,9 +934,11 @@ class TestMCPTools:
     @pytest.mark.asyncio
     async def test_core_status_tools_expose_titles_and_safe_annotations(self, mock_services):
         from src.tools.core_tools import register_core_tools
+        from src.tools.code_browsing_tools import register_code_browsing_tools
 
         mcp = FastMCP("TestServer")
         register_core_tools(mcp, mock_services)
+        register_code_browsing_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
             tools = await client.list_tools()
@@ -950,6 +952,10 @@ class TestMCPTools:
         assert by_name["get_cpg_status"].outputSchema["type"] == "object"
         assert by_name["get_cpg_status"].outputSchema["additionalProperties"] is True
         assert by_name["get_backend_status"].outputSchema["type"] == "object"
+
+        for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition"):
+            assert by_name[name].title
+            assert by_name[name].annotations.readOnlyHint is True
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
