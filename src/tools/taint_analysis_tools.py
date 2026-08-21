@@ -1677,10 +1677,10 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error detecting heap overflow: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
         except Exception as e:
             logger.error(f"Unexpected error detecting heap overflow: {e}", exc_info=True)
-            raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
+            raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
 
     @mcp.tool(
         title="Find Stack Overflows",
