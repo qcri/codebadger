@@ -101,9 +101,9 @@ fixture.
 
 ## General CodeBadger fixes — after tool and presentation fixes
 
-- [ ] Make ordinary queries reliably reactivate sleeping/evicted CPG workers.
-- [ ] Make stale-worker/container recovery idempotent and race-safe.
+- [x] Make ordinary queries reliably reactivate sleeping/evicted CPG workers.
+- [x] Make stale-worker/container recovery idempotent and race-safe.
 - [ ] Reconcile tool documentation and argument names with the live schemas.
-- [ ] Fix clean-clone container builds that currently depend on ignored local
+- [x] Fix clean-clone container builds that currently depend on ignored local
   configuration files.
-- [ ] Add CI coverage for the clean-clone Docker and live MCP smoke paths.
+- [x] Add CI coverage for the clean-clone Docker and live MCP smoke paths.
