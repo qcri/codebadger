@@ -555,6 +555,9 @@ Examples:
             }
 
     @mcp.tool(
+        title="Find Bounds Checks",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
         description="""Find bounds checks near buffer access.
 
 Verify if buffer accesses have corresponding bounds checks by analyzing
@@ -578,7 +581,7 @@ Examples:
     def find_bounds_checks(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         buffer_access_location: Annotated[str, Field(description="Location of buffer access in format 'filename:line' (e.g., 'parser.c:3393')")],
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Check if buffer accesses have proper bounds validation."""
         try:
             validate_codebase_hash(codebase_hash)
@@ -614,16 +617,16 @@ Examples:
             if result.success and result.data:
                 # Text queries return a single-element list wrapping the rendered text.
                 output = result.data[0] if isinstance(result.data, list) else str(result.data)
-                return output.strip()
+                return {"success": True, "summary": output.strip()}
             else:
-                return f"Error: {result.error if not result.success else 'No data returned'}"
+                return {"success": False, "error": {"code": "QUERY_ERROR", "message": result.error if not result.success else "No data returned"}}
 
         except ValidationError as e:
             logger.error(f"Error finding bounds checks: {e}")
-            return f"Validation Error: {str(e)}"
+            return {"success": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return f"Internal Error: {str(e)}"
+            return {"success": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
 
     @mcp.tool(
         title="Get CPGQL Syntax Help",
