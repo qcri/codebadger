@@ -990,6 +990,7 @@ class TestMCPTools:
         assert by_name["get_variable_flow"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_use_after_free"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["find_double_free"].outputSchema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_null_pointer_deref"].outputSchema["properties"]["summary"]["type"] == "string"
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio
