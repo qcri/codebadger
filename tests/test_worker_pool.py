@@ -314,6 +314,7 @@ def test_get_or_create_client_reuses_client_on_matching_port(pool, monkeypatch):
     m, _ = pool
     good = MagicMock()
     good.port = 14002
+    good.host = "127.0.0.1"
     m._clients["abc"] = good
     monkeypatch.setattr(m, "get_server_port", lambda h: 14002)
 
