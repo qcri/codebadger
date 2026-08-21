@@ -1262,6 +1262,8 @@ Notes:
             return f"Internal Error: {str(e)}"
 
     @mcp.tool(
+        title="Find Double-Free Issues",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         description="""Detect Double-Free vulnerabilities by finding multiple free() calls on the same pointer.
 
 Analyzes the codebase for potential double-free issues using:
