@@ -585,6 +585,23 @@ Examples:
             }
 
     @mcp.tool(
+        title="Find Taint Sinks",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "sinks": {"type": "array", "items": {"type": "object", "properties": {
+                    "node_id": {}, "name": {"type": ["string", "null"]}, "code": {"type": ["string", "null"]},
+                    "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
+                    "method": {"type": ["string", "null"]},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "limit": {"type": "integer"},
+                "has_more": {"type": "boolean"}, "mode": {"type": "string"},
+                "message": {"type": "string"}, "error": {"type": ["string", "object"]},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
         description="""Locate dangerous sinks where tainted data could cause vulnerabilities.
 
 Search for function calls that could be security-sensitive destinations

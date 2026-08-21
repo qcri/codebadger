@@ -969,6 +969,7 @@ class TestMCPTools:
         assert by_name["list_parameters"].outputSchema["properties"]["methods"]["type"] == "array"
         assert by_name["run_cpgql_query"].outputSchema["properties"]["data"] == {}
         assert by_name["find_taint_sources"].outputSchema["properties"]["sources"]["type"] == "array"
+        assert by_name["find_taint_sinks"].outputSchema["properties"]["sinks"]["type"] == "array"
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
