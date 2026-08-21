@@ -5,6 +5,7 @@ Provides core CPG management functionality
 """
 
 import asyncio
+import inspect
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -1643,6 +1644,23 @@ class DurableCPGQueue:
             job_id = job["id"]
             payload = dict(job["payload"])
             payload["services"] = self.services
+            payload.setdefault("codebase_hash", job["codebase_hash"])
+            # Jobs created by older clients/tests may contain only a partial
+            # payload.  Do not invoke the strict generation coroutine with
+            # missing positional arguments (which otherwise leaves noisy
+            # retry/failure logs and can consume a worker during integration
+            # runs).  Mark malformed durable jobs failed and continue polling.
+            required = ("codebase_dir", "cpg_path", "language", "container_cpg_path")
+            signature = inspect.signature(_generate_cpg_async)
+            validates_payload = not any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if validates_payload and any(payload.get(key) in (None, "") for key in required):
+                error = f"Malformed generate_cpg payload; missing one of: {', '.join(required)}"
+                logger.error("CPG generation job %s rejected: %s", job_id, error)
+                await loop.run_in_executor(None, self.store.fail_job, job_id, error)
+                continue
             try:
                 await _generate_cpg_async(**payload)
                 await loop.run_in_executor(None, self.store.complete_job, job_id)
