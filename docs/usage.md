@@ -58,11 +58,11 @@ generate_cpg(source_type="snippet", language="c",
 get_cpg_status(codebase_hash="ddf44eb0a10a85e6")  -> { "status": "ready" }
 
 # 3. Orient
-list_methods(codebase_hash="ddf44eb0a10a85e6", name_filter=".*parse.*")
+list_methods(codebase_hash="ddf44eb0a10a85e6", name_pattern=".*parse.*")
 get_call_graph(codebase_hash="ddf44eb0a10a85e6", method_name="soup_header_parse")
 
 # 4. Hunt
-find_taint_flows(codebase_hash="ddf44eb0a10a85e6")
+find_taint_flows(codebase_hash="ddf44eb0a10a85e6", mode="auto")
 find_integer_overflow(codebase_hash="ddf44eb0a10a85e6")
 
 # 5. Drill into a candidate (read source from your own checkout, or pull node .code)
