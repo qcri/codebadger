@@ -270,6 +270,49 @@ def _build_joern_name_pattern(patterns: list) -> str:
     return "|".join(re.escape(name) for name in unique)
 
 
+def _build_taint_location_query(
+    name_pattern: str, filename: Optional[str], limit: int
+) -> str:
+    """Build a JSON-safe call-location query.
+
+    Joern's json4s serializer cannot encode Scala ``Tuple6`` values on the
+    current runtime. Project into a named map instead so ``toJsonPretty``
+    produces records rather than a MappingException in otherwise-successful
+    query output.
+    """
+    calls = f'cpg.call.name("{escape_scala_string(name_pattern)}")'
+    if filename:
+        file_regex = _build_file_filter_regex(filename)
+        calls += (
+            f'.where(_.file.name("{escape_scala_string(file_regex)}"))'
+        )
+
+    projection = (
+        '.map(c => Map('
+        '"node_id" -> c.id, '
+        '"name" -> c.name, '
+        '"code" -> c.code, '
+        '"filename" -> c.file.name.headOption.getOrElse("unknown"), '
+        '"lineNumber" -> c.lineNumber.getOrElse(-1), '
+        '"method" -> c.method.fullName))'
+    )
+    return f"{calls}{projection}.take({clamp_int(limit, MAX_RESULT_ROWS)})"
+
+
+def _decode_taint_location(item: Any) -> Optional[Dict[str, Any]]:
+    """Decode named-map results while retaining compatibility with old caches."""
+    if not isinstance(item, dict):
+        return None
+    return {
+        "node_id": item.get("node_id", item.get("_1")),
+        "name": item.get("name", item.get("_2")),
+        "code": item.get("code", item.get("_3")),
+        "filename": item.get("filename", item.get("_4")),
+        "lineNumber": item.get("lineNumber", item.get("_5")),
+        "method": item.get("method", item.get("_6")),
+    }
+
+
 def _resolve_source_patterns(cfg, lang: str, explicit_patterns: Optional[list]):
     """Resolve source defaults and remove non-payload setup APIs."""
     if explicit_patterns:
@@ -529,15 +572,16 @@ Examples:
             # from qualified patterns (e.g., 'os.system' -> 'system')
             joined = _build_joern_name_pattern(patterns)
 
-            cache_params = {"lang": lang, "patterns": sorted(set(patterns)), "filename": filename, "limit": limit}
+            cache_params = {
+                "lang": lang,
+                "patterns": sorted(set(patterns)),
+                "filename": filename,
+                "limit": limit,
+                "result_shape": "named-map-v1",
+            }
 
             def _execute():
-                # Build query with optional file filter
-                if filename:
-                    file_regex = _build_file_filter_regex(filename)
-                    query = f'cpg.call.name("{escape_scala_string(joined)}").where(_.file.name("{escape_scala_string(file_regex)}")).map(c => (c.id, c.name, c.code, c.file.name.headOption.getOrElse("unknown"), c.lineNumber.getOrElse(-1), c.method.fullName)).take({clamp_int(limit, MAX_RESULT_ROWS)})'
-                else:
-                    query = f'cpg.call.name("{escape_scala_string(joined)}").map(c => (c.id, c.name, c.code, c.file.name.headOption.getOrElse("unknown"), c.lineNumber.getOrElse(-1), c.method.fullName)).take({clamp_int(limit, MAX_RESULT_ROWS)})'
+                query = _build_taint_location_query(joined, filename, limit)
 
                 result = query_executor.execute_query(
                     codebase_hash=codebase_hash,
@@ -552,15 +596,9 @@ Examples:
 
                 sources = []
                 for item in result.data:
-                    if isinstance(item, dict):
-                        sources.append({
-                            "node_id": item.get("_1"),
-                            "name": item.get("_2"),
-                            "code": item.get("_3"),
-                            "filename": item.get("_4"),
-                            "lineNumber": item.get("_5"),
-                            "method": item.get("_6"),
-                        })
+                    source = _decode_taint_location(item)
+                    if source is not None:
+                        sources.append(source)
 
                 return {
                     "success": True,
@@ -665,15 +703,17 @@ Examples:
             # from qualified patterns (e.g., 'os.system' -> 'system')
             joined = _build_joern_name_pattern(patterns)
 
-            cache_params = {"lang": lang, "patterns": sorted(set(patterns)), "broad": broad, "filename": filename, "limit": limit}
+            cache_params = {
+                "lang": lang,
+                "patterns": sorted(set(patterns)),
+                "broad": broad,
+                "filename": filename,
+                "limit": limit,
+                "result_shape": "named-map-v1",
+            }
 
             def _execute():
-                # Build query with optional file filter
-                if filename:
-                    file_regex = _build_file_filter_regex(filename)
-                    query = f'cpg.call.name("{escape_scala_string(joined)}").where(_.file.name("{escape_scala_string(file_regex)}")).map(c => (c.id, c.name, c.code, c.file.name.headOption.getOrElse("unknown"), c.lineNumber.getOrElse(-1), c.method.fullName)).take({clamp_int(limit, MAX_RESULT_ROWS)})'
-                else:
-                    query = f'cpg.call.name("{escape_scala_string(joined)}").map(c => (c.id, c.name, c.code, c.file.name.headOption.getOrElse("unknown"), c.lineNumber.getOrElse(-1), c.method.fullName)).take({clamp_int(limit, MAX_RESULT_ROWS)})'
+                query = _build_taint_location_query(joined, filename, limit)
 
                 result = query_executor.execute_query(
                     codebase_hash=codebase_hash,
@@ -688,15 +728,9 @@ Examples:
 
                 sinks = []
                 for item in result.data:
-                    if isinstance(item, dict):
-                        sinks.append({
-                            "node_id": item.get("_1"),
-                            "name": item.get("_2"),
-                            "code": item.get("_3"),
-                            "filename": item.get("_4"),
-                            "lineNumber": item.get("_5"),
-                            "method": item.get("_6"),
-                        })
+                    sink = _decode_taint_location(item)
+                    if sink is not None:
+                        sinks.append(sink)
 
                 return {
                     "success": True,

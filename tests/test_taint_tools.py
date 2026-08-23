@@ -50,13 +50,13 @@ def fake_services():
         return QueryResult(
             success=True,
             data=[
-                { 
-                    "_1": 123,
-                    "_2": "getenv",
-                    "_3": 'char *s = getenv("FOO")',
-                    "_4": "core.c",
-                    "_5": 10,
-                    "_6": "main",
+                {
+                    "node_id": 123,
+                    "name": "getenv",
+                    "code": 'char *s = getenv("FOO")',
+                    "filename": "core.c",
+                    "lineNumber": 10,
+                    "method": "main",
                 }
             ],
             row_count=1,
@@ -94,6 +94,11 @@ async def test_find_taint_sources_success(fake_services):
         assert "sources" in res
         assert isinstance(res["sources"], list)
         assert res["total"] == 1
+        assert res["sources"][0]["name"] == "getenv"
+
+    query = fake_services["query_executor"].last_query
+    assert 'Map("node_id" -> c.id' in query
+    assert "(c.id, c.name, c.code" not in query
 
 
 def test_default_c_sources_exclude_setup_and_handle_calls():
@@ -242,6 +247,11 @@ async def test_find_taint_sinks_success(fake_services):
         assert "sinks" in res
         assert isinstance(res["sinks"], list)
         assert res["total"] == 1
+        assert res["sinks"][0]["name"] == "getenv"
+
+    query = fake_services["query_executor"].last_query
+    assert 'Map("node_id" -> c.id' in query
+    assert "(c.id, c.name, c.code" not in query
 
 
 @pytest.mark.asyncio

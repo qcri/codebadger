@@ -856,7 +856,7 @@ class TestCodeBadgerIntegration:
         - recv: 5 calls in network.c
         - fgets: multiple in cmdline.c, config.c
         - fread: in cmdline.c
-        Total: ~20+ taint sources
+        Total: 17 direct calls to these input APIs
         """
         result = await client.call_tool("generate_cpg", {
             "source_type": "local",
@@ -925,11 +925,13 @@ class TestCodeBadgerIntegration:
         sinks_result = await client.call_tool("find_taint_sinks", {
             "codebase_hash": codebase_hash,
             "language": "c",
+            "broad": True,
             "limit": 150
         })
 
         sinks_dict = self.extract_tool_result(sinks_result)
         assert sinks_dict.get("success") is True, f"Find sinks failed: {sinks_dict}"
+        assert sinks_dict.get("mode") == "broad", f"Expected broad sink mode: {sinks_dict}"
 
         sinks = sinks_dict.get("sinks", [])
         total = sinks_dict.get("total", len(sinks))
