@@ -145,3 +145,7 @@ codebadger.db
 docker-compose.override.yml
 scripts/backfill_overlays.sh
 .claude/settings.json
+
+# Operator ssh keys for GIT_CLONE_EXTRA_HOSTS clones (compose default host dir).
+# Never commit private keys.
+.ssh-keys/

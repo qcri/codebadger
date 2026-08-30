@@ -277,6 +277,123 @@ class TestValidateGithubUrl:
                 validate_github_url(url)
 
 
+class TestExtraGitHosts:
+    """GIT_CLONE_EXTRA_HOSTS: operator-allowlisted custom git servers.
+
+    github.com/gitlab.com keep their strict https posture; allowlisted hosts
+    (e.g. a LAN Forgejo at ssh://git@192.168.152.14:3000) may additionally be
+    cloned over ssh:// with custom ports — http(s) stays rejected for them.
+    """
+
+    HOSTS = "192.168.152.14:3000,git.example.com,[::1]:2222"
+
+    @pytest.fixture(autouse=True)
+    def _set_hosts(self, monkeypatch):
+        monkeypatch.setenv("GIT_CLONE_EXTRA_HOSTS", self.HOSTS)
+
+    def test_custom_http_and_https_urls_rejected(self):
+        """Custom hosts are ssh-only; http(s) never reaches a clone."""
+        for url in [
+            "http://192.168.152.14:3000/ethan/demo.git",
+            "https://192.168.152.14:3000/ethan/demo",
+            "http://git.example.com/ethan/demo",
+            "https://git.example.com:8443/ethan/demo",
+            "http://[::1]:2222/ethan/demo",
+        ]:
+            with pytest.raises(ValidationError):
+                validate_github_url(url)
+
+    def test_ssh_urls_accepted_for_custom_hosts(self):
+        for url in [
+            "ssh://git@192.168.152.14:3000/ethan/demo.git",
+            "ssh://192.168.152.14:3000/ethan/demo",  # username optional
+            "ssh://git@git.example.com/ethan/demo",
+            "ssh://git@[::1]:2222/ethan/demo",
+        ]:
+            validate_github_url(url)
+
+    def test_port_pinning_enforced(self):
+        """A `host:port` entry only allows that port on that host."""
+        for url in [
+            "ssh://git@192.168.152.14:3001/ethan/demo",  # wrong port, pinned host
+            "ssh://git@[::1]:22/ethan/demo",             # wrong port, pinned host
+            "ssh://git@192.168.152.14/ethan/demo",       # no port, pinned host
+        ]:
+            with pytest.raises(ValidationError):
+                validate_github_url(url)
+
+    def test_ssh_not_enabled_for_default_hosts(self):
+        """ssh:// stays rejected for github.com/gitlab.com."""
+        for url in [
+            "ssh://git@github.com/user/repo",
+            "ssh://git@gitlab.com/user/repo",
+        ]:
+            with pytest.raises(ValidationError):
+                validate_github_url(url)
+
+    def test_hardening_unchanged_for_custom_hosts(self):
+        """The SSRF posture applies to allowlisted hosts verbatim."""
+        for url in [
+            "ssh://git@192.168.152.14:3000/user",               # path < /owner/repo
+            "ssh://user:tok@192.168.152.14:3000/ethan/demo",    # embedded credentials
+            "ssh://evil.com/ethan/demo",                        # not allowlisted
+            "ssh://git@192.168.152.14.evil.com:3000/ethan/demo",  # look-alike host
+            "git://192.168.152.14:3000/ethan/demo",             # git protocol
+            "ssh://git:pw@192.168.152.14:3000/ethan/demo",      # password in ssh URL
+            "ssh://bad user@192.168.152.14:3000/ethan/demo",    # bad ssh username
+            "ssh://git@192.168.152.14:3000/ethan/demo\n.git",   # control chars
+        ]:
+            with pytest.raises(ValidationError):
+                validate_github_url(url)
+
+    def test_default_hosts_unchanged_when_extra_hosts_set(self):
+        """Setting the extension doesn't relax the built-in allowlist."""
+        with pytest.raises(ValidationError):
+            validate_github_url("http://github.com/user/repo")  # still https-only
+
+    def test_malformed_entries_fail_loudly(self, monkeypatch):
+        """A typo'd GIT_CLONE_EXTRA_HOSTS must surface, not silently apply."""
+        from src.utils.validators import validate_repo_url
+
+        for cfg in [
+            "192.168.1.1:0",        # port out of range (low)
+            "host:99999",           # port out of range (high)
+            "host:notaport",        # non-numeric port
+            "[::1",                 # unclosed IPv6 bracket
+            "host/path",            # path in an entry
+            "user@host",            # userinfo in an entry
+            ":3000",                # empty host
+        ]:
+            monkeypatch.setenv("GIT_CLONE_EXTRA_HOSTS", cfg)
+            # An ssh URL is what drives the entry parse for a custom host.
+            with pytest.raises(ValidationError):
+                validate_repo_url("ssh://git@host.example/a/b")
+
+    def test_is_extra_repo_host(self):
+        from src.utils.validators import is_extra_repo_host
+
+        assert is_extra_repo_host("192.168.152.14", 3000) is True
+        assert is_extra_repo_host("192.168.152.14", None) is False  # pinned port
+        assert is_extra_repo_host("git.example.com", 8443) is True  # bare host
+        assert is_extra_repo_host("git.example.com", None) is True
+        assert is_extra_repo_host("::1", 2222) is True
+        assert is_extra_repo_host("evil.com", 80) is False
+        assert is_extra_repo_host(None, 80) is False
+
+    def test_empty_config_rejects_everything_extra(self, monkeypatch):
+        """Without GIT_CLONE_EXTRA_HOSTS the default posture is unchanged."""
+        monkeypatch.delenv("GIT_CLONE_EXTRA_HOSTS", raising=False)
+        for url in [
+            "http://192.168.152.14:3000/a/b",
+            "https://192.168.152.14:3000/a/b",
+            "ssh://git@192.168.152.14:3000/a/b",
+        ]:
+            with pytest.raises(ValidationError):
+                validate_github_url(url)
+        # ... while the built-in hosts keep working.
+        validate_github_url("https://github.com/user/repo")
+
+
 class TestParseSnippetBlocks:
     """<code language="..."> snippet extraction."""
 
