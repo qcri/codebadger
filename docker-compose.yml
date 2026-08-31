@@ -112,6 +112,11 @@ services:
       # GIT_CLONE_SSH_KEY_PATH is a host-run-MCP setting and is deliberately
       # NOT passed through here — a host path would never resolve in-container.
       GIT_CLONE_SSH_KEY_PATH: ${GIT_CLONE_SSH_KEYS_HOST_DIR:+/keys/id_ed25519}
+      # Optional host-key pinning. Like GIT_CLONE_SSH_COMMAND this is an
+      # IN-CONTAINER path: drop a known_hosts next to the key and set
+      # GIT_CLONE_SSH_KNOWN_HOSTS=/keys/known_hosts. Unset => accept-new, whose
+      # record lives in the container and is lost on every recreate.
+      GIT_CLONE_SSH_KNOWN_HOSTS: ${GIT_CLONE_SSH_KNOWN_HOSTS:-}
       GIT_CLONE_SSH_COMMAND: ${GIT_CLONE_SSH_COMMAND:-}
     depends_on:
       codebadger-postgres:

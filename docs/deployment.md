@@ -218,7 +218,8 @@ repo URL (`ssh://git@192.168.152.14:3000/<owner>/<repo>.git`) as
 http(s) clone URLs are rejected for them.
 
 ```bash
-# ','-separated host[:port] entries — the same in both modes below
+# ','-separated host[:port] entries — the same in both modes below.
+# A bare host means port 22; `host:port` pins that port; `host:*` allows any.
 GIT_CLONE_EXTRA_HOSTS=192.168.152.14:3000
 
 # MCP run on the host (`python main.py`): key FILE on this host
@@ -232,9 +233,10 @@ GIT_CLONE_SSH_KEYS_HOST_DIR=/abs/path/to/keydir
 
 | Variable | Default | Description |
 |---|---|---|
-| `GIT_CLONE_EXTRA_HOSTS` | `` (empty) | ','-separated `host[:port]` entries accepted in addition to github.com/gitlab.com (IPv6 goes in brackets, e.g. `[::1]:2222`). A bare host allows **any** port on it; `host:port` pins that port only. Allowlisted hosts are cloned over `ssh://` only; the built-in hosts keep their strict https-only, default-port-only posture unless an operator explicitly lists one here (e.g. `github.com:22` would enable ssh for github.com). |
+| `GIT_CLONE_EXTRA_HOSTS` | `` (empty) | ','-separated `host[:port]` entries accepted in addition to github.com/gitlab.com (IPv6 goes in brackets, e.g. `[::1]:2222`). A bare host means **port 22 only**; `host:port` pins that port; `host:*` allows any port on it. Allowlisted hosts are cloned over `ssh://` only; the built-in hosts keep their strict https-only, default-port-only posture unless an operator explicitly lists one here (e.g. `github.com:22` would enable ssh for github.com). Parsed once at startup — a malformed value fails the boot rather than surfacing on the first ssh clone. |
 | `GIT_CLONE_SSH_KEYS_HOST_DIR` | `` (empty) | **Dockerized stack only.** Host directory containing the private key (named `id_ed25519`); docker compose mounts it read-only at `/keys` in the `codebadger-mcp` container and the server resolves the key to the fixed in-container path `/keys/id_ed25519`. Unset, an empty dir is mounted and no key path is configured. |
-| `GIT_CLONE_SSH_KEY_PATH` | `` (empty) | **Host-run MCP only — ignored by the dockerized stack** (a host path never resolves inside the `codebadger-mcp` container; do not set it in `.env`). Private key FILE for `ssh://` clones of a custom host. The clone also sets `-o BatchMode=yes -o StrictHostKeyChecking=accept-new`, so a missing key fails fast instead of hanging on a prompt, and the host key is recorded on first contact. |
+| `GIT_CLONE_SSH_KEY_PATH` | `` (empty) | **Host-run MCP only — ignored by the dockerized stack** (a host path never resolves inside the `codebadger-mcp` container; do not set it in `.env`). Private key FILE for `ssh://` clones of a custom host. The clone also sets `-o BatchMode=yes`, so a missing key fails fast instead of hanging on a prompt. |
+| `GIT_CLONE_SSH_KNOWN_HOSTS` | `` (empty) | `known_hosts` file pinning the custom servers' host keys (`-o StrictHostKeyChecking=yes`). Unset, the clone falls back to `accept-new`: the key is recorded on first contact, but **in the dockerized stack that record lives in the container and is lost on every recreate**, making it trust-on-first-use each deploy. Like `GIT_CLONE_SSH_COMMAND` this is an in-container path there — put a `known_hosts` in the mounted key dir and set `/keys/known_hosts`. |
 | `GIT_CLONE_SSH_COMMAND` | `` (empty) | Full ssh command override (passed to git as `GIT_SSH_COMMAND` for the clone); takes precedence over both key settings. In the dockerized stack any key path it references must exist **inside the `codebadger-mcp` container** (e.g. `/keys/…`). |
 
 Notes:
@@ -255,6 +257,11 @@ Notes:
 - `ssh://` URLs may carry a username (`git@…`) but not a password; keys/agent
   do the auth. scp-style `git@host:path` URLs are not accepted — use
   `ssh://git@host[:port]/path` (it carries ports unambiguously).
+- **Ports are part of the allowlist.** A bare `forge.lan` entry only permits
+  `ssh://…@forge.lan[:22]/…`, so allowlisting a git server does not also expose
+  every other port on that machine to a caller who can influence `source_path`.
+  Use `forge.lan:3000` for a non-default ssh port, or `forge.lan:*` to accept
+  any port on it.
 - The allowlist still blocks every other host (alternate git hosts, look-alike
   domains, cloud metadata endpoints, …), so the SSRF posture of
   [docs/security.md](security.md) is unchanged — you are explicitly trusting

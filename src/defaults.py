@@ -72,15 +72,21 @@ CHAT_DEPLOY = False
 # allowlist their own git server(s) for cloning via generate_cpg. Addresses are
 # configured through the environment so a LAN deployment needs no code changes:
 #   GIT_CLONE_EXTRA_HOSTS   ','-separated `host[:port]` entries accepted in
-#                           addition to github.com/gitlab.com. A bare host allows
-#                           any port on it; `host:port` pins that port only.
-#                           Custom hosts are cloned over ssh:// only
-#                           (github.com/gitlab.com stay https-only).
+#                           addition to github.com/gitlab.com. A bare host means
+#                           port 22 only; `host:port` pins that port; `host:*`
+#                           allows any port on it. Custom hosts are cloned over
+#                           ssh:// only (github.com/gitlab.com stay https-only).
+#                           Parsed at startup — a malformed value fails the boot.
 #   GIT_CLONE_SSH_KEY_PATH  Private key for ssh:// clones of custom hosts.
+#   GIT_CLONE_SSH_KNOWN_HOSTS
+#                           known_hosts file pinning the custom servers' host
+#                           keys (StrictHostKeyChecking=yes). Unset = accept-new,
+#                           i.e. trust-on-first-use.
 #   GIT_CLONE_SSH_COMMAND   Full ssh command override (takes precedence over the
 #                           key path; passed to git as GIT_SSH_COMMAND).
 GIT_CLONE_EXTRA_HOSTS = ""
 GIT_CLONE_SSH_KEY_PATH = ""
+GIT_CLONE_SSH_KNOWN_HOSTS = ""
 GIT_CLONE_SSH_COMMAND = ""
 
 # Optional ':'-separated allowlist of host directory roots that source_type=

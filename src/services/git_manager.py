@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import shutil
 from typing import Dict, Optional
 from urllib.parse import quote, urlparse
@@ -38,13 +39,22 @@ def _mask_token_in_text(text: str) -> str:
 
 
 def _ssh_clone_env() -> Dict[str, str]:
-    """Environment for an ssh:// clone of a custom git server.
+    """Environment overrides for an ssh:// clone of a custom git server.
 
     git invokes the command in GIT_SSH_COMMAND for every ssh remote. Default to
     the operator's full override (GIT_CLONE_SSH_COMMAND) or build one from
     GIT_CLONE_SSH_KEY_PATH. BatchMode keeps a missing key/passphrase from
-    hanging the clone on an interactive prompt; accept-new auto-records the
-    server's host key on first contact instead of blocking on confirmation.
+    hanging the clone on an interactive prompt.
+
+    Host key policy: with GIT_CLONE_SSH_KNOWN_HOSTS pointing at a known_hosts
+    file the server key is *pinned* (StrictHostKeyChecking=yes). Without it we
+    fall back to accept-new, which records the key on first contact — note that
+    in the dockerized stack that record lives in the container's ~/.ssh and is
+    lost on every container recreate, so it is trust-on-first-use each deploy.
+
+    Only GIT_SSH_COMMAND is returned: GitPython layers these over os.environ
+    for the child process, so there is no need (and no reason, given the
+    secrets in this server's environment) to copy the whole environment.
     """
     ssh_cmd = os.getenv("GIT_CLONE_SSH_COMMAND", defaults.GIT_CLONE_SSH_COMMAND).strip()
     if not ssh_cmd:
@@ -53,10 +63,23 @@ def _ssh_clone_env() -> Dict[str, str]:
             "GIT_CLONE_SSH_KEY_PATH", defaults.GIT_CLONE_SSH_KEY_PATH
         ).strip()
         if key_path:
-            parts += ["-i", key_path]
-        parts += ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+            # git runs GIT_SSH_COMMAND through a shell, so paths need quoting.
+            parts += ["-i", shlex.quote(key_path)]
+        known_hosts = os.getenv(
+            "GIT_CLONE_SSH_KNOWN_HOSTS", defaults.GIT_CLONE_SSH_KNOWN_HOSTS
+        ).strip()
+        if known_hosts:
+            parts += [
+                "-o",
+                f"UserKnownHostsFile={shlex.quote(known_hosts)}",
+                "-o",
+                "StrictHostKeyChecking=yes",
+            ]
+        else:
+            parts += ["-o", "StrictHostKeyChecking=accept-new"]
+        parts += ["-o", "BatchMode=yes"]
         ssh_cmd = " ".join(parts)
-    return dict(os.environ, GIT_SSH_COMMAND=ssh_cmd)
+    return {"GIT_SSH_COMMAND": ssh_cmd}
 
 
 class GitManager:

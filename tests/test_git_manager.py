@@ -24,6 +24,7 @@ def _clean_git_clone_env(monkeypatch):
     for var in (
         "GIT_CLONE_EXTRA_HOSTS",
         "GIT_CLONE_SSH_KEY_PATH",
+        "GIT_CLONE_SSH_KNOWN_HOSTS",
         "GIT_CLONE_SSH_COMMAND",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -45,14 +46,32 @@ class TestSshCloneEnv:
         cmd = _ssh_clone_env()["GIT_SSH_COMMAND"]
         assert "-i /keys/id_ed25519" in cmd
 
+    def test_key_path_is_shell_quoted(self, monkeypatch):
+        """git runs GIT_SSH_COMMAND through a shell — a spaced path must survive."""
+        monkeypatch.setenv("GIT_CLONE_SSH_KEY_PATH", "/my keys/id_ed25519")
+        cmd = _ssh_clone_env()["GIT_SSH_COMMAND"]
+        assert "-i '/my keys/id_ed25519'" in cmd
+
+    def test_known_hosts_pins_the_server_key(self, monkeypatch):
+        monkeypatch.setenv("GIT_CLONE_SSH_KNOWN_HOSTS", "/keys/known_hosts")
+        cmd = _ssh_clone_env()["GIT_SSH_COMMAND"]
+        assert "UserKnownHostsFile=/keys/known_hosts" in cmd
+        assert "StrictHostKeyChecking=yes" in cmd
+        assert "accept-new" not in cmd
+
     def test_full_command_override_wins(self, monkeypatch):
         monkeypatch.setenv("GIT_CLONE_SSH_KEY_PATH", "/keys/ignored")
         monkeypatch.setenv("GIT_CLONE_SSH_COMMAND", "ssh -i /other/key -p 2222")
         assert _ssh_clone_env()["GIT_SSH_COMMAND"] == "ssh -i /other/key -p 2222"
 
-    def test_env_carries_os_environ(self, monkeypatch):
+    def test_env_is_the_ssh_command_only(self, monkeypatch):
+        """GitPython layers env over os.environ, so don't copy the whole thing.
+
+        This server's environment holds POSTGRES_PASSWORD / GITHUB_TOKEN /
+        JOERN_SERVER_AUTH_PASSWORD; none of it belongs in the Git object.
+        """
         monkeypatch.setenv("CODEBADGER_TEST_MARKER", "1")
-        assert _ssh_clone_env().get("CODEBADGER_TEST_MARKER") == "1"
+        assert list(_ssh_clone_env()) == ["GIT_SSH_COMMAND"]
 
 
 class TestCloneRepository:
