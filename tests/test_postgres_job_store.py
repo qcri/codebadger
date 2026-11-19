@@ -5,6 +5,8 @@ to run them. Construction is always tested (must not connect).
 """
 
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -54,6 +56,42 @@ def test_dedup_backpressure_and_skiplocked(store):
     assert {a["codebase_hash"], b["codebase_hash"]} == {"h1", "h2"}
     assert a["codebase_hash"] == "h1"
     assert store.claim_next_job("generate_cpg") is None
+
+
+def test_concurrent_enqueues_respect_queue_limit(store):
+    store.enqueue_job("baseline", "generate_cpg", {}, max_queued=2)
+    with store._connect() as conn:
+        conn.execute("""
+            CREATE FUNCTION delay_test_enqueue() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM pg_sleep(0.2);
+                RETURN NEW;
+            END;
+            $$
+        """)
+        conn.execute("""
+            CREATE TRIGGER delay_test_enqueue BEFORE INSERT ON jobs
+            FOR EACH ROW EXECUTE FUNCTION delay_test_enqueue()
+        """)
+        conn.commit()
+
+    barrier = Barrier(2)
+
+    def submit(codebase_hash):
+        barrier.wait()
+        return store.enqueue_job(codebase_hash, "generate_cpg", {}, max_queued=2)[1]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(submit, ("parallel-a", "parallel-b")))
+    finally:
+        with store._connect() as conn:
+            conn.execute("DROP TRIGGER delay_test_enqueue ON jobs")
+            conn.execute("DROP FUNCTION delay_test_enqueue()")
+            conn.commit()
+
+    assert sorted(statuses) == ["queue_full", "submitted"]
+    assert store.count_jobs("queued") == 2
 
 
 def test_expired_claim_is_recovered_and_fenced(store):
