@@ -16,7 +16,7 @@ from ..utils.query_rendering import escape_scala_string
 from ..utils.validators import clamp_int, validate_codebase_hash
 from ..defaults import MAX_RESULT_ROWS
 from .queries import QueryLoader
-from ._common import require_cpg, unwrap_result, is_error_output
+from ._common import require_cpg, unwrap_result, is_error_output, cache_policy
 
 logger = logging.getLogger(__name__)
 
@@ -371,11 +371,14 @@ def _cached_taint_query(
     str-returning tools (taint flows, slices, variable flow).
     """
     db_manager = services.get("db_manager")
+    cache_enabled, cache_ttl = cache_policy(services)
 
     # Try cache first
-    if db_manager:
+    if db_manager and cache_enabled:
         try:
-            cached = db_manager.get_cached_tool_output(tool_name, codebase_hash, cache_params)
+            cached = db_manager.get_cached_tool_output(
+                tool_name, codebase_hash, cache_params, cache_ttl=cache_ttl
+            )
             if cached is not None:
                 logger.debug(f"Cache hit for {tool_name}")
                 return cached
@@ -386,7 +389,7 @@ def _cached_taint_query(
     result = query_func()
 
     # Cache successful results
-    if db_manager:
+    if db_manager and cache_enabled:
         try:
             should_cache = False
             if isinstance(result, dict) and result.get("success", False):

@@ -100,30 +100,41 @@ def _decode_parameter_method(raw: Any) -> Optional[Dict[str, Any]]:
 class CodeBrowsingService:
     """Service for code browsing operations with caching support"""
 
-    def __init__(self, codebase_tracker, query_executor, db_manager=None):
+    def __init__(
+        self, codebase_tracker, query_executor, db_manager=None,
+        cache_enabled=True, cache_ttl=300,
+    ):
         self.codebase_tracker = codebase_tracker
         self.query_executor = query_executor
         self.db_manager = db_manager
+        self.cache_enabled = cache_enabled
+        self.cache_ttl = cache_ttl
 
     def _get_cached_or_execute(
         self, tool_name: str, codebase_hash: str, params: Dict[str, Any], query_func
     ):
         """Helper to check cache, execute query if needed, and cache result"""
-        if self.db_manager:
-            cached = self.db_manager.get_cached_tool_output(
-                tool_name, codebase_hash, params
-            )
-            if cached is not None:
-                return cached
+        if self.db_manager and self.cache_enabled:
+            try:
+                cached = self.db_manager.get_cached_tool_output(
+                    tool_name, codebase_hash, params, cache_ttl=self.cache_ttl
+                )
+                if cached is not None:
+                    return cached
+            except Exception:
+                logger.debug("Cache lookup failed for %s", tool_name, exc_info=True)
 
         result = query_func()
 
-        if self.db_manager and result:
+        if self.db_manager and self.cache_enabled and result:
             # Only cache successful results that are not error dicts
             if isinstance(result, dict) and result.get("success", False):
-                self.db_manager.cache_tool_output(
-                    tool_name, codebase_hash, params, result
-                )
+                try:
+                    self.db_manager.cache_tool_output(
+                        tool_name, codebase_hash, params, result
+                    )
+                except Exception:
+                    logger.debug("Cache write failed for %s", tool_name, exc_info=True)
 
         return result
 

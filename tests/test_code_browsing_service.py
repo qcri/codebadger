@@ -107,7 +107,7 @@ def test_list_calls_versions_its_cache_key():
         "result_schema_version": 2,
     }
     db_manager.get_cached_tool_output.assert_called_once_with(
-        "list_calls", CODEBASE_HASH, expected_params
+        "list_calls", CODEBASE_HASH, expected_params, cache_ttl=300
     )
 
 
@@ -187,7 +187,7 @@ def test_list_methods_versions_its_cache_key():
         "result_schema_version": 2,
     }
     db_manager.get_cached_tool_output.assert_called_once_with(
-        "list_methods", CODEBASE_HASH, expected_params
+        "list_methods", CODEBASE_HASH, expected_params, cache_ttl=300
     )
 
 
@@ -257,6 +257,6 @@ def test_list_parameters_versions_its_cache_key():
 
     expected_params = {"method_name": "parse", "result_schema_version": 2}
     db_manager.get_cached_tool_output.assert_called_once_with(
-        "list_parameters", CODEBASE_HASH, expected_params
+        "list_parameters", CODEBASE_HASH, expected_params, cache_ttl=300
     )
     db_manager.cache_tool_output.assert_called_once()

@@ -509,7 +509,9 @@ async def app_lifespan(server: FastMCP):
         services['code_browsing_service'] = CodeBrowsingService(
             services['codebase_tracker'],
             services['query_executor'],
-            services['db_manager']
+            services['db_manager'],
+            cache_enabled=config.query.cache_enabled,
+            cache_ttl=config.query.cache_ttl,
         )
 
         # Start CPG generation queue. Cap pending jobs to 4× the worker count so a

@@ -398,4 +398,5 @@ async def test_find_use_after_free_versions_cached_analysis(uaf_services):
         "find_use_after_free",
         uaf_services["codebase_hash"],
         {"filename": None, "limit": 100, "analysis_version": 2},
+        cache_ttl=300,
     )
