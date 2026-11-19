@@ -118,6 +118,7 @@ class PostgresJobStore:
         now = _now()
         try:
             with self._connect() as conn:
+                conn.execute("SELECT pg_advisory_xact_lock(1128679)")
                 # Dedup precedes backpressure: a re-submit of an active job is a
                 # 'duplicate', never 'queue_full'.
                 row = conn.execute(
