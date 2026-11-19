@@ -89,6 +89,26 @@ class RedisCoordinator:
                     # Lock may have already expired (timeout) — safe to ignore.
                     pass
 
+    @contextmanager
+    def codebase_load_lock(self, codebase_hash: str) -> Iterator[bool]:
+        lock = self._redis.lock(
+            f"codebadger:loadlock:{codebase_hash}",
+            timeout=max(self._lock_timeout, 1800),
+            blocking=False,
+        )
+        acquired = lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
+    def codebase_load_active(self, codebase_hash: str) -> bool:
+        return bool(self._redis.exists(f"codebadger:loadlock:{codebase_hash}"))
+
     @property
     def backend(self) -> str:
         return "redis"

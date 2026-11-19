@@ -1001,6 +1001,22 @@ async def _restart_server_async(
     container_cpg_path: str,
     services: dict,
 ):
+    coordinator = services.get("coordinator")
+    load_lock = getattr(coordinator, "codebase_load_lock", None)
+    if load_lock is None:
+        return await _restart_server_owned_async(codebase_hash, container_cpg_path, services)
+    with load_lock(codebase_hash) as acquired:
+        if not acquired:
+            logger.info("Another API process is loading CPG %s", codebase_hash)
+            return
+        return await _restart_server_owned_async(codebase_hash, container_cpg_path, services)
+
+
+async def _restart_server_owned_async(
+    codebase_hash: str,
+    container_cpg_path: str,
+    services: dict,
+):
     """Async task to restart Joern server and reload CPG for an existing codebase."""
     logger = logging.getLogger(__name__)
     try:
@@ -2487,8 +2503,10 @@ Examples:
             # create_task drop). Surface it as failed so callers stop polling
             # forever instead of waiting on a load that will never complete.
             if status in ("loading", SessionStatus.LOADING):
-                has_error = bool(codebase_info.metadata.get("error"))
-                if has_error or not _get_active_restart_task(services, codebase_hash):
+                if not (
+                    _get_active_restart_task(services, codebase_hash)
+                    or _shared_restart_active(services, codebase_hash)
+                ):
                     status = "failed"
                     if not codebase_info.metadata.get("error"):
                         codebase_info.metadata["error"] = (
