@@ -83,7 +83,7 @@ def register_code_browsing_tools(mcp, services: dict):
                 "returned": {"type": "integer"}, "result_cap": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "page": {"type": "integer"},
                 "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
-                "error": {"type": "string"},
+                "error": {"type": "string"}, "error_code": {"type": "string"},
             },
             "required": ["success"],
             "additionalProperties": False,
@@ -151,6 +151,7 @@ Examples:
             return {
                 "success": False,
                 "error": str(e),
+                "error_code": "VALIDATION_ERROR",
             }
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)

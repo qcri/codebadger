@@ -36,6 +36,14 @@ def _decode_count(raw: Any) -> Optional[int]:
     return None
 
 
+def _query_failure(message: str, error_code: Optional[str]) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "error": message,
+        "error_code": error_code or "QUERY_ERROR",
+    }
+
+
 def _decode_parameter(raw: Any) -> Optional[Dict[str, Any]]:
     """Decode the JSON shapes Joern uses for a parameter tuple."""
     if isinstance(raw, dict):
@@ -191,20 +199,11 @@ class CodeBrowsingService:
                 timeout=30,
             )
             if not count_result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": count_result.error},
-                }
+                return _query_failure(count_result.error, count_result.error_code)
 
             total = _decode_count(count_result.data)
             if total is None:
-                return {
-                    "success": False,
-                    "error": {
-                        "code": "QUERY_ERROR",
-                        "message": "Joern returned an invalid method count",
-                    },
-                }
+                return _query_failure("Joern returned an invalid method count", None)
 
             projection = (
                 ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.controlStructure.size + 1, m.isExternal))"
@@ -222,10 +221,7 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": result.error},
-                }
+                return _query_failure(result.error, result.error_code)
 
             methods = []
             for item in result.data:
