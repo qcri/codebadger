@@ -70,17 +70,23 @@ def test_schedule_returns_false_when_no_loop_available(monkeypatch):
 # ── _restart_server_async terminal status ─────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_restart_marks_failed_when_reload_fails():
+@pytest.mark.parametrize("raises", [False, True])
+async def test_restart_marks_failed_when_reload_fails(raises):
     mgr = MagicMock()
     mgr.reload_with_retry.return_value = None  # reload fails after all retries
+    if raises:
+        mgr.reload_with_retry.side_effect = RuntimeError("/private/Joern startup")
     tracker = MagicMock()
     services = {"joern_server_manager": mgr, "codebase_tracker": tracker}
 
     await core_tools._restart_server_async(HASH, "/playground/cpgs/x/cpg.bin", services)
 
-    meta = tracker.update_codebase.call_args_list[-1].kwargs["metadata"]
+    update = tracker.update_codebase.call_args.kwargs
+    assert update["joern_port"] is None
+    meta = update["metadata"]
     assert meta["status"] == SessionStatus.FAILED
-    assert "error" in meta
+    assert meta["error_code"] == "CPG_LOAD_FAILED"
+    assert "/private/" not in meta["error"]
     # Must NOT have been marked ready anywhere in this run.
     assert all(
         c.kwargs.get("metadata", {}).get("status") != SessionStatus.READY
