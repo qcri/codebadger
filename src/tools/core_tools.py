@@ -178,6 +178,13 @@ def _playground_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "playground"))
 
 
+class _TeardownError(Exception):
+    def __init__(self, freed_bytes: int, remaining_artifacts: list[str]):
+        self.freed_bytes = freed_bytes
+        self.remaining_artifacts = remaining_artifacts
+        super().__init__("Some CPG artifacts could not be removed")
+
+
 def _teardown_codebase(services: dict, codebase_hash: str, delete_files: bool = True) -> int:
     """Evict a codebase's Joern server and (optionally) delete its on-disk
     artifacts + DB row. Returns freed bytes. Shared by remove_cpg and the
@@ -200,6 +207,7 @@ def _teardown_codebase(services: dict, codebase_hash: str, delete_files: bool = 
     playground_path = _playground_path()
     root = os.path.realpath(playground_path)
     freed_bytes = 0
+    remaining_artifacts = []
 
     def _under_playground(p: str) -> bool:
         real = os.path.realpath(p)
@@ -210,17 +218,34 @@ def _teardown_codebase(services: dict, codebase_hash: str, delete_files: bool = 
         if not _under_playground(target):
             raise ValidationError("refusing to delete outside the playground")
         if os.path.exists(target):
+            before_bytes = 0
             for dirpath, _, filenames in os.walk(target):
                 for fname in filenames:
                     try:
-                        freed_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                        before_bytes += os.path.getsize(os.path.join(dirpath, fname))
                     except OSError:
                         pass
-            shutil.rmtree(target, ignore_errors=True)
+            try:
+                shutil.rmtree(target)
+            except OSError:
+                logger.warning("Could not remove %s artifact for %s", sub, codebase_hash)
+            after_bytes = 0
+            if os.path.exists(target):
+                for dirpath, _, filenames in os.walk(target):
+                    for fname in filenames:
+                        try:
+                            after_bytes += os.path.getsize(os.path.join(dirpath, fname))
+                        except OSError:
+                            pass
+                remaining_artifacts.append(sub)
+            freed_bytes += max(0, before_bytes - after_bytes)
+
+    if remaining_artifacts:
+        raise _TeardownError(freed_bytes, remaining_artifacts)
 
     db_manager = services.get("db_manager")
-    if db_manager is not None:
-        db_manager.delete_codebase(codebase_hash)
+    if db_manager is None or not db_manager.delete_codebase(codebase_hash):
+        raise _TeardownError(freed_bytes, ["database_record"])
     return freed_bytes
 
 
@@ -333,6 +358,7 @@ def gc_cold_cpgs(
                 freed += _teardown_codebase(services, h, delete_files=True)
                 deleted.append(_codebase_label(cb))
             except Exception as e:
+                freed += getattr(e, "freed_bytes", 0)
                 logger.warning(f"cold-CPG GC: failed to delete {h}: {e}")
 
     if deleted or evicted:
@@ -2846,6 +2872,15 @@ delete_files=True:
                 "message": "CPG, source files, and DB record deleted.",
             }
 
+        except _TeardownError as e:
+            return {
+                "success": False,
+                "codebase_hash": codebase_hash,
+                "status": "partial",
+                "freed_mb": round(e.freed_bytes / (1024 * 1024), 2),
+                "remaining_artifacts": e.remaining_artifacts,
+                "error": "Some artifacts remain. Retry remove_cpg to complete removal.",
+            }
         except Exception as e:
             logger.error(f"Failed to remove CPG {codebase_hash}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
