@@ -332,20 +332,11 @@ class CodeBrowsingService:
                 timeout=30,
             )
             if not count_result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": count_result.error},
-                }
+                return _query_failure(count_result.error, count_result.error_code)
 
             total = _decode_count(count_result.data)
             if total is None:
-                return {
-                    "success": False,
-                    "error": {
-                        "code": "QUERY_ERROR",
-                        "message": "Joern returned an invalid call count",
-                    },
-                }
+                return _query_failure("Joern returned an invalid call count", None)
 
             query_limit = max(0, min(limit, 10000))
             query = f"{base_query}.take({query_limit}).l"
@@ -359,10 +350,7 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": result.error},
-                }
+                return _query_failure(result.error, result.error_code)
 
             calls = []
             for item in result.data:
@@ -451,10 +439,7 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": result.error},
-                }
+                return _query_failure(result.error, result.error_code)
 
             methods = []
             for item in result.data:
@@ -509,10 +494,7 @@ class CodeBrowsingService:
             )
 
             if not result.success:
-                return {
-                    "success": False,
-                    "error": {"code": "QUERY_ERROR", "message": result.error},
-                }
+                return _query_failure(result.error, result.error_code)
 
             literals = []
             for item in result.data:

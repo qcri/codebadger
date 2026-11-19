@@ -184,7 +184,7 @@ Examples:
                 "returned": {"type": "integer"}, "result_cap": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "page": {"type": "integer"},
                 "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
-                "error": {"type": ["string", "object"]},
+                "error": {"type": "string"}, "error_code": {"type": "string"},
             },
             "required": ["success"],
             "additionalProperties": False,
@@ -247,6 +247,7 @@ Examples:
             return {
                 "success": False,
                 "error": str(e),
+                "error_code": "VALIDATION_ERROR",
             }
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
@@ -362,7 +363,7 @@ Examples:
                         "name": {"type": "string"}, "type": {"type": "string"}, "index": {"type": "integer"},
                     }, "additionalProperties": False}},
                 }, "required": ["method", "parameters"], "additionalProperties": False}},
-                "total": {"type": "integer"}, "error": {"type": ["string", "object"]},
+                "total": {"type": "integer"}, "error": {"type": "string"}, "error_code": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
         },
@@ -411,6 +412,7 @@ Examples:
             return {
                 "success": False,
                 "error": str(e),
+                "error_code": "VALIDATION_ERROR",
             }
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
@@ -844,7 +846,7 @@ Examples:
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
                     "members": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
                 }, "additionalProperties": False}},
-                "total": {"type": "integer"}, "error": {"type": ["string", "object"]},
+                "total": {"type": "integer"}, "error": {"type": "string"}, "error_code": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
         },
@@ -906,6 +908,7 @@ Examples:
                 return {
                     "success": False,
                     "error": result.error,
+                    "error_code": result.error_code or "QUERY_ERROR",
                 }
 
             types = []
@@ -933,6 +936,7 @@ Examples:
             return {
                 "success": False,
                 "error": str(e),
+                "error_code": "VALIDATION_ERROR",
             }
         except Exception as e:
             logger.error(f"Unexpected error getting type definition: {e}", exc_info=True)
