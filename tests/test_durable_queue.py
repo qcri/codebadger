@@ -85,6 +85,7 @@ async def test_durable_queue_worker_roundtrip(db, monkeypatch):
 
     async def fake_generate(**kwargs):
         ran.append(kwargs["codebase_hash"])
+        return True
 
     monkeypatch.setattr(core_tools, "_generate_cpg_async", fake_generate)
 
@@ -132,6 +133,7 @@ async def test_starting_second_scheduler_preserves_live_build(db, monkeypatch):
     async def fake_generate(**kwargs):
         started.set()
         await finish.wait()
+        return True
 
     def record_renewal(*args):
         result = first_renew_lease(*args)

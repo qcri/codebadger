@@ -1046,6 +1046,63 @@ class TestMCPTools:
         assert meta["status"] in ("failed", "FAILED")
         assert "load ceiling" in meta["error"]
 
+    @pytest.mark.asyncio
+    async def test_generate_cpg_async_returns_failure_for_repository_size_rejection(
+        self, mock_services, tmp_path, monkeypatch
+    ):
+        import src.tools.core_tools as core_tools
+
+        mock_services["config"].cpg.max_repo_size_mb = 1
+        monkeypatch.setattr(core_tools, "_calculate_repo_size_mb", lambda _path: 2)
+        result = await core_tools._generate_cpg_async(
+            codebase_hash="553642871dd4251d",
+            codebase_dir=str(tmp_path),
+            cpg_path=str(tmp_path / "cpg.bin"),
+            language="c",
+            container_cpg_path="/playground/cpgs/553642871dd4251d/cpg.bin",
+            services=mock_services,
+        )
+
+        assert result is False
+        failure = mock_services["codebase_tracker"].update_codebase.call_args.kwargs[
+            "metadata"
+        ]
+        assert failure["status"] == "failed"
+        assert "exceeds maximum allowed" in failure["error"]
+
+    @pytest.mark.asyncio
+    async def test_generate_cpg_async_returns_failure_for_frontend_error(
+        self, mock_services, tmp_path
+    ):
+        from unittest.mock import patch
+        import src.tools.core_tools as core_tools
+
+        mock_services["config"].cpg.languages_with_exclusions = []
+        source = tmp_path / "src"
+        source.mkdir()
+        (source / "main.c").write_text("int main(void) { return 0; }")
+        container = MagicMock()
+        container.exec_run.return_value = MagicMock(exit_code=1, output=b"compiler failed")
+        docker_client = MagicMock()
+        docker_client.containers.get.return_value = container
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client):
+            result = await core_tools._generate_cpg_async(
+                codebase_hash="553642871dd4251d",
+                codebase_dir=str(source),
+                cpg_path=str(tmp_path / "cpg.bin"),
+                language="c",
+                container_cpg_path="/playground/cpgs/553642871dd4251d/cpg.bin",
+                services=mock_services,
+            )
+
+        assert result is False
+        failure = mock_services["codebase_tracker"].update_codebase.call_args.kwargs[
+            "metadata"
+        ]
+        assert failure["status"] == "failed"
+        assert failure["error_code"]
+        assert "compiler failed" in failure["error"]
+
     def test_gc_cold_cpgs_evicts_cold_servers_but_keeps_disk(self, mock_services):
         """Default GC frees allocations of cold running servers (delete_files=False)
         and never deletes the cpg.bin."""
