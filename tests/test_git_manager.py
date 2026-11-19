@@ -11,7 +11,7 @@ import os
 import git
 import pytest
 
-from src.exceptions import ValidationError
+from src.exceptions import GitOperationError, ValidationError
 from src.services.git_manager import (
     GitManager,
     _ssh_clone_env,
@@ -104,7 +104,9 @@ class TestCloneRepository:
         assert source.endswith("/source")
         assert len(recorder["calls"]) == 1
         assert recorder["calls"][0]["url"] == "https://ghp_abc@github.com/user/repo"
-        assert recorder["stripped"] == [(source, "https://github.com/user/repo")]
+        assert [url for _, url in recorder["stripped"]] == [
+            "https://github.com/user/repo"
+        ]
 
     async def test_ssh_clone_uses_ssh_command_env(
         self, tmp_path, recorder, monkeypatch
@@ -144,3 +146,30 @@ class TestCloneRepository:
                 "http://192.168.152.14:3000/ethan/demo.git", str(tmp_path / "cb")
             )
         assert recorder["calls"] == []
+
+
+async def test_failed_clone_leaves_no_checkout_and_retry_publishes(
+    tmp_path, monkeypatch
+):
+    attempts: list[str] = []
+
+    def flaky_clone_from(url: str, target: str, **kwargs: object) -> None:
+        os.makedirs(target, exist_ok=True)
+        open(os.path.join(target, "partial.c"), "w").close()
+        attempts.append(target)
+        if len(attempts) == 1:
+            raise git.GitCommandError("clone", 128)
+
+    monkeypatch.setattr(git.Repo, "clone_from", staticmethod(flaky_clone_from))
+    manager = GitManager(str(tmp_path))
+    target = tmp_path / "cb"
+
+    with pytest.raises(GitOperationError):
+        await manager.clone_repository("https://github.com/user/repo", str(target))
+    assert os.listdir(target) == []
+
+    source = await manager.clone_repository(
+        "https://github.com/user/repo", str(target)
+    )
+    assert os.listdir(target) == ["source"]
+    assert os.listdir(source) == ["partial.c"]
