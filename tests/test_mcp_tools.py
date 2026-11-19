@@ -3,9 +3,10 @@ Tests for MCP tools
 """
 
 import asyncio
+import json
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -207,6 +208,73 @@ class TestMCPTools:
                 assert result_dict["status"] == "ready"
                 assert result_dict["cpg_path"] == "<redacted:host-path>"
                 assert result_dict["joern_port"] == 2000
+
+    @pytest.mark.parametrize(("source_type", "first", "second"), [
+        ("github", {"include_globs": ["alpha/**"]}, {"include_globs": ["beta/**"]}),
+        ("github", {}, {"auto_system_headers": True}),
+        ("github", {"compile_commands": "build/debug.json"}, {"compile_commands": "build/release.json"}),
+        ("github", {"include_paths": ["first", "second"]}, {"include_paths": ["second", "first"]}),
+        ("github", {"defines": ["FOO=a,BAR=2"]}, {"defines": ["FOO=a", "BAR=2"]}),
+        ("snippet", {"filename": "first.c"}, {"filename": "second.c"}),
+        ("snippet", {}, {"defines": ["FOO=1"]}),
+    ])
+    async def test_generate_cpg_reuses_only_matching_build_options(
+        self, mock_services, tmp_path, source_type, first, second
+    ):
+        from src.tools import core_tools
+
+        cached = {}
+        mock_services["codebase_tracker"].get_codebase.side_effect = cached.get
+        mock_services["joern_server_manager"].is_server_running.return_value = True
+        mock_services["cpg_queue"] = MagicMock(submit=AsyncMock(return_value="submitted"))
+        mcp = FastMCP("TestServer")
+        core_tools.register_core_tools(mcp, mock_services)
+        base = {"source_type": source_type, "language": "c"}
+        if source_type == "snippet":
+            base["code"] = "int main(void) { return 0; }"
+        else:
+            base["source_path"] = "https://github.com/test/repo"
+        with patch.object(core_tools, "__file__", str(tmp_path / "src/tools/core_tools.py")):
+            async with Client(mcp) as client:
+                original = await client.call_tool("generate_cpg", {**base, **first})
+                response = json.loads(original.content[0].text)
+                assert response["status"] == "generating"
+
+                original_hash = response["codebase_hash"]
+                cpg_path = tmp_path / "playground/cpgs" / original_hash / "cpg.bin"
+                cpg_path.write_bytes(b"fixture")
+                cached[original_hash] = CodebaseInfo(
+                    codebase_hash=original_hash,
+                    source_type=source_type,
+                    source_path="example",
+                    language="c",
+                    cpg_path=str(cpg_path),
+                    joern_port=2000,
+                    metadata={"status": "ready"},
+                )
+
+                changed = await client.call_tool("generate_cpg", {**base, **second})
+                response = json.loads(changed.content[0].text)
+                assert response["status"] == "generating"
+                assert response["codebase_hash"] != original_hash
+
+                repeat = await client.call_tool("generate_cpg", {**base, **first})
+                response = json.loads(repeat.content[0].text)
+                assert response["status"] == "ready"
+                assert response["codebase_hash"] == original_hash
+
+        assert mock_services["cpg_queue"].submit.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_generate_cpg_uses_submitted_build_settings(self, mock_services, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src/compile_commands.json").write_text('[{"file": "a.c"}]')
+        cmd = await self._run_async_build_capture_cmd(
+            mock_services, tmp_path, "c",
+            build_settings={"exclusion_patterns": ["skip/.*"], "autodetect_compile_db": False},
+        )
+        assert cmd[cmd.index("--exclude-regex") + 1] == "(skip/.*)"
+        assert "--compilation-database" not in cmd
 
     @pytest.mark.asyncio
     async def test_generate_cpg_cached_loading_does_not_schedule_duplicate_restart(self, mock_services, temp_workspace):

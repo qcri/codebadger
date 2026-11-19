@@ -22,8 +22,15 @@ def test_github_branch_changes_key():
 
 
 def test_github_default_branch_is_stable():
-    """No branch given -> stable key (back-compat with existing default-branch CPGs)."""
-    assert get_cpg_cache_key("github", GH, "c") == get_cpg_cache_key("github", GH, "c")
+    key = get_cpg_cache_key("github", GH, "c")
+    assert key == get_cpg_cache_key("github", GH, "c", branch=None)
+
+
+def test_default_build_uses_a_new_cache_key():
+    from hashlib import sha256
+
+    old_key = sha256(b"github:owner/repo:c").hexdigest()[:16]
+    assert get_cpg_cache_key("github", GH, "c") != old_key
 
 
 def test_gitlab_branch_changes_key():
