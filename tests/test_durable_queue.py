@@ -29,7 +29,7 @@ def test_enqueue_and_claim_roundtrip(db):
     assert claimed["payload"] == {"language": "c"}
     assert db.count_jobs("queued") == 0 and db.count_jobs("running") == 1
 
-    db.complete_job(job_id, result={"ok": True})
+    db.complete_job(job_id, claimed["attempts"], result={"ok": True})
     assert db.get_job(job_id)["status"] == "done"
     assert db.count_jobs("running") == 0
 
@@ -41,8 +41,8 @@ def test_dedup_active_job(db):
     assert s2 == "duplicate" and id2 == id1  # same active job returned
 
     # Once finished, a new job for the same hash is allowed again.
-    db.claim_next_job("generate_cpg")
-    db.complete_job(id1)
+    claimed = db.claim_next_job("generate_cpg")
+    db.complete_job(id1, claimed["attempts"])
     id3, s3 = db.enqueue_job("h1", "generate_cpg", {})
     assert s3 == "submitted" and id3 != id1
 
@@ -68,19 +68,12 @@ def test_claim_is_fifo_and_exclusive(db):
     assert db.claim_next_job("generate_cpg") is None  # both claimed
 
 
-def test_fail_job_and_requeue_running(db):
+def test_fail_claimed_job(db):
     jid, _ = db.enqueue_job("h1", "generate_cpg", {})
-    db.claim_next_job("generate_cpg")
-    db.fail_job(jid, "boom")
+    claimed = db.claim_next_job("generate_cpg")
+    db.fail_job(jid, claimed["attempts"], "boom")
     assert db.get_job(jid)["status"] == "failed"
     assert db.get_job(jid)["error"] == "boom"
-
-    # A job stuck in 'running' (worker crash) is requeued at startup.
-    jid2, _ = db.enqueue_job("h2", "generate_cpg", {})
-    db.claim_next_job("generate_cpg")
-    assert db.count_jobs("running") == 1
-    assert db.requeue_running_jobs() == 1
-    assert db.count_jobs("queued") == 1 and db.count_jobs("running") == 0
 
 
 @pytest.mark.asyncio
@@ -123,3 +116,50 @@ async def test_durable_queue_dedup_and_full(db):
     assert await q.submit("h1", {"codebase_hash": "h1"}) == "duplicate"
     assert await q.submit("h2", {"codebase_hash": "h2"}) == "queue_full"  # maxsize=1 reached
     assert q.depth == 1 and q.is_full is True
+
+
+@pytest.mark.asyncio
+async def test_starting_second_scheduler_preserves_live_build(db, monkeypatch):
+    from src.tools import core_tools
+    from src.utils.postgres_job_store import PostgresJobStore
+
+    started = asyncio.Event()
+    renewed = asyncio.Event()
+    finish = asyncio.Event()
+    first_renew_lease = db.renew_job_lease
+    loop = asyncio.get_running_loop()
+
+    async def fake_generate(**kwargs):
+        started.set()
+        await finish.wait()
+
+    def record_renewal(*args):
+        result = first_renew_lease(*args)
+        if result:
+            loop.call_soon_threadsafe(renewed.set)
+        return result
+
+    monkeypatch.setattr(core_tools, "_generate_cpg_async", fake_generate)
+    monkeypatch.setattr(db, "renew_job_lease", record_renewal)
+    with closing(PostgresJobStore(db.dsn)) as peer:
+        peer.init_schema()
+        first = core_tools.DurableCPGQueue(db, {}, workers=1, poll_interval=0.01, lease_seconds=3)
+        second = core_tools.DurableCPGQueue(peer, {}, workers=0)
+        await first.start()
+        try:
+            assert await first.submit("h1", {}) == "submitted"
+            await asyncio.wait_for(started.wait(), 5)
+            await second.start()
+            assert peer.claim_next_job(first.JOB_TYPE) is None
+            await asyncio.wait_for(renewed.wait(), 5)
+            assert peer.claim_next_job(first.JOB_TYPE) is None
+            finish.set()
+            for _ in range(100):
+                if peer.count_jobs("done"):
+                    break
+                await asyncio.sleep(0.01)
+            job = peer.get_job(1)
+            assert (job["status"], job["attempts"]) == ("done", 1)
+        finally:
+            await second.stop()
+            await first.stop()

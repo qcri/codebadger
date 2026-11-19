@@ -35,7 +35,7 @@ def test_enqueue_claim_complete(store):
     assert claimed["payload"] == {"language": "c"}
     assert store.count_jobs("running") == 1
 
-    store.complete_job(jid, result={"ok": True})
+    store.complete_job(jid, claimed["attempts"], result={"ok": True})
     assert store.get_job(jid)["status"] == "done"
 
 
@@ -56,9 +56,37 @@ def test_dedup_backpressure_and_skiplocked(store):
     assert store.claim_next_job("generate_cpg") is None
 
 
-def test_requeue_running(store):
+def test_expired_claim_is_recovered_and_fenced(store):
+    from unittest.mock import Mock
+
     jid, _ = store.enqueue_job("h1", "generate_cpg", {})
-    store.claim_next_job("generate_cpg")
-    assert store.count_jobs("running") == 1
-    assert store.requeue_running_jobs() == 1
-    assert store.count_jobs("queued") == 1 and store.count_jobs("running") == 0
+    first = store.claim_next_job("generate_cpg")
+    assert store.renew_job_lease(jid, first["attempts"])
+    assert store.claim_next_job("generate_cpg") is None
+    with store._connect() as conn:
+        conn.execute("UPDATE jobs SET lease_expires_at = '-infinity' WHERE id = %s", (jid,))
+
+    assert not store.renew_job_lease(jid, first["attempts"])
+    second = store.claim_next_job("generate_cpg")
+    assert second["id"] == jid
+    assert second["attempts"] == first["attempts"] + 1
+    publish = Mock()
+    assert not store.renew_job_lease(jid, first["attempts"], publish=publish)
+    publish.assert_not_called()
+    assert store.renew_job_lease(jid, second["attempts"], publish=publish)
+    publish.assert_called_once()
+    assert not store.complete_job(jid, first["attempts"], result={"owner": "first"})
+    assert store.complete_job(jid, second["attempts"], result={"owner": "second"})
+    assert not store.fail_job(jid, first["attempts"], "late failure")
+    assert store.get_job(jid)["result"] == '{"owner": "second"}'
+
+
+def test_schema_upgrade_recovers_legacy_running_job(store):
+    jid, _ = store.enqueue_job("h1", "generate_cpg", {})
+    with store._connect() as conn:
+        conn.execute("ALTER TABLE jobs DROP COLUMN lease_expires_at")
+        conn.execute("UPDATE jobs SET status = 'running', attempts = 1 WHERE id = %s", (jid,))
+
+    store.init_schema()
+    job = store.claim_next_job("generate_cpg")
+    assert (job["id"], job["attempts"]) == (jid, 2)

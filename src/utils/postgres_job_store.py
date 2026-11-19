@@ -1,9 +1,7 @@
 """
 Postgres-backed durable job store.
 
-Exposes the job-queue method surface used by DurableCPGQueue (enqueue_job /
-claim_next_job / complete_job / fail_job / get_job / count_jobs /
-requeue_running_jobs). claim_next_job uses `FOR UPDATE SKIP LOCKED`, so many
+Claiming uses `FOR UPDATE SKIP LOCKED`, so many
 generation workers across multiple processes / hosts can pull from one shared
 queue concurrently without blocking each other or double-claiming.
 
@@ -19,7 +17,7 @@ plain `psycopg` install.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -32,6 +30,8 @@ except ImportError:
     _HAVE_POOL = False
 
 logger = logging.getLogger(__name__)
+
+JOB_LEASE_SECONDS = 120
 
 
 def _now() -> str:
@@ -103,6 +103,7 @@ class PostgresJobStore:
                     updated_at TEXT NOT NULL
                 )
             """)
+            conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)")
             conn.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_unique
@@ -153,17 +154,19 @@ class PostgresJobStore:
             logger.error(f"Postgres enqueue_job failed for {codebase_hash}: {e}")
             return None, "error"
 
-    def claim_next_job(self, job_type: str) -> Optional[Dict[str, Any]]:
-        """Atomically claim the oldest queued job via FOR UPDATE SKIP LOCKED."""
+    def claim_next_job(self, job_type: str, lease_seconds: float = JOB_LEASE_SECONDS) -> Optional[Dict[str, Any]]:
+        """Claim the oldest available job and issue a new attempt number."""
         now = _now()
         try:
             with self._connect() as conn:
                 row = conn.execute(
-                    "UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = %s "
-                    "WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND job_type = %s "
-                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
+                    "UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = %s, "
+                    "lease_expires_at = clock_timestamp() + %s * interval '1 second' "
+                    "WHERE id = (SELECT id FROM jobs WHERE job_type = %s AND (status = 'queued' OR "
+                    "(status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()))) "
+                    "ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1) "
                     "RETURNING id, codebase_hash, job_type, payload, attempts",
-                    (now, job_type),
+                    (now, lease_seconds, job_type),
                 ).fetchone()
                 conn.commit()
                 if not row:
@@ -175,22 +178,37 @@ class PostgresJobStore:
             logger.error(f"Postgres claim_next_job failed: {e}")
             return None
 
-    def complete_job(self, job_id: int, result: Optional[Any] = None) -> None:
-        self._finish_job(job_id, "done", result=result)
+    def renew_job_lease(
+        self, job_id: int, attempt: int, lease_seconds: float = JOB_LEASE_SECONDS,
+        publish: Optional[Callable[[], None]] = None,
+    ) -> bool:
+        with self._connect() as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET lease_expires_at = clock_timestamp() + %s * interval '1 second' "
+                "WHERE id = %s AND status = 'running' AND attempts = %s "
+                "AND lease_expires_at > clock_timestamp()",
+                (lease_seconds, job_id, attempt),
+            )
+            if updated.rowcount and publish:
+                # Keep the claim row locked through artifact publication.
+                publish()
+            return bool(updated.rowcount)
 
-    def fail_job(self, job_id: int, error: str) -> None:
-        self._finish_job(job_id, "failed", error=error)
+    def complete_job(self, job_id: int, attempt: int, result: Optional[Any] = None) -> bool:
+        return self._finish_job(job_id, attempt, "done", result=result)
 
-    def _finish_job(self, job_id: int, status: str, result: Any = None, error: str = None) -> None:
-        try:
-            with self._connect() as conn:
-                conn.execute(
-                    "UPDATE jobs SET status = %s, result = %s, error = %s, updated_at = %s WHERE id = %s",
-                    (status, json.dumps(result) if result is not None else None, error, _now(), job_id),
-                )
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Postgres finish job {job_id} failed: {e}")
+    def fail_job(self, job_id: int, attempt: int, error: str) -> bool:
+        return self._finish_job(job_id, attempt, "failed", error=error)
+
+    def _finish_job(self, job_id: int, attempt: int, status: str, result: Any = None, error: Optional[str] = None) -> bool:
+        with self._connect() as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET status = %s, result = %s, error = %s, updated_at = %s, "
+                "lease_expires_at = NULL WHERE id = %s AND status = 'running' AND attempts = %s "
+                "AND lease_expires_at > clock_timestamp()",
+                (status, json.dumps(result) if result is not None else None, error, _now(), job_id, attempt),
+            )
+            return bool(updated.rowcount)
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         try:
@@ -263,17 +281,4 @@ class PostgresJobStore:
                 return row["c"]
         except Exception as e:
             logger.error(f"Postgres count_jobs failed: {e}")
-            return 0
-
-    def requeue_running_jobs(self) -> int:
-        try:
-            with self._connect() as conn:
-                cur = conn.execute(
-                    "UPDATE jobs SET status = 'queued', updated_at = %s WHERE status = 'running'",
-                    (_now(),),
-                )
-                conn.commit()
-                return cur.rowcount
-        except Exception as e:
-            logger.error(f"Postgres requeue_running_jobs failed: {e}")
             return 0
