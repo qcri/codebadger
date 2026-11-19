@@ -39,8 +39,11 @@ flowchart LR
 ```
 
 `generate_cpg` returns immediately and builds in the background - **poll
-`get_cpg_status` until `ready`** rather than blocking. CPGs are cached on disk by
-content hash; an idle server sleeps and transparently wakes on the next query.
+`get_cpg_status` until `ready`** rather than blocking. The cache key includes the
+source identity and build options, including scope, include order, defines, and
+compilation database selection. Existing graphs remain accessible by their
+original IDs. The first build after upgrading to versioned keys creates a new
+graph. An idle server sleeps and wakes on the next query.
 
 ## Example session
 

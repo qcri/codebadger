@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import docker
 import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -483,7 +484,31 @@ def _sanitize_build_opt_list(items, kind: str) -> list:
     return out
 
 
-def get_cpg_cache_key(source_type: str, source_path: str, language: str, commit_hash: Optional[str] = None, content: Optional[str] = None, extra: Optional[str] = None, branch: Optional[str] = None) -> str:
+def _cpg_build_settings(config, language: str, compile_commands: Optional[str]) -> dict:
+    cpg = config.cpg if config else None
+    return {
+        "exclusion_patterns": (
+            list(cpg.exclusion_patterns or [])
+            if cpg and language in (cpg.languages_with_exclusions or ())
+            else []
+        ),
+        "autodetect_compile_db": (
+            not compile_commands
+            and frontend_supports(language, "compilation_database")
+            and getattr(cpg, "autodetect_compile_db", True)
+        ),
+    }
+
+
+def get_cpg_cache_key(
+    source_type: str,
+    source_path: str,
+    language: str,
+    commit_hash: Optional[str] = None,
+    content: Optional[str] = None,
+    extra: Optional[str | dict] = None,
+    branch: Optional[str] = None,
+) -> str:
     """
     Generate a deterministic CPG cache key based on source type, path, language, and optional commit hash.
 
@@ -493,7 +518,6 @@ def get_cpg_cache_key(source_type: str, source_path: str, language: str, commit_
     if source_type == "snippet":
         digest = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
         identifier = f"snippet:{digest}:{language}"
-        return hashlib.sha256(identifier.encode()).hexdigest()[:16]
     elif source_type == "github":
         if "github.com/" in source_path:
             parts = source_path.split("github.com/")[-1].split("/")
@@ -524,23 +548,12 @@ def get_cpg_cache_key(source_type: str, source_path: str, language: str, commit_
             source_path = os.path.abspath(source_path)
             identifier = f"local:{source_path}:{language}"
 
-    # A requested branch selects a distinct revision of a remote repo, so it must be
-    # part of the key — otherwise two branches of the same repo collide on one CPG
-    # (and the second request silently reuses the first branch's graph). Only applies
-    # to remote sources; default branch (None) leaves the key unchanged for back-compat.
-    if branch and source_type == "github":
-        identifier += f"@{branch}"
-
-    if commit_hash:
-        identifier += f":{commit_hash}"
-
-    # Build options (caller-supplied include paths / defines) change the produced CPG,
-    # so they must be part of the cache key or a stale CPG would be reused.
-    if extra:
-        identifier += f":{extra}"
-
-    hash_digest = hashlib.sha256(identifier.encode()).hexdigest()[:16]
-    return hash_digest
+    # Older hashes can point to graphs built with unrecorded options.
+    key = json.dumps(
+        [2, identifier, branch if source_type == "github" else None, commit_hash, extra],
+        sort_keys=True,
+    )
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def get_cpg_cache_path(cache_key: str, playground_path: str) -> str:
@@ -1085,6 +1098,7 @@ async def _generate_cpg_async(
     auto_system_headers: bool = False,
     compile_commands: Optional[str] = None,
     source_root_host: Optional[str] = None,
+    build_settings: Optional[dict] = None,
 ):
     """Async task to generate CPG and start Joern server"""
     import logging
@@ -1151,6 +1165,8 @@ async def _generate_cpg_async(
             raise ValueError(f"Unsupported language: {language}")
 
         cmd = [cmd_binary, f"/playground/codebases/{codebase_hash}", "-o", container_cpg_path]
+        if build_settings is None:
+            build_settings = _cpg_build_settings(config, language, compile_commands)
 
         # Build a single --exclude-regex from: (1) the default junk patterns
         # (tests/docs/build dirs) and (2) include_globs scoping (drop out-of-scope
@@ -1158,9 +1174,9 @@ async def _generate_cpg_async(
         # matches EITHER, so they OR together. --exclude-regex is supported by
         # every frontend, so scoping works for all languages.
         exclude_parts = []
-        if config and language in config.cpg.languages_with_exclusions and config.cpg.exclusion_patterns:
+        if build_settings["exclusion_patterns"]:
             escaped_patterns = []
-            for pattern in config.cpg.exclusion_patterns:
+            for pattern in build_settings["exclusion_patterns"]:
                 try:
                     re.compile(pattern)
                     escaped_patterns.append(pattern)
@@ -1168,7 +1184,7 @@ async def _generate_cpg_async(
                     logger.warning(f"Invalid regex pattern '{pattern}': {e}. Using literal match.")
                     escaped_patterns.append(re.escape(pattern))
             exclude_parts.append("|".join(f"({p})" for p in escaped_patterns))
-            logger.info(f"Applied {len(config.cpg.exclusion_patterns)} exclusion patterns")
+            logger.info(f"Applied {len(escaped_patterns)} exclusion patterns")
 
         if include_globs and frontend_supports(language, "exclude_regex"):
             src_exts = SCOPE_SOURCE_EXTENSIONS.get(
@@ -1251,8 +1267,7 @@ async def _generate_cpg_async(
         # compile_commands.json (root/build/out/...), use it automatically — it's
         # strictly higher fidelity than the fuzzy parse. Disable with
         # CPG_AUTODETECT_COMPILE_DB=false. Caller-supplied always wins.
-        if (not compile_commands and frontend_supports(language, "compilation_database")
-                and (config is None or getattr(config.cpg, "autodetect_compile_db", True))):
+        if build_settings["autodetect_compile_db"]:
             auto_db = await asyncio.to_thread(find_compile_db, codebase_dir)
             if auto_db:
                 compile_commands = auto_db
@@ -1918,23 +1933,34 @@ Examples:
                     )
                     content_fp = None
 
-            # Normalize + validate C/C++ build options (no control chars; relative
-            # include paths must stay within the source root). Build options are part
-            # of the cache key so a different -I/-D set yields a distinct CPG.
             include_paths = _sanitize_build_opt_list(include_paths, "include path")
             defines = _sanitize_build_opt_list(defines, "define")
             if (include_paths or defines) and language not in ("c", "cpp"):
                 logger.warning(f"include_paths/defines ignored for language '{language}' (C/C++ only)")
                 include_paths, defines = [], []
 
-            _opts = []
-            if include_paths:
-                _opts.append("inc=" + ",".join(sorted(include_paths)))
-            if defines:
-                _opts.append("def=" + ",".join(sorted(defines)))
-            build_opts_key = ";".join(_opts) if _opts else None
+            if compile_commands and frontend_supports(language, "compilation_database"):
+                compile_commands = compile_commands.strip().lstrip("/") or None
+            else:
+                compile_commands = None
 
-            codebase_hash = get_cpg_cache_key(source_type, source_path, language, commit_hash, content=content_fp, extra=build_opts_key, branch=branch)
+            globs = {glob.strip().lstrip("./") for glob in include_globs or []}
+            globs.discard("")
+            build_options = {
+                "include_paths": include_paths,
+                "defines": defines,
+                "include_globs": sorted(globs),
+                "auto_system_headers": (
+                    auto_system_headers and frontend_supports(language, "auto_include_discovery")
+                ),
+                "compile_commands": compile_commands,
+                "build_settings": _cpg_build_settings(config, language, compile_commands),
+            }
+            snippet_name = snippet_filename(language, filename) if source_type == "snippet" else None
+            codebase_hash = get_cpg_cache_key(
+                source_type, source_path, language, commit_hash, content=content_fp,
+                extra={**build_options, "snippet_filename": snippet_name}, branch=branch,
+            )
             logger.info(f"Processing codebase with hash: {codebase_hash}")
 
             existing_codebase = codebase_tracker.get_codebase(codebase_hash)
@@ -2106,7 +2132,6 @@ Examples:
                     else:
                         logger.info(f"Using existing cloned repository at {codebase_dir}")
                 elif source_type == "snippet":
-                    snippet_name = snippet_filename(language, filename)
                     # Label the DB record with the filename when no explicit label was given.
                     if not source_path:
                         source_path = snippet_name
@@ -2215,12 +2240,8 @@ Examples:
                     language=language,
                     container_cpg_path=container_cpg_path,
                     services=services,
-                    include_paths=include_paths or None,
-                    defines=defines or None,
-                    include_globs=include_globs or None,
-                    auto_system_headers=bool(auto_system_headers),
-                    compile_commands=compile_commands or None,
                     source_root_host=source_root_host,
+                    **build_options,
                 )
                 cpg_queue = services.get("cpg_queue")
                 if cpg_queue:
