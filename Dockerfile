@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JOERN_VERSION=4.0.594
+ENV JOERN_VERSION=4.0.687
 ENV JOERN_HOME=/opt/joern
 
 RUN set -eux; \
