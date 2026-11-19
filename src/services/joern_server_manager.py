@@ -133,9 +133,7 @@ class JoernServerManager:
         # through the shared dedup registry instead of spawning its own tasks.
         self._restart_callback: Optional[Callable[[str, str], bool]] = None
 
-        # Pool mode: a previous run may have left worker containers behind. Clear
-        # them so stale servers don't hold ports/memory or shadow fresh spawns.
-        if self.worker_mode == "pool":
+        if self._redis_pool is not None:
             self._cleanup_orphan_workers()
 
     def set_restart_callback(self, callback: Callable[[str, str], bool]) -> None:
@@ -735,7 +733,11 @@ class JoernServerManager:
                 # keeps rw since it writes the CPGs.
                 volumes={self.playground_host_path: {"bind": "/playground", "mode": "ro"}},
                 detach=True,
-                labels={"codebadger.role": "joern-worker", "codebadger.hash": codebase_hash},
+                labels={
+                    "codebadger.role": "joern-worker",
+                    "codebadger.hash": codebase_hash,
+                    "codebadger.deployment": self.container_name,
+                },
                 **run_kwargs,
             )
         except ImageNotFound:
@@ -755,19 +757,37 @@ class JoernServerManager:
             logger.warning(f"Error removing worker container {name}: {e}")
 
     def _cleanup_orphan_workers(self) -> None:
-        """Remove worker containers left over from a previous run (pool mode)."""
+        """Remove unregistered workers that belong to this deployment."""
+        pool = self._redis_pool
         try:
-            orphans = self.docker_client.containers.list(
-                all=True, filters={"label": "codebadger.role=joern-worker"}
+            workers = self.docker_client.containers.list(
+                all=True,
+                filters={"label": [
+                    "codebadger.role=joern-worker",
+                    f"codebadger.deployment={self.container_name}",
+                ]},
             )
-            for c in orphans:
-                try:
-                    c.remove(force=True)
-                    logger.info(f"Removed orphan worker container {c.name}")
-                except Exception as e:
-                    logger.warning(f"Could not remove orphan worker {c.name}: {e}")
+            registered = pool.all_ports() if workers else {}
         except Exception as e:
             logger.warning(f"Orphan worker cleanup skipped: {e}")
+            return
+
+        for container in workers:
+            labels = container.labels
+            codebase_hash = labels.get("codebadger.hash")
+            if (labels.get("codebadger.role") != "joern-worker"
+                    or labels.get("codebadger.deployment") != self.container_name
+                    or not codebase_hash or codebase_hash in registered):
+                continue
+            try:
+                with pool.spawn_lock(codebase_hash, blocking=False):
+                    if pool.get_port(codebase_hash) is None:
+                        container.remove(force=True)
+                        logger.info(f"Removed orphan worker container {container.name}")
+            except (TimeoutError, NotFound):
+                continue
+            except Exception as e:
+                logger.warning(f"Could not remove orphan worker {container.name}: {e}")
 
     def _dump_server_log(self, codebase_hash: str) -> None:
         """Log the tail of a failed server's output (mode-aware).

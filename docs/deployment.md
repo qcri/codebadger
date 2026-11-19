@@ -423,6 +423,11 @@ lock) lives in Redis when `REDIS_URL` is set, so multiple processes coordinate
 spawn/eviction without over-committing - and any process can serve a CPG another
 started. See [Architecture → Memory-aware admission](architecture.md#memory-aware-admission).
 
+Pool startup uses the build container name to identify workers from the same
+deployment. With Redis available, it removes workers whose port is unregistered
+and whose spawn lock is free. Workers created before deployment labels were
+added remain eligible for normal reuse and replacement when their CPG is opened.
+
 ## Scaling: large batches
 
 Driving hundreds of CPGs (e.g. a CVE corpus):
