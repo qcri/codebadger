@@ -2264,8 +2264,8 @@ Examples:
                 if source_type == "github":
                     validate_github_url(source_path)
 
-                    if not os.path.exists(codebase_dir):
-                        os.makedirs(codebase_dir, exist_ok=True)
+                    if not os.path.isdir(os.path.join(codebase_dir, "source")):
+                        shutil.rmtree(codebase_dir, ignore_errors=True)
                         await git_manager.clone_repository(
                             repo_url=source_path,
                             target_path=codebase_dir,

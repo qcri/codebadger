@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 from typing import Dict, Optional
 from urllib.parse import quote, urlparse
 
@@ -125,19 +126,26 @@ class GitManager:
             # Create target directory
             os.makedirs(target_path, exist_ok=True)
             source_path = os.path.join(target_path, "source")
+            # Publish the checkout only after a complete clone so a retry never
+            # mistakes a partial one for usable source.
+            staging_path = tempfile.mkdtemp(prefix=".clone-", dir=target_path)
 
             # Clone in a thread pool (git operations are blocking)
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None, self._do_clone, auth_url, source_path, branch, clone_env
-            )
-
-            # Remove the embedded credential from .git/config so the token is
-            # not stored on disk in plaintext.
-            if injected_credential:
+            try:
                 await loop.run_in_executor(
-                    None, self._strip_remote_credential, source_path, repo_url
+                    None, self._do_clone, auth_url, staging_path, branch, clone_env
                 )
+
+                # Remove the embedded credential from .git/config so the token
+                # is not stored on disk in plaintext.
+                if injected_credential:
+                    await loop.run_in_executor(
+                        None, self._strip_remote_credential, staging_path, repo_url
+                    )
+                os.replace(staging_path, source_path)
+            finally:
+                shutil.rmtree(staging_path, ignore_errors=True)
 
             logger.info(f"Cloned repository {repo_url} to {source_path}")
             return source_path

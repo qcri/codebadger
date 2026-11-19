@@ -491,6 +491,44 @@ class TestMCPTools:
         assert failed_update["status"] == "failed"
         assert failed_update["phase"] == "failed"
 
+    async def test_github_retry_reclones_after_failed_clone(
+        self, mock_services, tmp_path
+    ):
+        from src.exceptions import GitOperationError
+        from src.tools.core_tools import register_core_tools
+
+        codebase_hash = "abc1234567890123"
+        mock_services["codebase_tracker"].get_codebase.return_value = None
+        queue = MagicMock()
+        queue.submit = AsyncMock(return_value="submitted")
+        mock_services["cpg_queue"] = queue
+
+        async def clone(repo_url, target_path, branch, token):
+            os.makedirs(target_path, exist_ok=True)
+            if clone_mock.await_count == 1:
+                raise GitOperationError("network down")
+            os.makedirs(os.path.join(target_path, "source"))
+
+        clone_mock = AsyncMock(side_effect=clone)
+        mock_services["git_manager"].clone_repository = clone_mock
+        request = {
+            "source_type": "github",
+            "source_path": "https://github.com/test/repo",
+            "language": "c",
+        }
+        with patch("src.tools.core_tools.os.path.abspath", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.dirname", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.join", side_effect=os.path.join), \
+             patch("src.tools.core_tools.get_cpg_cache_key", return_value=codebase_hash):
+            mcp = FastMCP("TestServer")
+            register_core_tools(mcp, mock_services)
+            async with Client(mcp) as client:
+                await client.call_tool("generate_cpg", request, raise_on_error=False)
+                retried = await client.call_tool("generate_cpg", request)
+
+        assert clone_mock.await_count == 2
+        assert json.loads(retried.content[0].text)["status"] == "generating"
+
     @pytest.mark.asyncio
     async def test_generate_cpg_snippet_requires_code(self, mock_services, tmp_path):
         """source_type='snippet' without code returns a validation error, not a crash."""
