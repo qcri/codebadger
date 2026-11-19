@@ -2389,7 +2389,11 @@ Examples:
                 )
                 cpg_queue = services.get("cpg_queue")
                 if cpg_queue:
-                    submit_result = await cpg_queue.submit(codebase_hash, job)
+                    try:
+                        submit_result = await cpg_queue.submit(codebase_hash, job)
+                    except Exception:
+                        logger.exception("Could not enqueue CPG generation for %s", codebase_hash)
+                        submit_result = "error"
                     if submit_result == CPGGenerationQueue.DUPLICATE:
                         return {
                             "success": True,
@@ -2397,12 +2401,31 @@ Examples:
                             "status": SessionStatus.GENERATING,
                             "message": "CPG build already in progress for this codebase.",
                         }
-                    if submit_result == CPGGenerationQueue.QUEUE_FULL:
+                    if submit_result in (CPGGenerationQueue.QUEUE_FULL, "error"):
+                        queue_full = submit_result == CPGGenerationQueue.QUEUE_FULL
+                        error_code = "QUEUE_FULL" if queue_full else "QUEUE_SUBMISSION_FAILED"
+                        message = (
+                            "CPG generation queue is full. Try again shortly."
+                            if queue_full
+                            else "CPG generation could not be queued. Try again shortly."
+                        )
+                        codebase_tracker.update_codebase(
+                            codebase_hash=codebase_hash,
+                            joern_port=None,
+                            metadata={
+                                "status": SessionStatus.FAILED,
+                                "phase": "failed",
+                                "error_code": error_code,
+                                "error": message,
+                                "generation_deadline": None,
+                            },
+                        )
                         return {
                             "success": False,
                             "codebase_hash": codebase_hash,
-                            "status": "queue_full",
-                            "message": "CPG generation queue is full. Try again shortly.",
+                            "status": "queue_full" if queue_full else SessionStatus.FAILED,
+                            "error_code": error_code,
+                            "message": message,
                         }
                 else:
                     asyncio.create_task(_generate_cpg_async(**job))

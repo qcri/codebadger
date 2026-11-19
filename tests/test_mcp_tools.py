@@ -450,6 +450,48 @@ class TestMCPTools:
             assert save_kwargs["source_type"] == "snippet"
 
     @pytest.mark.asyncio
+    async def test_queue_full_marks_catalog_failed_and_retry_submits_once(
+        self, mock_services, tmp_path
+    ):
+        from unittest.mock import AsyncMock
+        from src.tools.core_tools import register_core_tools
+
+        codebase_hash = "abc1234567890123"
+        mock_services["codebase_tracker"].get_codebase.return_value = None
+        queue = MagicMock()
+        queue.submit = AsyncMock(side_effect=["queue_full", "submitted"])
+        mock_services["cpg_queue"] = queue
+        with patch("src.tools.core_tools.os.path.abspath", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.dirname", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.join", side_effect=os.path.join), \
+             patch("src.tools.core_tools.get_cpg_cache_key", return_value=codebase_hash):
+            mcp = FastMCP("TestServer")
+            register_core_tools(mcp, mock_services)
+            async with Client(mcp) as client:
+                rejected = await client.call_tool("generate_cpg", {
+                    "source_type": "snippet", "source_path": "", "language": "c",
+                    "code": "int main() { return 0; }",
+                })
+                retried = await client.call_tool("generate_cpg", {
+                    "source_type": "snippet", "source_path": "", "language": "c",
+                    "code": "int main() { return 0; }",
+                })
+
+        rejected_data = json.loads(rejected.content[0].text)
+        retried_data = json.loads(retried.content[0].text)
+        assert rejected_data["status"] == "queue_full"
+        assert rejected_data["success"] is False
+        assert retried_data["status"] == "generating"
+        assert queue.submit.await_count == 2
+        failed_update = next(
+            call.kwargs["metadata"]
+            for call in mock_services["codebase_tracker"].update_codebase.call_args_list
+            if call.kwargs.get("metadata", {}).get("error_code") == "QUEUE_FULL"
+        )
+        assert failed_update["status"] == "failed"
+        assert failed_update["phase"] == "failed"
+
+    @pytest.mark.asyncio
     async def test_generate_cpg_snippet_requires_code(self, mock_services, tmp_path):
         """source_type='snippet' without code returns a validation error, not a crash."""
         from src.tools.core_tools import register_core_tools
