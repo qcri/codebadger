@@ -1,30 +1,21 @@
 """Tests for the Phase-3 durable job queue: Postgres jobs table + DurableCPGQueue.
 
 Needs a real Postgres (SQLite was removed) — set CODEBADGER_TEST_PG_DSN to run;
-skipped otherwise. Mirrors the skip pattern in tests/test_postgres_db_manager.py.
+skipped otherwise.
 """
 
 import asyncio
-import os
+from contextlib import closing
 
 import pytest
 
-PG_DSN = os.getenv("CODEBADGER_TEST_PG_DSN")
-pytestmark = pytest.mark.skipif(
-    not PG_DSN, reason="set CODEBADGER_TEST_PG_DSN to run durable-queue (Postgres) tests"
-)
-
 
 @pytest.fixture
-def db():
+def db(isolated_pg_dsn):
     from src.utils.postgres_job_store import PostgresJobStore
-    store = PostgresJobStore(PG_DSN)
-    store.init_schema()
-    import psycopg
-    with psycopg.connect(PG_DSN) as conn:
-        conn.execute("TRUNCATE jobs RESTART IDENTITY")
-        conn.commit()
-    return store
+    with closing(PostgresJobStore(isolated_pg_dsn)) as store:
+        store.init_schema()
+        yield store
 
 
 def test_enqueue_and_claim_roundtrip(db):

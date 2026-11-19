@@ -13,22 +13,23 @@ See [Installation](installation.md) for prerequisites.
 ## Running tests
 
 ```bash
-pytest tests/ -q            # unit tests
+pytest tests/ -q --ignore=tests/integration
 ```
 
-Integration tests need the Joern container running and the MCP server up:
+For Postgres and integration tests, start Compose and create a test database once.
 
 ```bash
-python main.py &            # start the server in the background
-pytest tests/integration -q
-pkill -f "python main.py"   # stop it
+docker compose exec -T codebadger-postgres createdb -U codebadger codebadger_test
+export CODEBADGER_TEST_PG_DSN=postgresql://codebadger:codebadger@localhost:55432/codebadger_test
 ```
 
-Some `tests/test_postgres_*` cases are skipped unless a live Postgres is
-available - export a DSN to run them:
+Each store and durable queue test creates and drops its own schema. The test role
+needs `CREATE` on the database. The integration suite starts an in-process MCP
+server and uses `DATABASE_URL` for its catalog and workers.
 
 ```bash
-CODEBADGER_TEST_PG_DSN=postgresql://codebadger:codebadger@localhost:55432/codebadger pytest tests/test_postgres_db_manager.py -q
+pytest -q tests/test_postgres_db_manager.py tests/test_postgres_job_store.py tests/test_durable_queue.py
+DATABASE_URL="$CODEBADGER_TEST_PG_DSN" pytest -q tests/integration
 ```
 
 ## Guidelines

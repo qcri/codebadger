@@ -36,6 +36,8 @@ jobs:
           done
           docker compose logs codebadger-mcp
           exit 1
+      - name: Create integration test database
+        run: docker compose exec -T codebadger-postgres createdb -U codebadger codebadger_test
       - name: Run live integration and detector tests
         run: >-
           docker run --rm --network host
@@ -43,7 +45,8 @@ jobs:
           -v /var/run/docker.sock:/var/run/docker.sock
           -w /workspace
           -e CODEBADGER_LIVE_JOERN=1
-          -e CODEBADGER_TEST_PG_DSN=postgresql://codebadger:codebadger@127.0.0.1:55432/codebadger
+          -e DATABASE_URL=postgresql://codebadger:codebadger@127.0.0.1:55432/codebadger_test
+          -e CODEBADGER_TEST_PG_DSN=postgresql://codebadger:codebadger@127.0.0.1:55432/codebadger_test
           -e CODEBADGER_TEST_REDIS_URL=redis://127.0.0.1:56379/0
           codebadger-mcp:latest
           pytest -q tests/integration tests/test_detectors_live.py tests/test_coordination.py
