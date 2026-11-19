@@ -174,3 +174,32 @@ async def test_get_cpg_status_reconciles_loading_with_error_to_failed():
         c.kwargs.get("metadata", {}).get("status") == SessionStatus.FAILED
         for c in tracker.update_codebase.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_get_cpg_status_preserves_load_owned_by_another_process():
+    from fastmcp import FastMCP, Client
+    from src.tools.core_tools import register_core_tools
+    import json
+
+    tracker = MagicMock(spec=CodebaseTracker)
+    tracker.get_codebase.return_value = CodebaseInfo(
+        codebase_hash=HASH, source_type="local", source_path="/src", language="c",
+        cpg_path="/tmp/x.cpg", metadata={"status": "loading"},
+    )
+    coordinator = MagicMock()
+    coordinator.codebase_load_active.return_value = True
+    services = {
+        "codebase_tracker": tracker,
+        "joern_server_manager": MagicMock(),
+        "coordinator": coordinator,
+    }
+    mcp = FastMCP("TestServer")
+    register_core_tools(mcp, services)
+    async with Client(mcp) as client:
+        result = await client.call_tool("get_cpg_status", {"codebase_hash": HASH})
+        data = json.loads(result.content[0].text)
+
+    assert data["status"] == "loading"
+    coordinator.codebase_load_active.assert_called_once_with(HASH)
+    assert tracker.update_codebase.call_count == 0
