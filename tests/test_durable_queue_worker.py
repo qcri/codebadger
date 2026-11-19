@@ -19,16 +19,13 @@ class _FakeStore:
         self.completed = []
         self.failed = []
 
-    def requeue_running_jobs(self):
-        return 0
-
-    def claim_next_job(self, job_type):
+    def claim_next_job(self, job_type, lease_seconds):
         return self._claims.pop(0) if self._claims else None
 
-    def complete_job(self, job_id, result=None):
+    def complete_job(self, job_id, attempt):
         self.completed.append(job_id)
 
-    def fail_job(self, job_id, error):
+    def fail_job(self, job_id, attempt, error):
         self.failed.append((job_id, error))
 
 
@@ -69,7 +66,7 @@ async def test_backoff_resets_after_a_job_is_claimed(monkeypatch):
     delays = _patch_sleep(monkeypatch, stop_after=4)
     # idle, idle, JOB, idle, idle
     store = _FakeStore(
-        [None, None, {"id": 1, "payload": {}, "codebase_hash": "h"}, None, None]
+        [None, None, {"id": 1, "payload": {}, "codebase_hash": "h", "attempts": 1}, None, None]
     )
     q = core_tools.DurableCPGQueue(
         store, {}, workers=0, poll_interval=0.1, max_poll_interval=0.8

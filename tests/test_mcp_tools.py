@@ -832,6 +832,41 @@ class TestMCPTools:
         assert "--define" not in py_cmd
 
     @pytest.mark.asyncio
+    async def test_stale_build_attempt_keeps_published_cpg(self, mock_services, tmp_path):
+        from src.tools import core_tools
+
+        mock_services["config"].cpg.languages_with_exclusions = []
+        cpg_path = tmp_path / "cpg.bin"
+        cpg_path.write_bytes(b"current")
+        attempt_path = tmp_path / "cpg.bin.1-1.bin"
+
+        def build(**kwargs):
+            cmd = kwargs["cmd"]
+            assert cmd[cmd.index("-o") + 1].endswith(attempt_path.name)
+            attempt_path.write_bytes(b"stale")
+            return MagicMock(exit_code=0)
+
+        async def renew_claim(publish=None):
+            return publish is None
+
+        docker_client = MagicMock()
+        docker_client.containers.get.return_value.exec_run.side_effect = build
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client):
+            await core_tools._generate_cpg_async(
+                codebase_hash="553642871dd4251d",
+                codebase_dir=str(tmp_path),
+                cpg_path=str(cpg_path),
+                language="python",
+                container_cpg_path="/playground/cpgs/553642871dd4251d/cpg.bin",
+                services=mock_services,
+                build_attempt="1-1",
+                renew_claim=renew_claim,
+            )
+        assert cpg_path.read_bytes() == b"current"
+        assert not attempt_path.exists()
+        mock_services["joern_server_manager"].reload_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_generate_cpg_async_fails_fast_when_cpg_exceeds_load_ceiling(self, mock_services, tmp_path):
         """A built CPG larger than max_load_mb is failed fast with CPG_TOO_LARGE guidance,
         instead of being handed to the loader to stall and emit an opaque error."""

@@ -313,6 +313,11 @@ run `python scripts/recommend_config.py` for your host.
 | `CPG_LARGE_PROJECT_MAX_LOC` | `2000000` | Guard lines-of-code threshold. |
 | `OUTPUT_TRUNCATION_LENGTH` | `2000` | Default output truncation length. |
 
+Durable workers renew a two-minute Postgres lease while building. A worker can
+retry a job once its lease expires. Before upgrading from a release without
+leases, let active builds finish and stop the old schedulers. The first new
+scheduler can then recover any legacy jobs left in the running state.
+
 ### Query
 
 | Variable | Default | Description |

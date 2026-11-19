@@ -9,6 +9,7 @@ import inspect
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from functools import partial
 import docker
 import hashlib
 import io
@@ -19,7 +20,7 @@ import re
 import shlex
 import shutil
 import tarfile
-from typing import Any, Dict, Optional, Annotated, Set
+from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Set
 from pydantic import Field
 
 from ..defaults import (
@@ -32,6 +33,7 @@ from ..defaults import (
 from ..exceptions import ValidationError
 from ..utils.build_scoping import combine_exclude_regexes, scope_exclude_regex
 from ..utils.compile_db import find_compile_db, prepare_container_compile_db
+from ..utils.postgres_job_store import JOB_LEASE_SECONDS
 from ..models import CodebaseInfo, SessionStatus
 from ..utils.validators import (
     parse_snippet_blocks,
@@ -1099,11 +1101,16 @@ async def _generate_cpg_async(
     compile_commands: Optional[str] = None,
     source_root_host: Optional[str] = None,
     build_settings: Optional[dict] = None,
+    build_attempt: Optional[str] = None,
+    renew_claim: Optional[Callable[..., Awaitable[bool]]] = None,
 ):
     """Async task to generate CPG and start Joern server"""
     import logging
     logger = logging.getLogger(__name__)
 
+    output_path = f"{cpg_path}.{build_attempt}.bin" if build_attempt else cpg_path
+    container_output_path = f"{container_cpg_path}.{build_attempt}.bin" if build_attempt else container_cpg_path
+    compile_db_output = None
     try:
         logger.info(f"Starting async CPG generation for {codebase_hash}")
 
@@ -1120,6 +1127,8 @@ async def _generate_cpg_async(
             logger.info(f"Repository size: {repo_size_mb}MB, max allowed: {max_size_mb}MB")
 
             if repo_size_mb > max_size_mb:
+                if renew_claim and not await renew_claim():
+                    return
                 error_msg = (
                     f"Repository size ({repo_size_mb}MB) exceeds maximum allowed "
                     f"({max_size_mb}MB). Please reduce the repository size or increase "
@@ -1132,15 +1141,17 @@ async def _generate_cpg_async(
                 )
                 return
 
-        docker_client = docker.from_env()
+        docker_client = await asyncio.to_thread(docker.from_env)
         container_name = (
             joern_server_manager.container_name
             if joern_server_manager
             else os.getenv("JOERN_CONTAINER_NAME", "codebadger-joern-server")
         )
         try:
-            container = docker_client.containers.get(container_name)
+            container = await asyncio.to_thread(docker_client.containers.get, container_name)
         except docker.errors.NotFound:
+            if renew_claim and not await renew_claim():
+                return
             error_msg = (
                 f"Docker container '{container_name}' not found. "
                 f"Please start it with: docker compose up -d"
@@ -1152,6 +1163,8 @@ async def _generate_cpg_async(
             )
             return
         except docker.errors.DockerException as e:
+            if renew_claim and not await renew_claim():
+                return
             error_msg = f"Docker error: {e}"
             logger.error(error_msg)
             codebase_tracker.update_codebase(
@@ -1164,7 +1177,7 @@ async def _generate_cpg_async(
         if not cmd_binary:
             raise ValueError(f"Unsupported language: {language}")
 
-        cmd = [cmd_binary, f"/playground/codebases/{codebase_hash}", "-o", container_cpg_path]
+        cmd = [cmd_binary, f"/playground/codebases/{codebase_hash}", "-o", container_output_path]
         if build_settings is None:
             build_settings = _cpg_build_settings(config, language, compile_commands)
 
@@ -1283,13 +1296,16 @@ async def _generate_cpg_async(
                     f"compile_commands path {compile_commands!r} escapes the source root; ignoring"
                 )
             else:
-                out_host = os.path.join(codebase_dir, "compile_commands.container.json")
+                db_name = f"compile_commands.{build_attempt}.json" if build_attempt else "compile_commands.container.json"
+                out_host = os.path.join(codebase_dir, db_name)
+                if build_attempt:
+                    compile_db_output = out_host
                 prepared = await asyncio.to_thread(
                     prepare_container_compile_db, db_host, source_root_host, container_root, out_host
                 )
                 if prepared:
                     _out, n_entries, n_rebased = prepared
-                    container_db = f"{container_root}/compile_commands.container.json"
+                    container_db = f"{container_root}/{db_name}"
                     cmd += ["--compilation-database", container_db]
                     logger.info(
                         f"Using compilation database ({n_entries} entries, "
@@ -1326,6 +1342,8 @@ async def _generate_cpg_async(
         # enforce the configured generation_timeout and keep the event loop responsive.
         generation_timeout = config.cpg.generation_timeout if config else 600
         loop = asyncio.get_running_loop()
+        if renew_claim and not await renew_claim():
+            return
         # Worker has claimed the job and is now parsing the source (c2cpg frontend).
         _set_build_phase(services, codebase_hash, "frontend")
         try:
@@ -1338,22 +1356,21 @@ async def _generate_cpg_async(
                 ),
                 timeout=generation_timeout,
             )
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, asyncio.CancelledError) as err:
+            if isinstance(err, asyncio.CancelledError) and not build_attempt:
+                raise
             error_msg = f"CPG generation timed out after {generation_timeout}s"
-            logger.error(f"{error_msg} for {codebase_hash}")
             try:
-                # pkill by the codebase source path rather than the frontend script name.
-                # The shell wrapper (c2cpg.sh, javasrc2cpg, …) passes the source path to the
-                # JVM as a positional argument, so both the shell process and the Java child
-                # have it in their command lines.  pkill -f on the script name alone would
-                # only kill the wrapper; the JVM child would survive as an orphan at 100% CPU
-                # and the executor thread running exec_run would stay blocked forever.
-                # Using -9 (SIGKILL) ensures the JVM can't defer or ignore the signal.
-                source_path_in_container = f"/playground/codebases/{codebase_hash}"
-                container.exec_run(["pkill", "-9", "-f", source_path_in_container], stream=False)
-                logger.info(f"Killed hung {cmd_binary} process in container for {codebase_hash}")
+                # Match the attempt's output argument so a retry can keep running.
+                process_arg = container_output_path if build_attempt else f"/playground/codebases/{codebase_hash}"
+                await asyncio.to_thread(container.exec_run, ["pkill", "-9", "-f", re.escape(process_arg)])
             except Exception as kill_err:
                 logger.warning(f"Failed to kill hung frontend in container: {kill_err}")
+            if isinstance(err, asyncio.CancelledError):
+                raise
+            logger.error(f"{error_msg} for {codebase_hash}")
+            if renew_claim and not await renew_claim():
+                return
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error_code": "TIMEOUT", "error": error_msg}
@@ -1361,6 +1378,8 @@ async def _generate_cpg_async(
             return
 
         if exec_result.exit_code != 0:
+            if renew_claim and not await renew_claim():
+                return
             output = exec_result.output.decode("utf-8", errors="replace") if exec_result.output else ""
             error_code, error_msg = _classify_cpg_build_failure(
                 exec_result.exit_code, output, build_heap_gb
@@ -1372,6 +1391,8 @@ async def _generate_cpg_async(
             )
             return
 
+        if renew_claim and not await renew_claim(partial(os.replace, output_path, cpg_path)):
+            return
         logger.info(f"CPG generated successfully: {cpg_path}")
 
         # Load-size admission: a cpg.bin above the ceiling almost never loads
@@ -1433,6 +1454,8 @@ async def _generate_cpg_async(
                 joern_port = await loop.run_in_executor(
                     None, joern_server_manager.reload_with_retry, codebase_hash, container_cpg_path
                 )
+                if renew_claim and not await renew_claim():
+                    return
                 if joern_port:
                     logger.info(f"CPG loaded into Joern server on port {joern_port}")
                 else:
@@ -1453,6 +1476,8 @@ async def _generate_cpg_async(
                     return
             except Exception as e:
                 logger.error(f"Failed to start Joern server: {e}", exc_info=True)
+                if renew_claim and not await renew_claim():
+                    return
 
         # Final metadata update preserves the container paths recorded above.
         # Record the verified user-method count (coverage sanity check) when the
@@ -1479,14 +1504,18 @@ async def _generate_cpg_async(
         # artifact (no tool reads source from disk), so drop the source snapshot —
         # and any github clone, which lives under the same dir — to reclaim disk.
         # A later regenerate re-fetches the source.
-        _reclaim_source_snapshot(codebase_dir, cpg_path, services.get("config"))
+        if not build_attempt:
+            _reclaim_source_snapshot(codebase_dir, cpg_path, services.get("config"))
 
         # Fire-and-forget: the CPG is already marked READY above, so the build
         # worker can claim its next job without waiting on warm-up queries.
         _schedule_warmup(services, codebase_hash)
+        return True
 
     except Exception as e:
         logger.error(f"Error in async CPG generation for {codebase_hash}: {e}", exc_info=True)
+        if renew_claim and not await renew_claim():
+            return
         try:
             codebase_tracker = services["codebase_tracker"]
             codebase_tracker.update_codebase(
@@ -1495,6 +1524,16 @@ async def _generate_cpg_async(
             )
         except Exception as tracker_error:
             logger.error(f"Failed to update codebase status in error handler: {tracker_error}")
+    finally:
+        if build_attempt:
+            for path in (output_path, compile_db_output):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as err:
+                        logger.warning(f"Failed to clean up build attempt file {path}: {err}")
 
 
 class CPGGenerationQueue:
@@ -1592,10 +1631,8 @@ class DurableCPGQueue:
     JOB_TYPE = "generate_cpg"
 
     def __init__(self, job_store, services: dict, workers: int = 2, maxsize: int = 0,
-                 poll_interval: float = 1.0, max_poll_interval: float = 5.0):
-        # job_store implements the queue method surface (enqueue_job /
-        # claim_next_job / complete_job / fail_job / count_jobs /
-        # requeue_running_jobs): a PostgresJobStore / PostgresDBManager.
+                 poll_interval: float = 1.0, max_poll_interval: float = 5.0,
+                 lease_seconds: float = JOB_LEASE_SECONDS):
         self.store = job_store
         self.services = services
         self._workers = workers
@@ -1607,17 +1644,11 @@ class DurableCPGQueue:
         # responsive. max_poll_interval <= poll_interval disables backoff.
         self._poll_interval = poll_interval
         self._max_poll_interval = max(poll_interval, max_poll_interval)
+        self._lease_seconds = lease_seconds
         self._tasks: list = []
         self._stopping = False
 
     async def start(self) -> None:
-        # Recover jobs a previous run left mid-flight so they're retried.
-        try:
-            requeued = self.store.requeue_running_jobs()
-            if requeued:
-                logger.info(f"Requeued {requeued} interrupted CPG generation job(s)")
-        except Exception as e:
-            logger.warning(f"Could not requeue interrupted jobs: {e}")
         for _ in range(self._workers):
             self._tasks.append(asyncio.create_task(self._worker()))
 
@@ -1641,11 +1672,12 @@ class DurableCPGQueue:
         return status
 
     async def _worker(self) -> None:
-        loop = asyncio.get_running_loop()
         idle_delay = self._poll_interval
         while not self._stopping:
             try:
-                job = await loop.run_in_executor(None, self.store.claim_next_job, self.JOB_TYPE)
+                job = await asyncio.to_thread(
+                    self.store.claim_next_job, self.JOB_TYPE, self._lease_seconds
+                )
             except Exception as e:
                 logger.error(f"Error claiming CPG job: {e}")
                 job = None
@@ -1657,6 +1689,7 @@ class DurableCPGQueue:
             # Queue is active again — reset to the responsive base interval.
             idle_delay = self._poll_interval
             job_id = job["id"]
+            attempt = job["attempts"]
             payload = dict(job["payload"])
             payload["services"] = self.services
             payload.setdefault("codebase_hash", job["codebase_hash"])
@@ -1671,17 +1704,63 @@ class DurableCPGQueue:
                 parameter.kind is inspect.Parameter.VAR_KEYWORD
                 for parameter in signature.parameters.values()
             )
-            if validates_payload and any(payload.get(key) in (None, "") for key in required):
-                error = f"Malformed generate_cpg payload; missing one of: {', '.join(required)}"
-                logger.error("CPG generation job %s rejected: %s", job_id, error)
-                await loop.run_in_executor(None, self.store.fail_job, job_id, error)
-                continue
             try:
-                await _generate_cpg_async(**payload)
-                await loop.run_in_executor(None, self.store.complete_job, job_id)
+                if validates_payload and any(payload.get(key) in (None, "") for key in required):
+                    error = f"Malformed generate_cpg payload; missing one of: {', '.join(required)}"
+                    await asyncio.to_thread(self.store.fail_job, job_id, attempt, error)
+                    continue
+                await self._run_claimed_job(job_id, attempt, payload)
             except Exception as e:
                 logger.error(f"CPG generation job {job_id} for {job['codebase_hash']} failed: {e}", exc_info=True)
-                await loop.run_in_executor(None, self.store.fail_job, job_id, str(e))
+
+    async def _run_claimed_job(self, job_id: int, attempt: int, payload: dict) -> None:
+        claim_valid = True
+
+        async def renew_claim(publish: Optional[Callable[[], None]] = None) -> bool:
+            nonlocal claim_valid
+            if not claim_valid:
+                return False
+            try:
+                renewed = await asyncio.to_thread(
+                    self.store.renew_job_lease, job_id, attempt, self._lease_seconds, publish
+                )
+            except OSError:
+                if publish:
+                    raise
+                renewed = False
+            except Exception:
+                logger.warning("Could not renew lease for job %s attempt %s", job_id, attempt, exc_info=True)
+                renewed = False
+            claim_valid = claim_valid and renewed
+            return claim_valid
+
+        build = asyncio.create_task(_generate_cpg_async(
+            **payload, build_attempt=f"{job_id}-{attempt}", renew_claim=renew_claim
+        ))
+        try:
+            while not build.done():
+                done, _ = await asyncio.wait((build,), timeout=self._lease_seconds / 3)
+                if not done and not await renew_claim():
+                    logger.warning("Lost lease for job %s attempt %s", job_id, attempt)
+                    return
+            try:
+                ready = await build
+            except Exception as error:
+                logger.error("CPG build job %s failed", job_id, exc_info=True)
+                if claim_valid:
+                    await asyncio.to_thread(self.store.fail_job, job_id, attempt, str(error))
+                return
+            if not claim_valid:
+                return
+            completed = await asyncio.to_thread(self.store.complete_job, job_id, attempt)
+            if completed and ready:
+                await asyncio.to_thread(
+                    _reclaim_source_snapshot, payload["codebase_dir"], payload["cpg_path"],
+                    self.services.get("config"),
+                )
+        finally:
+            build.cancel()
+            await asyncio.gather(build, return_exceptions=True)
 
     @property
     def depth(self) -> int:

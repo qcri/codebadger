@@ -132,5 +132,5 @@ def test_job_methods_inherited(db):
     assert status == "submitted"
     claimed = db.claim_next_job("generate_cpg")
     assert claimed["id"] == jid and claimed["payload"] == {"language": "c"}
-    db.complete_job(jid)
+    db.complete_job(jid, claimed["attempts"])
     assert db.get_job(jid)["status"] == "done"
