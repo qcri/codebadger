@@ -84,6 +84,13 @@ class CodebaseInfo:
         )
 
 
+@dataclass(frozen=True)
+class CPGLoadResult:
+    outcome: str
+    port: Optional[int] = None
+    user_method_count: Optional[int] = None
+
+
 @dataclass
 class QueryResult:
     """Query execution result"""

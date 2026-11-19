@@ -15,7 +15,7 @@ import docker
 from docker.errors import DockerException, NotFound, APIError, ImageNotFound
 
 from .port_manager import PortManager
-from ..models import SessionStatus
+from ..models import CPGLoadResult, SessionStatus
 from ..utils.recommend import tier_for_cpg_size_gb
 
 if TYPE_CHECKING:
@@ -84,13 +84,6 @@ class JoernServerManager:
             self._max_active = 3
         self._lru: OrderedDict[str, None] = OrderedDict()
         self._lru_eviction_count: int = 0
-        # Cause of the most recent load_cpg() (a JoernServerClient._VERIFY_* value
-        # or "error"), captured before the server is torn down so reload_with_retry
-        # can skip retrying a genuinely empty build.
-        self._last_load_cause: Optional[str] = None
-        # User-method count from the most recent verified load (None until set),
-        # surfaced as user_method_count in get_cpg_status.
-        self._last_user_method_count: Optional[int] = None
 
         # Memory-aware admission. When _memory_budget_mb > 0, servers
         # are admitted while the sum of per-CPG heap reservations stays under the
@@ -834,44 +827,45 @@ class JoernServerManager:
         except Exception as e:
             logger.warning(f"Could not read server log for {codebase_hash}: {e}", exc_info=True)
 
-    def reload_with_retry(self, codebase_hash: str, cpg_path: str) -> Optional[int]:
+    def reload_with_retry(self, codebase_hash: str, cpg_path: str) -> CPGLoadResult:
         """Spawn + load an existing cpg.bin, retrying transient load failures.
 
         Each failed load terminates the server, so every retry re-spawns. A
         transient cause (timeout, connection error, no-project race) is retried up
         to ``load_max_attempts``; a genuinely empty/broken build
-        (``_VERIFY_EMPTY``) is never retried — reloading it can't help. Returns the
-        serving port on success, or ``None`` if all attempts failed.
+        (``_VERIFY_EMPTY``) is never retried. Returns the final attempt's outcome
+        and method count, with a serving port on success.
         """
         from .joern_client import JoernServerClient
 
         max_attempts = max(1, self.config.joern.load_max_attempts if self.config else 3)
         for attempt in range(1, max_attempts + 1):
-            port = self.spawn_server(codebase_hash)
-            if self.load_cpg(codebase_hash, cpg_path):
+            self.spawn_server(codebase_hash)
+            result = self._load_cpg_result(codebase_hash, cpg_path)
+            if result.port is not None:
                 if attempt > 1:
                     logger.info(f"CPG reload for {codebase_hash} succeeded on attempt {attempt}")
-                return port
-            cause = self._last_load_cause
-            if cause == JoernServerClient._VERIFY_EMPTY:
+                return result
+            if result.outcome == JoernServerClient._VERIFY_EMPTY:
                 logger.error(
                     f"CPG for {codebase_hash} is empty/broken (not a transient "
                     f"failure) — not retrying reload"
                 )
-                return None
+                return result
             if attempt < max_attempts:
                 logger.warning(
                     f"Transient CPG load failure for {codebase_hash} "
-                    f"(cause={cause}, attempt {attempt}/{max_attempts}) — re-spawning and retrying"
+                    f"(cause={result.outcome}, attempt {attempt}/{max_attempts}) — re-spawning and retrying"
                 )
                 time.sleep(min(2.0 * attempt, 10.0))  # linear backoff, capped
         logger.error(f"CPG reload for {codebase_hash} failed after {max_attempts} attempts")
-        return None
+        return result
 
     def reactivate(self, codebase_hash: str, cpg_path: str) -> int:
         """Spawn a fresh Joern process and load the existing CPG binary (no regeneration)."""
         logger.info(f"Reactivating sleeping codebase {codebase_hash}")
-        port = self.reload_with_retry(codebase_hash, cpg_path)
+        result = self.reload_with_retry(codebase_hash, cpg_path)
+        port = result.port
         if port is None:
             raise RuntimeError(f"Failed to reload CPG for {codebase_hash} during reactivation")
         if self.codebase_tracker:
@@ -879,7 +873,10 @@ class JoernServerManager:
                 self.codebase_tracker.update_codebase(
                     codebase_hash,
                     joern_port=port,
-                    metadata={"status": SessionStatus.READY},
+                    metadata={
+                        "status": SessionStatus.READY,
+                        "user_method_count": result.user_method_count,
+                    },
                 )
             except Exception as e:
                 logger.warning(f"Failed to update ready status for {codebase_hash}: {e}")
@@ -936,13 +933,15 @@ class JoernServerManager:
         return client
 
     def load_cpg(self, codebase_hash: str, cpg_path: str, timeout: int = 0) -> bool:
+        return self._load_cpg_result(codebase_hash, cpg_path, timeout).port is not None
+
+    def _load_cpg_result(self, codebase_hash: str, cpg_path: str, timeout: int = 0) -> CPGLoadResult:
         """Load CPG into Joern server.
 
-        importCpg triggers expensive overlay computation (ReachingDefPass, dataflow).
-        On timeout or failure the server is terminated so the spinning JVM doesn't
-        linger at 100% CPU.  We do NOT retry — a timeout means the JVM is stuck,
-        not that there was a transient network hiccup.
+        A failed load terminates its server so an import cannot leave the JVM spinning.
         """
+        from .joern_client import JoernServerClient
+
         if timeout == 0:
             timeout = self.config.joern.cpg_load_timeout if self.config else 300
 
@@ -963,17 +962,12 @@ class JoernServerManager:
                 f"into Joern server for {codebase_hash} (port {port}, timeout {timeout}s)"
             )
 
-            success = client.load_cpg(container_cpg_path, project_name=codebase_hash, timeout=timeout)
-            # Capture the failure cause BEFORE terminate_server drops the client,
-            # so reload_with_retry can tell a transient miss from an empty build.
-            self._last_load_cause = getattr(client, "last_load_outcome", None)
-            # Capture the verified user-method count too, so the build path can
-            # surface coverage in get_cpg_status (a sanity check vs. silent-empty).
-            self._last_user_method_count = getattr(client, "last_user_method_count", None)
-
-            if success:
+            outcome, count = client.load_cpg_with_result(
+                container_cpg_path, project_name=codebase_hash, timeout=timeout
+            )
+            if outcome == JoernServerClient._VERIFY_OK:
                 logger.info(f"CPG loaded successfully for {codebase_hash}")
-                return True
+                return CPGLoadResult(outcome, port=port, user_method_count=count)
 
             # importCpg failed, verified empty, or timed out — kill the server
             # so a stuck JVM doesn't spin at 100% CPU on overlay computation.
@@ -984,14 +978,12 @@ class JoernServerManager:
                 f"terminating server"
             )
             self.terminate_server(codebase_hash)
-            return False
+            return CPGLoadResult(outcome, user_method_count=count)
 
         except Exception as e:
             logger.error(f"Error loading CPG for {codebase_hash}: {e}")
-            # A manager-level error (no server, network) is transient, not empty.
-            self._last_load_cause = "error"
             self.terminate_server(codebase_hash)
-            return False
+            return CPGLoadResult(JoernServerClient._VERIFY_ERROR)
 
     def get_server_port(self, codebase_hash: str) -> Optional[int]:
         port = self._ports.get(codebase_hash)

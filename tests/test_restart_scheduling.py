@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import src.tools.core_tools as core_tools
-from src.models import CodebaseInfo, SessionStatus
+from src.models import CodebaseInfo, CPGLoadResult, SessionStatus
 from src.services.codebase_tracker import CodebaseTracker
 
 HASH = "abcdef0123456789"
@@ -73,7 +73,7 @@ def test_schedule_returns_false_when_no_loop_available(monkeypatch):
 @pytest.mark.parametrize("raises", [False, True])
 async def test_restart_marks_failed_when_reload_fails(raises):
     mgr = MagicMock()
-    mgr.reload_with_retry.return_value = None  # reload fails after all retries
+    mgr.reload_with_retry.return_value = CPGLoadResult("error")
     if raises:
         mgr.reload_with_retry.side_effect = RuntimeError("/private/Joern startup")
     tracker = MagicMock()
@@ -97,7 +97,7 @@ async def test_restart_marks_failed_when_reload_fails(raises):
 @pytest.mark.asyncio
 async def test_restart_marks_ready_when_reload_succeeds():
     mgr = MagicMock()
-    mgr.reload_with_retry.return_value = 14000
+    mgr.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=17)
     tracker = MagicMock()
     services = {"joern_server_manager": mgr, "codebase_tracker": tracker}
 
@@ -109,12 +109,13 @@ async def test_restart_marks_ready_when_reload_succeeds():
     ]
     assert SessionStatus.READY in statuses
     assert SessionStatus.FAILED not in statuses
+    assert tracker.update_codebase.call_args.kwargs["metadata"]["user_method_count"] == 17
 
 
 @pytest.mark.asyncio
 async def test_stale_restart_failure_does_not_overwrite_ready():
     mgr = MagicMock()
-    mgr.reload_with_retry.return_value = None
+    mgr.reload_with_retry.return_value = CPGLoadResult("error")
     tracker = MagicMock()
     tracker.get_codebase.return_value = CodebaseInfo(
         codebase_hash=HASH, source_type="local", source_path="/src", language="c",
