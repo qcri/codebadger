@@ -867,6 +867,83 @@ class TestMCPTools:
         mock_services["joern_server_manager"].reload_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("load_failure", ["no-port", "exception", "no-manager"])
+    async def test_generate_cpg_reports_load_failure_and_retries_saved_graph(
+        self, mock_services, tmp_path, load_failure
+    ):
+        from src.tools import core_tools
+
+        codebase_hash = "553642871dd4251d"
+        source_dir = tmp_path / "src"
+        source_dir.mkdir()
+        source_file = source_dir / "snippet.c"
+        code = "int main(void) { return 0; }"
+        source_file.write_text(code)
+        cpg_path = tmp_path / "cpg.bin"
+        cpg_path.write_bytes(b"fixture")
+        container_path = f"/playground/cpgs/{codebase_hash}/cpg.bin"
+        info = CodebaseInfo(
+            codebase_hash=codebase_hash, source_type="snippet",
+            source_path="snippet.c", language="c",
+        )
+        tracker = mock_services["codebase_tracker"]
+        tracker.get_codebase.return_value = info
+
+        def update_codebase(codebase_hash, metadata, **fields):
+            info.metadata.update(metadata)
+            for key, value in fields.items():
+                setattr(info, key, value)
+
+        tracker.update_codebase.side_effect = update_codebase
+        manager = mock_services["joern_server_manager"]
+        manager._last_user_method_count = 1
+        manager.reload_with_retry.return_value = None
+        if load_failure == "exception":
+            manager.reload_with_retry.side_effect = RuntimeError("/private/worker startup failed")
+        elif load_failure == "no-manager":
+            mock_services["joern_server_manager"] = None
+
+        docker_client = MagicMock()
+        frontend = docker_client.containers.get.return_value.exec_run
+        frontend.return_value = MagicMock(exit_code=0)
+        mcp = FastMCP("TestServer")
+        core_tools.register_core_tools(mcp, mock_services)
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client), \
+             patch.object(core_tools, "get_cpg_cache_key", return_value=codebase_hash):
+            built = await core_tools._generate_cpg_async(
+                codebase_hash, str(source_dir), str(cpg_path), "c", container_path, mock_services,
+            )
+            assert not built
+            assert cpg_path.exists() and source_file.exists()
+            mock_services["code_browsing_service"].warm_up_cache.assert_not_called()
+
+            async with Client(mcp) as client:
+                status = await client.call_tool("get_cpg_status", {"codebase_hash": codebase_hash})
+                failed = json.loads(status.content[0].text)
+                assert (failed["status"], failed["joern_port"]) == ("failed", None)
+                assert failed["error_code"] == "CPG_LOAD_FAILED"
+                assert "generate_cpg" in failed["error"]
+                assert "/private/" not in failed["error"]
+
+                mock_services["joern_server_manager"] = manager
+                manager.reload_with_retry.side_effect = None
+                manager.reload_with_retry.return_value = 14000
+                retry = await client.call_tool("generate_cpg", {
+                    "source_type": "snippet", "language": "c", "code": code,
+                })
+                assert json.loads(retry.content[0].text)["status"] == "loading"
+                task = core_tools._get_active_restart_task(mock_services, codebase_hash)
+                if task:
+                    await task
+                status = await client.call_tool("get_cpg_status", {"codebase_hash": codebase_hash})
+                ready = json.loads(status.content[0].text)
+                assert (ready["status"], ready["joern_port"]) == ("ready", 14000)
+                assert "error_code" not in ready
+
+        frontend.assert_called_once()
+        manager.reload_with_retry.assert_called_with(codebase_hash, container_path)
+
+    @pytest.mark.asyncio
     async def test_generate_cpg_async_fails_fast_when_cpg_exceeds_load_ceiling(self, mock_services, tmp_path):
         """A built CPG larger than max_load_mb is failed fast with CPG_TOO_LARGE guidance,
         instead of being handed to the loader to stall and emit an opaque error."""

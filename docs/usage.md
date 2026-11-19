@@ -45,6 +45,10 @@ compilation database selection. Existing graphs remain accessible by their
 original IDs. The first build after upgrading to versioned keys creates a new
 graph. An idle server sleeps and wakes on the next query.
 
+If `get_cpg_status` reports `CPG_LOAD_FAILED`, retry `generate_cpg` with
+the same inputs once Joern is available. CodeBadger retries loading the saved
+graph.
+
 ## Example session
 
 ```text

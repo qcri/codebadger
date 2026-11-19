@@ -57,6 +57,16 @@ REDACTED_HOST_PATH = "<redacted:host-path>"
 REDACTED_CONTAINER_PATH = "<redacted:container-path>"
 REDACTED_LOCAL_SOURCE = "<redacted:local-source>"
 
+_CPG_LOAD_FAILURE = {
+    "status": SessionStatus.FAILED,
+    "phase": "failed",
+    "error_code": "CPG_LOAD_FAILED",
+    "error": (
+        "CPG saved but failed to load into Joern. When Joern is available, "
+        "retry generate_cpg with the same source and build options."
+    ),
+}
+
 
 def _public_source_path(source_type: str, source_path: Optional[str]) -> Optional[str]:
     """Redact local source paths before returning them to clients."""
@@ -976,6 +986,16 @@ def _restart_failure_is_stale(codebase_tracker, codebase_hash: str) -> bool:
         return False
 
 
+async def _load_serving_port(manager, codebase_hash: str, container_cpg_path: str) -> Optional[int]:
+    if manager is None:
+        return None
+    try:
+        return await asyncio.to_thread(manager.reload_with_retry, codebase_hash, container_cpg_path)
+    except Exception:
+        logger.exception("Failed to load CPG %s into Joern", codebase_hash)
+        return None
+
+
 async def _restart_server_async(
     codebase_hash: str,
     container_cpg_path: str,
@@ -987,16 +1007,9 @@ async def _restart_server_async(
         joern_server_manager = services.get("joern_server_manager")
         codebase_tracker = services["codebase_tracker"]
 
-        if not joern_server_manager:
-            logger.error(f"No joern_server_manager available for restart of {codebase_hash}")
-            return
-
         logger.info(f"Async: starting Joern server for {codebase_hash}")
-        loop = asyncio.get_running_loop()
-        # reload_with_retry spawns + loads, retrying transient failures (each
-        # re-spawning) before giving up; an empty/broken build is not retried.
-        joern_port = await loop.run_in_executor(
-            None, joern_server_manager.reload_with_retry, codebase_hash, container_cpg_path
+        joern_port = await _load_serving_port(
+            joern_server_manager, codebase_hash, container_cpg_path
         )
         if not joern_port:
             # The reload failed after all retries (the server was already
@@ -1010,10 +1023,7 @@ async def _restart_server_async(
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash,
                 joern_port=None,
-                metadata={
-                    "status": SessionStatus.FAILED,
-                    "error": "CPG exists but failed to reload into a Joern server",
-                },
+                metadata=_CPG_LOAD_FAILURE,
             )
             return
         logger.info(f"Async: CPG loaded into Joern server on port {joern_port}")
@@ -1021,7 +1031,7 @@ async def _restart_server_async(
         codebase_tracker.update_codebase(
             codebase_hash=codebase_hash,
             joern_port=joern_port,
-            metadata={"status": SessionStatus.READY}
+            metadata={"status": SessionStatus.READY, "phase": "ready", "error": None, "error_code": None},
         )
 
         # Fire-and-forget so the restart returns promptly; warm-up runs in the
@@ -1440,44 +1450,14 @@ async def _generate_cpg_async(
             }
         )
 
-        # spawn_server polls with time.sleep and load_cpg blocks on HTTP for up to
-        # cpg_load_timeout seconds.  Both must run in the executor so they do not
-        # freeze the event loop (which would drop SSE heartbeats and cause the
-        # client's httpx stream to ReadTimeout).
-        joern_port = None
-        if joern_server_manager:
-            try:
-                logger.info(f"Spawning Joern server and loading CPG for {codebase_hash}")
-                # reload_with_retry spawns + loads, retrying transient first-load
-                # failures so a freshly-built CPG isn't condemned by a momentary
-                # stall under host pressure; an empty build is not retried.
-                joern_port = await loop.run_in_executor(
-                    None, joern_server_manager.reload_with_retry, codebase_hash, container_cpg_path
-                )
-                if renew_claim and not await renew_claim():
-                    return
-                if joern_port:
-                    logger.info(f"CPG loaded into Joern server on port {joern_port}")
-                else:
-                    logger.warning("Failed to load CPG into Joern server")
-                    error_msg = "CPG generated but failed to load into Joern server"
-                    codebase_tracker.update_codebase(
-                        codebase_hash=codebase_hash,
-                        cpg_path=cpg_path,
-                        joern_port=None,
-                        metadata={
-                            "status": SessionStatus.FAILED,
-                            "error": error_msg,
-                            "container_codebase_path": f"/playground/codebases/{codebase_hash}",
-                            "container_cpg_path": container_cpg_path
-                        }
-                    )
-                    logger.error(f"CPG generation complete but server load failed for {codebase_hash}")
-                    return
-            except Exception as e:
-                logger.error(f"Failed to start Joern server: {e}", exc_info=True)
-                if renew_claim and not await renew_claim():
-                    return
+        joern_port = await _load_serving_port(joern_server_manager, codebase_hash, container_cpg_path)
+        if renew_claim and not await renew_claim():
+            return
+        if not joern_port:
+            codebase_tracker.update_codebase(
+                codebase_hash=codebase_hash, joern_port=None, metadata=_CPG_LOAD_FAILURE,
+            )
+            return
 
         # Final metadata update preserves the container paths recorded above.
         # Record the verified user-method count (coverage sanity check) when the
@@ -1488,7 +1468,7 @@ async def _generate_cpg_async(
             "container_codebase_path": f"/playground/codebases/{codebase_hash}",
             "container_cpg_path": container_cpg_path,
         }
-        user_method_count = getattr(joern_server_manager, "_last_user_method_count", None) if joern_server_manager else None
+        user_method_count = getattr(joern_server_manager, "_last_user_method_count", None)
         if user_method_count is not None:
             ready_meta["user_method_count"] = user_method_count
         codebase_tracker.update_codebase(
@@ -2046,17 +2026,24 @@ Examples:
             if existing_codebase and existing_codebase.cpg_path and os.path.exists(existing_codebase.cpg_path):
                 logger.info(f"Found existing codebase in DB: {codebase_hash}")
 
-                prev_status = existing_codebase.metadata.get("status", "")
-                if prev_status == "failed":
-                    # CPG binary exists but a previous attempt (e.g. importCpg timeout) left it
-                    # in a failed state.  Don't silently retry — return the failure so the caller
-                    # can decide whether to regenerate (delete the CPG and call again).
+                joern_server_manager = services.get("joern_server_manager")
+                metadata = existing_codebase.metadata
+                prev_status = metadata.get("status", "")
+                error_code = metadata.get("error_code")
+                load_failed = error_code == _CPG_LOAD_FAILURE["error_code"] or (
+                    not error_code and metadata.get("error") in (
+                        "CPG generated but failed to load into Joern server",
+                        "CPG exists but failed to reload into a Joern server",
+                    )
+                )
+                if prev_status == "failed" and (not load_failed or joern_server_manager is None):
                     logger.warning(f"Codebase {codebase_hash} has a failed CPG — returning failed status")
                     return {
                         "success": False,
                         "codebase_hash": codebase_hash,
                         "status": SessionStatus.FAILED,
-                        "message": existing_codebase.metadata.get("error", "Previous CPG generation or load failed."),
+                        "error_code": error_code,
+                        "message": metadata.get("error", "Previous CPG generation or load failed."),
                         **_public_codebase_fields(
                             source_type=existing_codebase.source_type,
                             source_path=existing_codebase.source_path,
@@ -2065,7 +2052,6 @@ Examples:
                         ),
                     }
 
-                joern_server_manager = services.get("joern_server_manager")
                 joern_port = existing_codebase.joern_port
                 server_running = False
 
@@ -2123,7 +2109,10 @@ Examples:
                     codebase_tracker.update_codebase(
                         codebase_hash=codebase_hash,
                         joern_port=None,
-                        metadata={"status": SessionStatus.LOADING, **{k: v for k, v in existing_codebase.metadata.items() if k != "status"}}
+                        metadata={
+                            "status": SessionStatus.LOADING, "phase": "loading",
+                            "error": None, "error_code": None,
+                        },
                     )
 
                     scheduled_restart = _schedule_restart_server_task(
