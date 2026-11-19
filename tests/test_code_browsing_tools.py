@@ -78,3 +78,42 @@ async def test_browsing_failures_match_published_schema(
     assert result.structured_content["success"] is False
     assert isinstance(result.structured_content["error"], str)
     assert result.structured_content["error_code"] == error_code
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("get_call_graph", {"method_name": "main"}),
+        ("get_cfg", {"method_name": "main"}),
+        ("find_bounds_checks", {"buffer_access_location": "main.c:3"}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("query_result", "error_code"),
+    [
+        (
+            QueryResult(success=False, error="busy", error_code="SERVER_BUSY"),
+            "SERVER_BUSY",
+        ),
+        (
+            QueryResult(success=False, error="slow", error_code="TIMEOUT"),
+            "TIMEOUT",
+        ),
+        (QueryResult(success=False, error="bad query"), "QUERY_ERROR"),
+    ],
+)
+async def test_summary_tool_failures_keep_executor_error_code(
+    tool_name: str,
+    arguments: dict[str, str],
+    query_result: QueryResult,
+    error_code: str,
+) -> None:
+    async with Client(_server(query_result)) as client:
+        result = await client.call_tool(
+            tool_name,
+            {"codebase_hash": CODEBASE_HASH, **arguments},
+            raise_on_error=False,
+        )
+
+    assert result.is_error
+    assert result.content[0].text.startswith(f"{error_code}: ")
