@@ -129,6 +129,17 @@ def _get_active_restart_task(services: dict, codebase_hash: str) -> Optional[asy
     return task
 
 
+def _shared_restart_active(services: dict, codebase_hash: str) -> bool:
+    check = getattr(services.get("coordinator"), "codebase_load_active", None)
+    if check is None:
+        return False
+    try:
+        return bool(check(codebase_hash))
+    except Exception:
+        logger.warning("Could not check shared CPG load ownership for %s", codebase_hash)
+        return True
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 

@@ -25,6 +25,14 @@ def is_error_output(text) -> bool:
     return isinstance(text, str) and text.startswith(ERROR_PREFIXES)
 
 
+def cache_policy(services: dict) -> tuple[bool, int]:
+    query_config = getattr(services.get("config"), "query", None)
+    return (
+        getattr(query_config, "cache_enabled", True),
+        getattr(query_config, "cache_ttl", 300),
+    )
+
+
 def require_cpg(services: dict, codebase_hash: str):
     """Validate the hash and return its CodebaseInfo, or raise ValidationError.
 
@@ -76,10 +84,13 @@ def run_query(
     cache wrapper (_cached_taint_query) instead.
     """
     db = services.get("db_manager")
+    cache_enabled, cache_ttl = cache_policy(services)
 
-    if tool_name and cache_params is not None and db:
+    if cache_enabled and tool_name and cache_params is not None and db:
         try:
-            cached = db.get_cached_tool_output(tool_name, codebase_hash, cache_params)
+            cached = db.get_cached_tool_output(
+                tool_name, codebase_hash, cache_params, cache_ttl=cache_ttl
+            )
         except Exception as e:
             logger.debug(f"Cache lookup failed for {tool_name} (non-fatal): {e}")
             cached = None
@@ -104,7 +115,7 @@ def run_query(
     else:
         output = str(result.data)
 
-    if tool_name and cache_params is not None and db:
+    if cache_enabled and tool_name and cache_params is not None and db:
         try:
             db.cache_tool_output(tool_name, codebase_hash, cache_params, output)
         except Exception as e:

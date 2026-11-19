@@ -348,4 +348,5 @@ async def test_find_uninitialized_reads_versions_cached_analysis(uninit_services
         "find_uninitialized_reads",
         uninit_services["codebase_hash"],
         {"filename": None, "limit": 100, "analysis_version": 2},
+        cache_ttl=300,
     )
