@@ -5,6 +5,8 @@ no Postgres — complementing the Postgres-gated tests in test_durable_queue.py.
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,9 +26,16 @@ class _FakeStore:
 
     def complete_job(self, job_id, attempt):
         self.completed.append(job_id)
+        return True
 
     def fail_job(self, job_id, attempt, error):
         self.failed.append((job_id, error))
+        return True
+
+    def renew_job_lease(self, job_id, attempt, lease_seconds, publish=None):
+        if publish:
+            publish()
+        return True
 
 
 def _patch_sleep(monkeypatch, stop_after):
@@ -60,7 +69,7 @@ async def test_idle_poll_backs_off_exponentially_capped(monkeypatch):
 @pytest.mark.asyncio
 async def test_backoff_resets_after_a_job_is_claimed(monkeypatch):
     async def fake_generate(**kwargs):
-        return None
+        return True
 
     monkeypatch.setattr(core_tools, "_generate_cpg_async", fake_generate)
     delays = _patch_sleep(monkeypatch, stop_after=4)
@@ -76,6 +85,53 @@ async def test_backoff_resets_after_a_job_is_claimed(monkeypatch):
     # 0.1, 0.2 (backing off) -> job claimed (reset) -> 0.1, 0.2 again
     assert delays == pytest.approx([0.1, 0.2, 0.1, 0.2])
     assert store.completed == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code,error", [
+    ("REPO_TOO_LARGE", "Repository exceeds maximum allowed size"),
+    ("FRONTEND_FAILED", "Joern frontend exited with code 1"),
+])
+async def test_terminal_build_failure_fails_durable_job_with_catalog_reason(
+    monkeypatch, error_code, error
+):
+    tracker = MagicMock()
+    tracker.get_codebase.return_value = SimpleNamespace(
+        metadata={"status": "failed", "error_code": error_code, "error": error}
+    )
+
+    async def fake_generate(**kwargs):
+        kwargs["services"]["codebase_tracker"].update_codebase(
+            codebase_hash=kwargs["codebase_hash"],
+            metadata={"status": "failed", "error_code": error_code, "error": error},
+        )
+        return False
+
+    monkeypatch.setattr(core_tools, "_generate_cpg_async", fake_generate)
+    store = _FakeStore([])
+    queue = core_tools.DurableCPGQueue(store, {"codebase_tracker": tracker}, workers=0)
+
+    await queue._run_claimed_job(
+        7, 1, {"codebase_hash": "hash", "services": queue.services}
+    )
+
+    assert store.completed == []
+    assert store.failed == [(7, f"{error_code}: {error}")]
+
+
+@pytest.mark.asyncio
+async def test_successful_build_completes_durable_job(monkeypatch):
+    async def fake_generate(**kwargs):
+        return True
+
+    monkeypatch.setattr(core_tools, "_generate_cpg_async", fake_generate)
+    store = _FakeStore([])
+    queue = core_tools.DurableCPGQueue(store, {}, workers=0)
+
+    await queue._run_claimed_job(8, 1, {"codebase_hash": "hash"})
+
+    assert store.completed == [8]
+    assert store.failed == []
 
 
 def test_max_poll_interval_never_below_base():

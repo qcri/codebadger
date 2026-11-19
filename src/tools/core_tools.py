@@ -1207,7 +1207,7 @@ async def _generate_cpg_async(
                     codebase_hash=codebase_hash,
                     metadata={"status": SessionStatus.FAILED, "error": error_msg}
                 )
-                return
+                return False
 
         docker_client = await asyncio.to_thread(docker.from_env)
         container_name = (
@@ -1229,7 +1229,7 @@ async def _generate_cpg_async(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error": error_msg}
             )
-            return
+            return False
         except docker.errors.DockerException as e:
             if renew_claim and not await renew_claim():
                 return
@@ -1239,7 +1239,7 @@ async def _generate_cpg_async(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error": error_msg}
             )
-            return
+            return False
 
         cmd_binary = LANGUAGE_COMMANDS.get(language)
         if not cmd_binary:
@@ -1443,7 +1443,7 @@ async def _generate_cpg_async(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error_code": "TIMEOUT", "error": error_msg}
             )
-            return
+            return False
 
         if exec_result.exit_code != 0:
             if renew_claim and not await renew_claim():
@@ -1457,7 +1457,7 @@ async def _generate_cpg_async(
                 codebase_hash=codebase_hash,
                 metadata={"status": SessionStatus.FAILED, "error_code": error_code, "error": error_msg}
             )
-            return
+            return False
 
         if renew_claim and not await renew_claim(partial(os.replace, output_path, cpg_path)):
             return
@@ -1493,7 +1493,7 @@ async def _generate_cpg_async(
                         "cpg_size_mb": round(cpg_size_mb, 1),
                     },
                 )
-                return
+                return False
 
         # Persist cpg_path before attempting server spawn so that the watchdog's
         # _respawn_server can find it even if spawn_server fails mid-flight.
@@ -1516,7 +1516,7 @@ async def _generate_cpg_async(
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash, joern_port=None, metadata=_CPG_LOAD_FAILURE,
             )
-            return
+            return False
 
         ready_meta = {
             "status": "ready",
@@ -1558,6 +1558,7 @@ async def _generate_cpg_async(
             )
         except Exception as tracker_error:
             logger.error(f"Failed to update codebase status in error handler: {tracker_error}")
+        return False
     finally:
         if build_attempt:
             for path in (output_path, compile_db_output):
@@ -1568,6 +1569,21 @@ async def _generate_cpg_async(
                         pass
                     except OSError as err:
                         logger.warning(f"Failed to clean up build attempt file {path}: {err}")
+
+
+def _durable_build_failure(services: dict, codebase_hash: str) -> str:
+    try:
+        tracker = services.get("codebase_tracker")
+        info = tracker.get_codebase(codebase_hash) if tracker else None
+        metadata = getattr(info, "metadata", {}) if info else {}
+        error = metadata.get("error") if isinstance(metadata, dict) else None
+        code = metadata.get("error_code") if isinstance(metadata, dict) else None
+        if code and error:
+            return f"{code}: {error}"
+        return error or "CPG generation failed without a recorded reason"
+    except Exception:
+        logger.warning("Could not read build failure reason for %s", codebase_hash, exc_info=True)
+        return "CPG generation failed and its reason could not be read"
 
 
 class CPGGenerationQueue:
@@ -1786,8 +1802,14 @@ class DurableCPGQueue:
                 return
             if not claim_valid:
                 return
+            if ready is not True:
+                error = _durable_build_failure(
+                    self.services, payload.get("codebase_hash", "")
+                )
+                await asyncio.to_thread(self.store.fail_job, job_id, attempt, error)
+                return
             completed = await asyncio.to_thread(self.store.complete_job, job_id, attempt)
-            if completed and ready:
+            if completed and payload.get("codebase_dir") and payload.get("cpg_path"):
                 await asyncio.to_thread(
                     _reclaim_source_snapshot, payload["codebase_dir"], payload["cpg_path"],
                     self.services.get("config"),
