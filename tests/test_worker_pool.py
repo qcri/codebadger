@@ -4,12 +4,15 @@ Docker is mocked, so these verify the orchestration (container run/remove args,
 state bookkeeping, error handling) without a daemon.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import MagicMock
 
 import pytest
 
 import src.services.joern_server_manager as jsm
 from src.config import load_config
+from src.models import CPGLoadResult
 from src.services.port_manager import PortManager
 
 
@@ -238,6 +241,52 @@ def test_shared_mode_does_not_touch_worker_containers(monkeypatch):
 
 # ── reload_with_retry: transient retried, empty not (A2) ──────────────────────
 
+def test_concurrent_loads_keep_independent_outcomes(pool, monkeypatch):
+    from src.services.joern_client import JoernServerClient
+
+    manager, _ = pool
+    terminating_empty = Event()
+    peer_loaded = Event()
+    ports = {"empty": 14000, "healthy": 14001}
+    spawns = []
+    clients = {key: JoernServerClient(port=port) for key, port in ports.items()}
+
+    def spawn(codebase_hash):
+        spawns.append(codebase_hash)
+        return ports[codebase_hash]
+
+    def terminate(codebase_hash):
+        assert codebase_hash == "empty"
+        terminating_empty.set()
+        assert peer_loaded.wait(5)
+
+    for key, count in (("empty", 0), ("healthy", 23)):
+        monkeypatch.setattr(
+            clients[key], "execute_query",
+            lambda query, timeout, count=count: {
+                "success": True, "stdout": f"val res0: Int = {count}",
+            },
+        )
+    monkeypatch.setattr(jsm.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(manager, "spawn_server", spawn)
+    monkeypatch.setattr(manager, "get_server_port", ports.get)
+    monkeypatch.setattr(manager, "get_or_create_client", clients.get)
+    monkeypatch.setattr(manager, "terminate_server", terminate)
+
+    with ThreadPoolExecutor() as executor:
+        empty = executor.submit(manager.reload_with_retry, "empty", "/tmp/empty/cpg.bin")
+        try:
+            assert terminating_empty.wait(5)
+            healthy = manager.reload_with_retry("healthy", "/tmp/healthy/cpg.bin")
+        finally:
+            peer_loaded.set()
+        empty = empty.result(timeout=5)
+
+    assert spawns.count("empty") == 1
+    assert (empty.outcome, empty.port, empty.user_method_count) == ("empty", None, 0)
+    assert (healthy.outcome, healthy.port, healthy.user_method_count) == ("ok", 14001, 23)
+
+
 def test_reload_with_retry_retries_transient_then_succeeds(pool, monkeypatch):
     m, _ = pool
     monkeypatch.setattr(jsm.time, "sleep", lambda *_: None)  # no backoff delay
@@ -249,14 +298,12 @@ def test_reload_with_retry_retries_transient_then_succeeds(pool, monkeypatch):
     def fake_load(h, cpg_path, timeout=0):
         calls["n"] += 1
         if calls["n"] < 3:
-            m._last_load_cause = "error"  # transient
-            return False
-        m._last_load_cause = "ok"
-        return True
+            return CPGLoadResult("error")
+        return CPGLoadResult("ok", port=14000, user_method_count=7)
 
-    monkeypatch.setattr(m, "load_cpg", fake_load)
-    port = m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin")
-    assert port == 14000
+    monkeypatch.setattr(m, "_load_cpg_result", fake_load)
+    result = m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin")
+    assert result == CPGLoadResult("ok", port=14000, user_method_count=7)
     assert len(spawns) == 3  # re-spawned each retry
 
 
@@ -267,13 +314,9 @@ def test_reload_with_retry_does_not_retry_empty_build(pool, monkeypatch):
     spawns = []
     monkeypatch.setattr(m, "spawn_server", lambda h: (spawns.append(h) or 14000))
 
-    def fake_load(h, cpg_path, timeout=0):
-        m._last_load_cause = JoernServerClient._VERIFY_EMPTY
-        return False
-
-    monkeypatch.setattr(m, "load_cpg", fake_load)
-    port = m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin")
-    assert port is None
+    empty = CPGLoadResult(JoernServerClient._VERIFY_EMPTY, user_method_count=0)
+    monkeypatch.setattr(m, "_load_cpg_result", lambda *args: empty)
+    assert m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin") == empty
     assert len(spawns) == 1  # empty build is never retried
 
 
@@ -283,13 +326,9 @@ def test_reload_with_retry_gives_up_after_max_attempts(pool, monkeypatch):
     spawns = []
     monkeypatch.setattr(m, "spawn_server", lambda h: (spawns.append(h) or 14000))
 
-    def fake_load(h, cpg_path, timeout=0):
-        m._last_load_cause = "error"
-        return False
-
-    monkeypatch.setattr(m, "load_cpg", fake_load)
-    port = m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin")
-    assert port is None
+    failed = CPGLoadResult("error")
+    monkeypatch.setattr(m, "_load_cpg_result", lambda *args: failed)
+    assert m.reload_with_retry("abc", "/playground/cpgs/abc/cpg.bin") == failed
     assert len(spawns) == m.config.joern.load_max_attempts
 
 

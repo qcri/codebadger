@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from src.models import CodebaseInfo, Config, QueryResult
+from src.models import CodebaseInfo, Config, CPGLoadResult, QueryResult
 from src.services.codebase_tracker import CodebaseTracker
 from src.services.cpg_generator import CPGGenerator
 from src.services.git_manager import GitManager
@@ -896,8 +896,7 @@ class TestMCPTools:
 
         tracker.update_codebase.side_effect = update_codebase
         manager = mock_services["joern_server_manager"]
-        manager._last_user_method_count = 1
-        manager.reload_with_retry.return_value = None
+        manager.reload_with_retry.return_value = CPGLoadResult("error")
         if load_failure == "exception":
             manager.reload_with_retry.side_effect = RuntimeError("/private/worker startup failed")
         elif load_failure == "no-manager":
@@ -927,7 +926,7 @@ class TestMCPTools:
 
                 mock_services["joern_server_manager"] = manager
                 manager.reload_with_retry.side_effect = None
-                manager.reload_with_retry.return_value = 14000
+                manager.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=1)
                 retry = await client.call_tool("generate_cpg", {
                     "source_type": "snippet", "language": "c", "code": code,
                 })
@@ -939,9 +938,58 @@ class TestMCPTools:
                 ready = json.loads(status.content[0].text)
                 assert (ready["status"], ready["joern_port"]) == ("ready", 14000)
                 assert "error_code" not in ready
+                assert ready["user_method_count"] == 1
 
         frontend.assert_called_once()
         manager.reload_with_retry.assert_called_with(codebase_hash, container_path)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_builds_publish_their_own_method_counts(self, mock_services, tmp_path):
+        from src.tools import core_tools
+
+        counts = {"553642871dd4251d": 7, "abcdef0123456789": 23}
+        first, second = counts
+        manager = mock_services["joern_server_manager"]
+        manager.reload_with_retry.side_effect = lambda key, path: CPGLoadResult(
+            "ok", port=14000 + counts[key], user_method_count=counts[key],
+        )
+        docker_client = MagicMock()
+        docker_client.containers.get.return_value.exec_run.return_value = MagicMock(exit_code=0)
+        first_loaded = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def renew_first(publish=None):
+            if publish:
+                publish()
+            elif manager.reload_with_retry.called:
+                first_loaded.set()
+                await release_first.wait()
+            return True
+
+        async def build(key, renew_claim=None):
+            source = tmp_path / key
+            source.mkdir()
+            cpg_path = tmp_path / f"{key}.bin"
+            cpg_path.write_bytes(b"fixture")
+            await core_tools._generate_cpg_async(
+                key, str(source), str(cpg_path), "python",
+                f"/playground/cpgs/{key}/cpg.bin", mock_services, renew_claim=renew_claim,
+            )
+
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client):
+            pending = asyncio.create_task(build(first, renew_first))
+            try:
+                await asyncio.wait_for(first_loaded.wait(), 5)
+                await build(second)
+            finally:
+                release_first.set()
+                await pending
+
+        assert {
+            call.kwargs["codebase_hash"]: call.kwargs["metadata"]["user_method_count"]
+            for call in mock_services["codebase_tracker"].update_codebase.call_args_list
+            if call.kwargs.get("metadata", {}).get("status") == "ready"
+        } == counts
 
     @pytest.mark.asyncio
     async def test_generate_cpg_async_fails_fast_when_cpg_exceeds_load_ceiling(self, mock_services, tmp_path):

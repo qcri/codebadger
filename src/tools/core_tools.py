@@ -34,7 +34,7 @@ from ..exceptions import ValidationError
 from ..utils.build_scoping import combine_exclude_regexes, scope_exclude_regex
 from ..utils.compile_db import find_compile_db, prepare_container_compile_db
 from ..utils.postgres_job_store import JOB_LEASE_SECONDS
-from ..models import CodebaseInfo, SessionStatus
+from ..models import CodebaseInfo, CPGLoadResult, SessionStatus
 from ..utils.validators import (
     parse_snippet_blocks,
     validate_and_infer_snippet_language,
@@ -986,14 +986,14 @@ def _restart_failure_is_stale(codebase_tracker, codebase_hash: str) -> bool:
         return False
 
 
-async def _load_serving_port(manager, codebase_hash: str, container_cpg_path: str) -> Optional[int]:
+async def _load_cpg_for_serving(manager, codebase_hash: str, container_cpg_path: str) -> CPGLoadResult:
     if manager is None:
-        return None
+        return CPGLoadResult("error")
     try:
         return await asyncio.to_thread(manager.reload_with_retry, codebase_hash, container_cpg_path)
     except Exception:
         logger.exception("Failed to load CPG %s into Joern", codebase_hash)
-        return None
+        return CPGLoadResult("error")
 
 
 async def _restart_server_async(
@@ -1008,9 +1008,10 @@ async def _restart_server_async(
         codebase_tracker = services["codebase_tracker"]
 
         logger.info(f"Async: starting Joern server for {codebase_hash}")
-        joern_port = await _load_serving_port(
+        load_result = await _load_cpg_for_serving(
             joern_server_manager, codebase_hash, container_cpg_path
         )
+        joern_port = load_result.port
         if not joern_port:
             # The reload failed after all retries (the server was already
             # terminated). Mark FAILED so we don't leave a "ready" codebase whose
@@ -1031,7 +1032,11 @@ async def _restart_server_async(
         codebase_tracker.update_codebase(
             codebase_hash=codebase_hash,
             joern_port=joern_port,
-            metadata={"status": SessionStatus.READY, "phase": "ready", "error": None, "error_code": None},
+            metadata={
+                "status": SessionStatus.READY, "phase": "ready",
+                "error": None, "error_code": None,
+                "user_method_count": load_result.user_method_count,
+            },
         )
 
         # Fire-and-forget so the restart returns promptly; warm-up runs in the
@@ -1450,27 +1455,23 @@ async def _generate_cpg_async(
             }
         )
 
-        joern_port = await _load_serving_port(joern_server_manager, codebase_hash, container_cpg_path)
+        load_result = await _load_cpg_for_serving(joern_server_manager, codebase_hash, container_cpg_path)
         if renew_claim and not await renew_claim():
             return
+        joern_port = load_result.port
         if not joern_port:
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash, joern_port=None, metadata=_CPG_LOAD_FAILURE,
             )
             return
 
-        # Final metadata update preserves the container paths recorded above.
-        # Record the verified user-method count (coverage sanity check) when the
-        # load reported one, so get_cpg_status can surface user_method_count.
         ready_meta = {
             "status": "ready",
             "phase": "ready",
             "container_codebase_path": f"/playground/codebases/{codebase_hash}",
             "container_cpg_path": container_cpg_path,
+            "user_method_count": load_result.user_method_count,
         }
-        user_method_count = getattr(joern_server_manager, "_last_user_method_count", None)
-        if user_method_count is not None:
-            ready_meta["user_method_count"] = user_method_count
         codebase_tracker.update_codebase(
             codebase_hash=codebase_hash,
             cpg_path=cpg_path,

@@ -61,16 +61,6 @@ class JoernServerClient:
         self.base_url = f"http://{host}:{port}"
         self.auth = (username, password) if username and password else None
         self.config = config or {}
-        # Cause of the most recent load_cpg() (one of the _VERIFY_* constants) so
-        # callers can distinguish a genuinely empty build (no retry) from a
-        # transient load failure (retryable). Captured before the server is torn
-        # down, since termination drops this client.
-        self.last_load_outcome: Optional[str] = None
-        # User-defined method count from the most recent load verify, so the
-        # caller can surface coverage (a sanity check that the build wasn't
-        # silently empty / mostly-gated). None until a verify has run.
-        self.last_user_method_count: Optional[int] = None
-
         # Initialize session with connection pooling
         self.session = self._create_session()
 
@@ -309,6 +299,12 @@ class JoernServerClient:
         return (self._VERIFY_ERROR, None)
 
     def load_cpg(self, cpg_path: str, project_name: Optional[str] = None, timeout: int = 600) -> bool:
+        outcome, _ = self.load_cpg_with_result(cpg_path, project_name, timeout)
+        return outcome == self._VERIFY_OK
+
+    def load_cpg_with_result(
+        self, cpg_path: str, project_name: Optional[str] = None, timeout: int = 600
+    ) -> tuple[str, Optional[int]]:
         """
         Load a CPG file into the Joern server.
 
@@ -326,7 +322,7 @@ class JoernServerClient:
             timeout: Maximum time to wait for the import (seconds)
 
         Returns:
-            True if a non-empty CPG was loaded and verified, False otherwise.
+            The verification outcome and verified user-method count.
         """
         proj = _safe_project_name(project_name or cpg_path)
         query = self._import_query(cpg_path, proj)
@@ -344,12 +340,9 @@ class JoernServerClient:
                 # The import statement itself blew up; a verify poll can still
                 # confirm a prior successful load in rare connection-reset cases.
                 outcome, count = self._verify_loaded(verify_deadline)
-                self.last_load_outcome = outcome
-                self.last_user_method_count = count
                 if outcome == self._VERIFY_OK:
                     logger.info(f"CPG verified despite import exception: {count} methods")
-                    return True
-                return False
+                return outcome, count
 
             if not result.get("success"):
                 error_msg = result.get("stderr", "") or ""
@@ -361,17 +354,15 @@ class JoernServerClient:
                 )
 
             outcome, count = self._verify_loaded(verify_deadline)
-            self.last_load_outcome = outcome
-            self.last_user_method_count = count
             if outcome == self._VERIFY_OK:
                 logger.info(f"CPG verified: {count} methods found")
-                return True
+                return outcome, count
             if outcome == self._VERIFY_EMPTY:
                 logger.error(
                     f"CPG loaded but is empty (0 user-defined methods) for {cpg_path} "
                     f"— treating as a failed/empty build"
                 )
-                return False
+                return outcome, count
             if outcome == self._VERIFY_NO_PROJECT and attempt == 0:
                 logger.warning(
                     f"No project open after import of {cpg_path} — re-importing once"
@@ -380,8 +371,8 @@ class JoernServerClient:
             logger.error(
                 f"Failed to load CPG from {cpg_path} (verify outcome: {outcome})"
             )
-            return False
+            return outcome, count
 
-        return False
+        return self._VERIFY_ERROR, None
 
 
