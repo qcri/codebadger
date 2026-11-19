@@ -50,11 +50,10 @@ def pool(monkeypatch):
     return m, fake
 
 
-def test_pool_construction_uses_worker_port_range_and_cleans_orphans(pool):
-    m, fake = pool
+def test_pool_construction_uses_worker_port_range(pool):
+    m, _ = pool
     assert m.worker_mode == "pool"
     assert (m.port_manager.port_min, m.port_manager.port_max) == (14000, 14999)
-    fake.containers.list.assert_called_once()  # orphan sweep at startup
 
 
 def test_pool_spawn_runs_capped_container(pool, monkeypatch):
@@ -69,6 +68,7 @@ def test_pool_spawn_runs_capped_container(pool, monkeypatch):
     assert kwargs["mem_limit"] == "8192m"
     assert kwargs["ports"] == {"8080/tcp": ("127.0.0.1", port)}
     assert kwargs["labels"]["codebadger.role"] == "joern-worker"
+    assert kwargs["labels"]["codebadger.deployment"] == m.container_name
     assert kwargs["command"][:2] == ["/opt/joern/joern-cli/joern", "--server"]
     assert "JAVA_OPTS" in kwargs["environment"] and "-Xmx6G" in kwargs["environment"]["JAVA_OPTS"]
 

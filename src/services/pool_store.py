@@ -64,10 +64,10 @@ class RedisPoolStore:
                 pass
 
     @contextmanager
-    def spawn_lock(self, codebase_hash: str) -> Iterator[None]:
+    def spawn_lock(self, codebase_hash: str, *, blocking: bool = True) -> Iterator[None]:
         """Per-CPG lock so only one process spawns a given CPG at a time."""
         lock = self.r.lock(f"cb:pool:spawn:{codebase_hash}", timeout=self._spawn_timeout,
-                            blocking=True, blocking_timeout=self._spawn_timeout)
+                            blocking=blocking, blocking_timeout=self._spawn_timeout)
         if not lock.acquire():
             raise TimeoutError(f"Could not acquire spawn lock for {codebase_hash}")
         try:

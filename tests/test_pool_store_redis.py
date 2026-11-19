@@ -8,6 +8,7 @@ CODEBADGER_TEST_REDIS_URL to run them.
 
 import os
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -34,8 +35,47 @@ def _make_manager(monkeypatch, budget_mb, redis_url):
 
 
 def test_pool_without_redis_is_in_process(monkeypatch):
-    m, _ = _make_manager(monkeypatch, 6144, redis_url="")
+    m, fake = _make_manager(monkeypatch, 6144, redis_url="")
     assert m._redis_pool is None  # no REDIS_URL -> single-process pool state
+    fake.containers.list.assert_not_called()
+
+
+@redis_only
+def test_startup_preserves_registered_workers_and_removes_scoped_orphans(monkeypatch):
+    first, docker_client = _make_manager(monkeypatch, 6144, REDIS_URL)
+    live_hash = uuid4().hex[:16]
+    booting_hash = uuid4().hex[:16]
+    port = first.spawn_server(live_hash)
+    reserved_mb = first._redis_pool.total_reserved_mb()
+
+    def worker(codebase_hash, deployment=first.container_name):
+        labels = {"codebadger.role": "joern-worker", "codebadger.hash": codebase_hash}
+        if deployment:
+            labels["codebadger.deployment"] = deployment
+        container = MagicMock(labels=labels)
+        container.name = first._worker_name(codebase_hash)
+        return container
+
+    live = worker(live_hash)
+    booting = worker(booting_hash)
+    orphan = worker(uuid4().hex[:16])
+    foreign = worker(uuid4().hex[:16], "another-build-container")
+    legacy = worker(uuid4().hex[:16], None)
+    unrelated = worker(uuid4().hex[:16])
+    unrelated.labels["codebadger.role"] = "builder"
+    docker_client.containers.list.return_value = [live, booting, orphan, foreign, legacy, unrelated]
+    try:
+        with first._redis_pool.spawn_lock(booting_hash):
+            second = jsm.JoernServerManager(config=first.config, redis_url=REDIS_URL)
+
+        assert second.get_server_port(live_hash) == port
+        assert second._redis_pool.get_worker(live_hash) == first._worker_name(live_hash)
+        assert second._redis_pool.total_reserved_mb() == reserved_mb
+        orphan.remove.assert_called_once_with(force=True)
+        for container in (live, booting, foreign, legacy, unrelated):
+            container.remove.assert_not_called()
+    finally:
+        first._redis_pool.release(live_hash)
 
 
 @redis_only
