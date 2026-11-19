@@ -336,7 +336,7 @@ Examples:
             )
 
             if not result.success:
-                raise ToolError(f"QUERY_ERROR: {result.error or 'Call graph query failed'} Hint: verify the CPG is ready and narrow the method/depth filters.")
+                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'Call graph query failed'} Hint: verify the CPG is ready and narrow the method/depth filters.")
             summary = unwrap_result(result)
             if detail == "compact" and len(summary) > 2000:
                 summary = summary[:2000].rstrip() + "\n...[truncated; use detail='full']"
@@ -345,6 +345,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: check direction and keep depth between 1 and 15.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -627,11 +629,13 @@ Examples:
                 output = result.data[0] if isinstance(result.data, list) else str(result.data)
                 return {"success": True, "summary": output.strip()}
             else:
-                raise ToolError(f"QUERY_ERROR: {result.error if not result.success else 'No data returned'} Hint: verify the CPG is ready and use a relative filename:line location.")
+                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error if not result.success else 'No data returned'} Hint: verify the CPG is ready and use a relative filename:line location.")
 
         except ValidationError as e:
             logger.error(f"Error finding bounds checks: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide buffer_access_location as filename:line.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -823,12 +827,14 @@ Examples:
             )
 
             if not result.success:
-                raise ToolError(f"QUERY_ERROR: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower max_nodes for large methods.")
+                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower max_nodes for large methods.")
             return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
             logger.error(f"Error getting CFG: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid codebase hash and method name.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error getting CFG: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
