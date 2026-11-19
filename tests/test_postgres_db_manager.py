@@ -5,11 +5,10 @@ Needs a real Postgres — set CODEBADGER_TEST_PG_DSN to run; skipped otherwise.
 
 import os
 import threading
+from contextlib import closing
 
+import psycopg
 import pytest
-
-PG_DSN = os.getenv("CODEBADGER_TEST_PG_DSN")
-pg = pytest.mark.skipif(not PG_DSN, reason="set CODEBADGER_TEST_PG_DSN to run Postgres tests")
 
 
 def test_construction_does_not_connect():
@@ -19,18 +18,22 @@ def test_construction_does_not_connect():
 
 
 @pytest.fixture
-def db():
+def db(isolated_pg_dsn):
     from src.utils.postgres_db_manager import PostgresDBManager
-    m = PostgresDBManager(PG_DSN)
-    m.init_schema()
-    import psycopg
-    with psycopg.connect(PG_DSN) as conn:
-        conn.execute("TRUNCATE codebases, tool_cache, findings, jobs RESTART IDENTITY")
-        conn.commit()
-    return m
+    with closing(PostgresDBManager(isolated_pg_dsn)) as manager:
+        manager.init_schema()
+        yield manager
 
 
-@pg
+def test_store_tables_are_isolated_from_base_dsn(db):
+    with psycopg.connect(os.environ["CODEBADGER_TEST_PG_DSN"]) as base, db._connect() as store:
+        for table in ("codebases", "tool_cache", "findings", "jobs"):
+            query = "SELECT to_regclass(%s)::oid AS oid"
+            base_oid = base.execute(query, (table,)).fetchone()[0]
+            test_oid = store.execute(query, (table,)).fetchone()["oid"]
+            assert test_oid is not None and test_oid != base_oid
+
+
 def test_codebase_crud_and_created_at_preserved(db):
     db.save_codebase({"hash": "h1", "source_type": "github", "source_path": "u/r",
                       "language": "c", "metadata": {"status": "ready"}})
@@ -49,7 +52,6 @@ def test_codebase_crud_and_created_at_preserved(db):
     assert db.get_codebase("h1") is None
 
 
-@pg
 def test_update_codebase_merges_metadata_atomically(db):
     db.save_codebase({"hash": "h1", "source_type": "github", "source_path": "u/r",
                       "language": "c", "joern_port": 13371, "metadata": {"status": "ready"}})
@@ -62,7 +64,6 @@ def test_update_codebase_merges_metadata_atomically(db):
     assert db.update_codebase("missing", {"metadata": {"a": 1}}) is False
 
 
-@pg
 def test_update_codebase_concurrent_merges_keep_all_keys(db):
     """FOR UPDATE serializes concurrent metadata merges so no writer's key is lost."""
     db.save_codebase({"hash": "h1", "source_type": "github", "source_path": "u/r",
@@ -88,7 +89,6 @@ def test_update_codebase_concurrent_merges_keep_all_keys(db):
     assert db.get_codebase("h1")["metadata"] == {f"k{i}": i for i in range(n)}
 
 
-@pg
 def test_tool_cache_roundtrip_ttl_and_cap(db, monkeypatch):
     db.cache_tool_output("list_methods", "h1", {"q": 1}, {"rows": [1, 2, 3]})
     assert db.get_cached_tool_output("list_methods", "h1", {"q": 1}) == {"rows": [1, 2, 3]}
@@ -101,7 +101,6 @@ def test_tool_cache_roundtrip_ttl_and_cap(db, monkeypatch):
     assert db.get_cached_tool_output("big", "h1", {"q": 2}) is None
 
 
-@pg
 def test_findings_save_filter_and_stats(db):
     db.save_findings_batch([
         {"codebase_hash": "h1", "finding_type": "uaf", "severity": "critical",
@@ -128,7 +127,6 @@ def test_findings_save_filter_and_stats(db):
     assert db.get_findings_stats("h1")["total"] == 0
 
 
-@pg
 def test_job_methods_inherited(db):
     jid, status = db.enqueue_job("h1", "generate_cpg", {"language": "c"})
     assert status == "submitted"

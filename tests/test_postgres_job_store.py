@@ -1,16 +1,12 @@
 """Tests for the Phase-3b Postgres job store.
 
 The roundtrip/SKIP-LOCKED tests need a real Postgres — set CODEBADGER_TEST_PG_DSN
-(e.g. postgresql://codebadger:codebadger@localhost:55432/codebadger) to run them;
-they're skipped otherwise. Construction is always tested (must not connect).
+to run them. Construction is always tested (must not connect).
 """
 
-import os
+from contextlib import closing
 
 import pytest
-
-PG_DSN = os.getenv("CODEBADGER_TEST_PG_DSN")
-pg = pytest.mark.skipif(not PG_DSN, reason="set CODEBADGER_TEST_PG_DSN to run Postgres tests")
 
 
 def test_construction_does_not_connect():
@@ -21,19 +17,13 @@ def test_construction_does_not_connect():
 
 
 @pytest.fixture
-def store():
+def store(isolated_pg_dsn):
     from src.utils.postgres_job_store import PostgresJobStore
-    s = PostgresJobStore(PG_DSN)
-    s.init_schema()
-    # Clean slate.
-    import psycopg
-    with psycopg.connect(PG_DSN) as conn:
-        conn.execute("TRUNCATE jobs RESTART IDENTITY")
-        conn.commit()
-    return s
+    with closing(PostgresJobStore(isolated_pg_dsn)) as job_store:
+        job_store.init_schema()
+        yield job_store
 
 
-@pg
 def test_enqueue_claim_complete(store):
     jid, status = store.enqueue_job("h1", "generate_cpg", {"language": "c"})
     assert status == "submitted" and jid
@@ -49,7 +39,6 @@ def test_enqueue_claim_complete(store):
     assert store.get_job(jid)["status"] == "done"
 
 
-@pg
 def test_dedup_backpressure_and_skiplocked(store):
     id1, s1 = store.enqueue_job("h1", "generate_cpg", {})
     id2, s2 = store.enqueue_job("h1", "generate_cpg", {})
@@ -67,7 +56,6 @@ def test_dedup_backpressure_and_skiplocked(store):
     assert store.claim_next_job("generate_cpg") is None
 
 
-@pg
 def test_requeue_running(store):
     jid, _ = store.enqueue_job("h1", "generate_cpg", {})
     store.claim_next_job("generate_cpg")
