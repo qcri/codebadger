@@ -26,33 +26,34 @@ def validate_source_type(source_type: str) -> None:
         )
 
 
-# Single source of truth for the languages Joern can build a CPG for. Reused by
-# validate_language and the snippet helpers so error messages can list the exact
-# accepted ids and the LLM can self-correct in one shot.
-SUPPORTED_LANGUAGES = [
-    "java",
-    "c",
-    "cpp",
-    "javascript",
-    "python",
-    "go",
-    "kotlin",
-    "csharp",
-    "ghidra",
-    "jimple",
-    "php",
-    "ruby",
-    "swift",
-    "rust",
-]
+# The languages Joern can build a CPG for come from defaults.SUPPORTED_LANGUAGES
+# (re-exported here for the snippet helpers). A deployment may narrow them with
+# cpg.supported_languages; effective_languages() is what discovery, the
+# generate_cpg schema, and admission all use.
+SUPPORTED_LANGUAGES = list(defaults.SUPPORTED_LANGUAGES)
 
 
-def validate_language(language: str) -> None:
-    """Validate programming language"""
-    if language not in SUPPORTED_LANGUAGES:
+def effective_languages(config=None) -> list:
+    """Configured languages that have a Joern frontend, in configured order."""
+    configured = getattr(getattr(config, "cpg", None), "supported_languages", None)
+    if isinstance(configured, (list, tuple)):
+        languages = [lang for lang in configured if lang in defaults.LANGUAGE_COMMANDS]
+        if languages:
+            return languages
+        logger.warning(
+            "cpg.supported_languages names no language with a Joern frontend; "
+            "falling back to all supported languages"
+        )
+    return list(defaults.SUPPORTED_LANGUAGES)
+
+
+def validate_language(language: str, allowed=None) -> None:
+    """Validate programming language against the effective list (all by default)."""
+    allowed = list(allowed) if allowed is not None else SUPPORTED_LANGUAGES
+    if language not in allowed:
         raise ValidationError(
             f"Unsupported language '{language}'. Use one of the supported ids: "
-            f"{', '.join(SUPPORTED_LANGUAGES)}."
+            f"{', '.join(allowed)}."
         )
 
 

@@ -59,6 +59,9 @@ cpg:
   large_project_guard: ${CPG_LARGE_PROJECT_GUARD:true}
   large_project_max_mb: ${CPG_LARGE_PROJECT_MAX_MB:2000}
   large_project_max_loc: ${CPG_LARGE_PROJECT_MAX_LOC:2000000}
+  # Languages this deployment accepts. This one list drives generate_cpg
+  # admission, its `language` enum, and the codebadger://supported-languages
+  # resource. Remove entries to narrow it; unknown names are ignored.
   supported_languages:
     - java
     - c
