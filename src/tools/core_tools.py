@@ -20,7 +20,7 @@ import re
 import shlex
 import shutil
 import tarfile
-from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Set
+from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Literal, Set
 from pydantic import Field
 
 from ..defaults import (
@@ -1958,7 +1958,7 @@ Examples:
     )""",
     )
     async def generate_cpg(
-        source_type: Annotated[str, Field(description="One of 'local', 'github', or 'snippet' (code pasted directly into the chat)")],
+        source_type: Annotated[Literal["local", "github", "snippet"], Field(description="'local' path, 'github' URL, or 'snippet' (code pasted directly into the chat)")],
         source_path: Annotated[Optional[str], Field(description="REQUIRED for local (absolute path to source directory) and github (an https URL on github.com or gitlab.com ONLY, e.g. https://github.com/user/repo; additionally ssh:// URLs on hosts the operator allowlisted via GIT_CLONE_EXTRA_HOSTS, e.g. ssh://git@192.168.152.14:3000/user/repo.git — embedded credentials are always rejected). OPTIONAL for snippet: a short human label for the pasted code (e.g. a function name); when omitted the server derives one from the filename/language.")] = None,
         language: Annotated[str, Field(description="Programming language - one of: java, c, cpp, javascript, python, go, kotlin, csharp, ghidra, jimple, php, ruby, swift. REQUIRED for local/github. For a snippet whose code carries a <code language=\"...\"> tag, the tag's language wins and this is optional.")] = "",
         code: Annotated[Optional[str], Field(description="Required when source_type='snippet'. Wrap the code in a <code language=\"LANG\"> ... </code> tag where LANG is a supported language id, e.g. <code language=\"c\">int main(){...}</code>. Multiple blocks are concatenated but must share one language. Ignored for local/github.")] = None,

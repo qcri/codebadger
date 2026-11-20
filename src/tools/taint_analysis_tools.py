@@ -832,7 +832,7 @@ Examples:
         max_results: Annotated[int, Field(description="Maximum flows to return")] = 20,
         timeout: Annotated[int, Field(description="Query timeout in seconds (default 120 for manual, 300 for auto)")] = 120,
         detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact bounds the rendered flow report")] = "compact",
-        mode: Annotated[Optional[str], Field(description="Set to 'auto' for batch analysis with all default sources/sinks. Omit for manual mode.")] = None,
+        mode: Annotated[Optional[Literal["auto"]], Field(description="Set to 'auto' for batch analysis with all default sources/sinks. Omit for manual mode.")] = None,
         language: Annotated[Optional[str], Field(description="(Auto mode) Programming language for default patterns. Auto-detected if omitted.")] = None,
         source_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default source function names (e.g., ['getenv', 'read'])")] = None,
         sink_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sink function names (e.g., ['system', 'strcpy'])")] = None,
@@ -1059,7 +1059,7 @@ Examples:
     def get_program_slice(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         location: Annotated[str, Field(description="'filename:line' or 'filename:line:call_name'. Example: 'main.c:42' or 'main.c:42:memcpy'")],
-        direction: Annotated[str, Field(description="Slice direction: 'backward' or 'forward'")] = "backward",
+        direction: Annotated[Literal["backward", "forward"], Field(description="Slice direction: 'backward' or 'forward'")] = "backward",
         max_depth: Annotated[int, Field(description="Maximum depth for recursive dependency tracking")] = 5,
         include_control_flow: Annotated[bool, Field(description="Include control dependencies (if/while conditions)")] = True,
         timeout: Annotated[int, Field(description="Maximum execution time in seconds")] = 60,
@@ -1169,7 +1169,7 @@ Examples:
         codebase_hash: str,
         location: str,
         variable: str,
-        direction: str = "backward",
+        direction: Literal["backward", "forward"] = "backward",
         detail: Literal["compact", "full"] = "compact",
     ) -> Dict[str, Any]:
         """Analyze variable data dependencies in backward or forward direction."""

@@ -324,7 +324,7 @@ Examples:
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         method_name: Annotated[Optional[str], Field(description="Name of the method to analyze (regex; must match one method)")] = None,
         depth: Annotated[int, Field(description="How many levels deep to traverse (max recommended: 10)")] = 5,
-        direction: Annotated[str, Field(description="Either 'outgoing' (callees) or 'incoming' (callers)")] = "outgoing",
+        direction: Annotated[Literal["outgoing", "incoming"], Field(description="'outgoing' (callees) or 'incoming' (callers)")] = "outgoing",
         detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact returns a bounded summary")] = "compact",
         method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
