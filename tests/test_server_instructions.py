@@ -32,3 +32,10 @@ async def test_instructions_name_only_registered_tools():
 
 def test_server_publishes_the_instructions():
     assert main.mcp.instructions == main.SERVER_INSTRUCTIONS
+
+
+def test_server_reports_codebadger_version():
+    from src import __version__
+
+    assert main.VERSION == __version__
+    assert main.mcp.version == __version__
