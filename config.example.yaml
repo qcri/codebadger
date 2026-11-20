@@ -970,6 +970,16 @@ query:
   cache_enabled: ${QUERY_CACHE_ENABLED:true}
   cache_ttl: ${QUERY_CACHE_TTL:300}
 
+# Periodic deletion of expired tool-cache rows and old finished build jobs.
+# Queued and running jobs are never deleted; cache rows younger than
+# query.cache_ttl are kept even if cache_max_age_seconds is lower.
+# job_max_age_hours: 0 keeps finished-job history forever.
+retention:
+  enabled: ${RETENTION_ENABLED:true}
+  interval_seconds: ${RETENTION_INTERVAL_SECONDS:3600}
+  cache_max_age_seconds: ${RETENTION_CACHE_MAX_AGE_SECONDS:3600}
+  job_max_age_hours: ${RETENTION_JOB_MAX_AGE_HOURS:168}
+
 storage:
   workspace_root: ${WORKSPACE_ROOT:/tmp/codebadger}
   cleanup_on_shutdown: ${CLEANUP_ON_SHUTDOWN:true}

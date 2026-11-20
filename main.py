@@ -24,6 +24,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from src.tools.argument_errors import ArgumentValidationMiddleware
 from src.tools.mcp_tools import apply_disabled_tool_tags
+from src.utils.cache_cleanup import CacheCleanupScheduler
 from src.config import load_config
 from src import defaults
 from src.tools.core_tools import CPGGenerationQueue, DurableCPGQueue, _cpg_gc_loop, _schedule_restart_server_task
@@ -185,6 +186,10 @@ async def _graceful_shutdown():
             status_log_task.cancel()
             with suppress(asyncio.CancelledError):
                 await status_log_task
+
+        retention_sweeper = services.get('retention_sweeper')
+        if retention_sweeper:
+            retention_sweeper.stop()
 
         cpg_gc_task = services.get('cpg_gc_task')
         if cpg_gc_task:
@@ -570,6 +575,12 @@ async def app_lifespan(server: FastMCP):
         if config.cpg.gc_enabled:
             services['cpg_gc_task'] = asyncio.create_task(_cpg_gc_loop(services, config))
 
+        # Retention sweep: expired tool-cache rows and old done/failed jobs.
+        sweeper = _retention_sweeper(config, services['db_manager'])
+        if sweeper:
+            services['retention_sweeper'] = sweeper
+            sweeper.start()
+
         logger.info("All services initialized")
         _log_effective_config(config)
         logger.info("CodeBadger Server is ready")
@@ -633,6 +644,23 @@ mcp = FastMCP(
 mcp.add_middleware(ArgumentValidationMiddleware())
 apply_disabled_tool_tags(mcp, os.getenv("CODEBADGER_DISABLED_TOOL_TAGS", ""))
 # Tools are registered inside the lifespan (app_lifespan), not here.
+
+
+def _retention_sweeper(config, db_manager):
+    """Build the retention sweeper from config, or None when disabled."""
+    retention = config.retention
+    if not retention.enabled:
+        return None
+    return CacheCleanupScheduler(
+        db_manager,
+        cleanup_interval_seconds=max(60, retention.interval_seconds),
+        # Never delete cache rows that reads could still return.
+        max_age_seconds=max(retention.cache_max_age_seconds, config.query.cache_ttl),
+        # 0 or less keeps finished-job history forever.
+        job_max_age_seconds=(
+            retention.job_max_age_hours * 3600 if retention.job_max_age_hours > 0 else None
+        ),
+    )
 
 
 def _uptime_seconds() -> float:

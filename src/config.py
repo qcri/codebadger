@@ -11,6 +11,7 @@ from .models import (
     CPGConfig,
     JoernConfig,
     QueryConfig,
+    RetentionConfig,
     ServerConfig,
     StorageConfig,
     TelemetryConfig,
@@ -121,6 +122,12 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
                 otlp_protocol=os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
             ),
+            retention=RetentionConfig(
+                enabled=os.getenv("RETENTION_ENABLED", "true").lower() not in ("false", "0", "no", "off"),
+                interval_seconds=int(os.getenv("RETENTION_INTERVAL_SECONDS", "3600")),
+                cache_max_age_seconds=int(os.getenv("RETENTION_CACHE_MAX_AGE_SECONDS", "3600")),
+                job_max_age_hours=int(os.getenv("RETENTION_JOB_MAX_AGE_HOURS", "168")),
+            ),
         )
 
 
@@ -203,4 +210,5 @@ def _dict_to_config(data: dict) -> Config:
         query=convert_config_section(QueryConfig, data.get("query", {})),
         storage=convert_config_section(StorageConfig, data.get("storage", {})),
         telemetry=convert_config_section(TelemetryConfig, data.get("telemetry", {})),
+        retention=convert_config_section(RetentionConfig, data.get("retention", {})),
     )
