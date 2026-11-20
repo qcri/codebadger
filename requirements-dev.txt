@@ -1,0 +1,7 @@
+# Developer tooling (formatting, linting, type checks). Not installed in any image.
+# Install with: pip install -r requirements.txt -r requirements-test.txt -r requirements-dev.txt
+black==26.5.1
+isort==8.0.1
+flake8==7.3.0
+mypy==2.1.0
+autopep8==2.3.2
