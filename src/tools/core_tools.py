@@ -34,6 +34,8 @@ from ..utils.build_scoping import combine_exclude_regexes, scope_exclude_regex
 from ..utils.compile_db import find_compile_db, prepare_container_compile_db
 from ..utils.postgres_job_store import JOB_LEASE_SECONDS
 from ..models import CodebaseInfo, CPGLoadResult, SessionStatus
+from fastmcp.exceptions import ToolError
+
 from ._common import tool_error
 from ..utils.validators import (
     effective_languages,
@@ -3030,6 +3032,139 @@ Notes:
             raise tool_error(
                 "INTERNAL_ERROR", sanitize_error_text(str(e)), "retry shortly."
             ) from e
+
+    def _durable_job_store():
+        queue = services.get("cpg_queue")
+        if not getattr(type(queue), "supports_job_ids", False):
+            raise tool_error(
+                "NOT_SUPPORTED",
+                "Build jobs have ids only with the durable queue (cpg.queue_backend: durable).",
+                "poll get_cpg_status instead.",
+            )
+        return queue.store
+
+    @mcp.tool(
+        title="List CPG Build Jobs",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "jobs": {"type": "array", "items": {"type": "object", "properties": {
+                    "id": {"type": "integer"}, "codebase_hash": {"type": "string"},
+                    "job_type": {"type": "string"}, "status": {"type": "string"},
+                    "attempts": {"type": "integer"}, "created_at": {"type": "string"},
+                    "updated_at": {"type": "string"}, "error": {"type": ["string", "null"]},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "page": {"type": "integer"}, "page_size": {"type": "integer"},
+                "total_pages": {"type": "integer"}, "truncated": {"type": "boolean"},
+            },
+            "required": ["success", "jobs", "total", "truncated"],
+            "additionalProperties": False,
+        },
+        description="""List CPG build jobs, newest first: queued, running, done, failed, or cancelled.
+
+Use the job_id that generate_cpg returns to follow or cancel a build. Filter by
+codebase_hash or status; results are paged (page_size capped at 100).
+
+Example:
+    list_cpg_jobs(codebase_hash="abc1234567890def")""",
+    )
+    def list_cpg_jobs(
+        codebase_hash: Annotated[Optional[str], Field(description="Only jobs for this codebase")] = None,
+        status: Annotated[Optional[Literal["queued", "running", "done", "failed", "cancelled"]], Field(description="Only jobs in this status")] = None,
+        page: Annotated[int, Field(description="1-based page", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Jobs per page (1-100)", ge=1, le=100)] = 20,
+    ) -> Dict[str, Any]:
+        """Bounded build-job history."""
+        try:
+            if codebase_hash:
+                validate_codebase_hash(codebase_hash)
+            store = _durable_job_store()
+            jobs, total = store.list_jobs(
+                codebase_hash=codebase_hash, status=status,
+                offset=(page - 1) * page_size, limit=page_size,
+            )
+        except ValidationError as e:
+            raise tool_error("VALIDATION_ERROR", str(e), "pass a 16-character codebase_hash.") from e
+        except ToolError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to list CPG jobs: {e}", exc_info=True)
+            raise tool_error("INTERNAL_ERROR", sanitize_error_text(str(e)), "retry shortly.") from e
+        return {
+            "success": True,
+            "jobs": [{**job, "error": job.get("error")} for job in jobs],
+            "total": total,
+            "returned": len(jobs),
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+            "truncated": (page - 1) * page_size + len(jobs) < total,
+        }
+
+    @mcp.tool(
+        title="Cancel Queued CPG Build",
+        annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"}, "job_id": {"type": "integer"},
+                "cancelled": {"type": "boolean"},
+                "status": {"type": "string", "enum": ["queued", "running", "done", "failed", "cancelled"]},
+                "codebase_hash": {"type": "string"}, "message": {"type": "string"},
+            },
+            "required": ["success", "job_id", "cancelled", "status", "message"],
+            "additionalProperties": False,
+        },
+        description="""Cancel a CPG build that is still queued (job_id from generate_cpg or list_cpg_jobs).
+
+Only queued work can be cancelled; existing CPGs are never touched. If a build
+worker claims the job first, the claim wins: the reply has cancelled=false and
+the job's actual status (e.g. "running"). After a cancel, get_cpg_status shows
+status "failed" with error_code CANCELLED, and generate_cpg can submit again.
+
+Example:
+    cancel_cpg_job(job_id=42)""",
+    )
+    def cancel_cpg_job(
+        job_id: Annotated[int, Field(description="The build job id", ge=1)],
+    ) -> Dict[str, Any]:
+        """Atomically cancel a queued build job."""
+        try:
+            store = _durable_job_store()
+            cancelled, status, codebase_hash = store.cancel_queued_job(job_id)
+            if status is None:
+                raise ValidationError(f"Build job {job_id} not found")
+            if cancelled and codebase_hash:
+                tracker = services["codebase_tracker"]
+                info = tracker.get_codebase(codebase_hash)
+                if info and (info.metadata or {}).get("status") == SessionStatus.GENERATING:
+                    tracker.update_codebase(
+                        codebase_hash=codebase_hash,
+                        metadata={
+                            "status": SessionStatus.FAILED, "phase": "cancelled",
+                            "error_code": "CANCELLED", "error": "Build cancelled while queued.",
+                            "generation_deadline": None,
+                        },
+                    )
+        except ValidationError as e:
+            raise tool_error("VALIDATION_ERROR", str(e), "list jobs with list_cpg_jobs.") from e
+        except ToolError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to cancel CPG job {job_id}: {e}", exc_info=True)
+            raise tool_error("INTERNAL_ERROR", sanitize_error_text(str(e)), "retry shortly.") from e
+        message = (
+            "Cancelled while queued." if cancelled
+            else f"Not cancelled: the job is already {status}."
+        )
+        reply = {"success": True, "job_id": job_id, "cancelled": cancelled, "status": status,
+                 "message": message}
+        if codebase_hash:
+            reply["codebase_hash"] = codebase_hash
+        return reply
 
     @mcp.tool(
         title="Remove or Evict CPG",

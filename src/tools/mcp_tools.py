@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 # One group tag per tool. Operators can hide whole groups with
 # CODEBADGER_DISABLED_TOOL_TAGS (e.g. "admin,raw"); see apply_disabled_tool_tags.
 TOOL_GROUPS = {
-    "build": {"generate_cpg", "get_cpg_status", "get_backend_status"},
+    "build": {
+        "generate_cpg", "get_cpg_status", "get_backend_status", "list_cpg_jobs", "cancel_cpg_job",
+    },
     "admin": {"remove_cpg"},
     "browse": {
         "list_methods", "list_calls", "list_parameters", "get_call_graph", "get_cfg",
