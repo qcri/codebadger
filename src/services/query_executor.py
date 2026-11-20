@@ -164,10 +164,12 @@ class QueryExecutor:
                             execution_time=time.time() - start_time,
                         )
 
-                    normalized_query = self._normalize_query(query, limit)
+                    normalized_query, server_cap = self._plan_query(query, limit)
                     logger.debug(f"Normalized query for execution: {normalized_query}")
 
-                    result = self._execute_via_client(joern_client, normalized_query, timeout)
+                    result = self._execute_via_client(
+                        joern_client, normalized_query, timeout, server_cap=server_cap
+                    )
                     result.execution_time = time.time() - start_time
                     span.set_attribute("query.execution_time_s", result.execution_time)
                     span.set_attribute("query.success", result.success)
@@ -221,7 +223,16 @@ class QueryExecutor:
                 )
 
     def _normalize_query(self, query: str, limit: Optional[int] = None) -> str:
-        """Normalize a query to a JSON-producing form.
+        """Return only the normalized query text; see _plan_query."""
+        return self._plan_query(query, limit)[0]
+
+    def _plan_query(self, query: str, limit: Optional[int] = None) -> tuple[str, Optional[int]]:
+        """Normalize a query to a JSON-producing form and report any server-imposed row cap.
+
+        Returns (normalized_query, server_cap). When the server picks or clamps the limit,
+        the query fetches server_cap + 1 rows so the caller can trim the extra row and know
+        the cap cut results off. An explicit caller limit within bounds is authoritative and
+        yields server_cap=None.
 
         The result is serialized with `.toJsonPretty` (parsed back by _parse_output) — the
         JSON path is kept as the default. The one fix over the naive version is that the
@@ -242,7 +253,7 @@ class QueryExecutor:
                     or '.toJsonPretty' in query
                     or '.toJson' in query
                     or '.toString()' in query[-50:]):
-                return query
+                return query, None
 
         # Remove existing output modifiers from the end
         if query.endswith('.toJsonPretty'):
@@ -259,25 +270,37 @@ class QueryExecutor:
         # Auto-cap dataflow queries that are not already limited — they fan out over the
         # entire identifier set and return enormous result sets if unconstrained.
         is_size_query = bool(re.search(r"\.size\s*$", base_query))
-        if limit is None and any(p in base_query for p in _DATAFLOW_PATTERNS):
-            limit = _DATAFLOW_RESULT_LIMIT
-        # Cap any otherwise-unbounded query (e.g. a raw `cpg.method.l`) so it can't
-        # stream the whole graph back. Clamp explicit limits to the same ceiling.
-        if limit is None and not is_size_query:
-            limit = MAX_RESULT_ROWS
+        server_cap: Optional[int] = None
+        if not is_size_query:
+            if limit is None:
+                # Dataflow queries fan out over the whole identifier set; anything else
+                # unbounded (e.g. a raw `cpg.method.l`) could stream the whole graph back.
+                if any(p in base_query for p in _DATAFLOW_PATTERNS):
+                    server_cap = _DATAFLOW_RESULT_LIMIT
+                else:
+                    server_cap = MAX_RESULT_ROWS
+            elif limit > MAX_RESULT_ROWS:
+                server_cap = MAX_RESULT_ROWS
 
         # Parenthesise so the appended .take/.toJsonPretty/.toString bind to the WHOLE
         # expression (a `++` chain otherwise binds them to its last operand only).
         base_query = f"({base_query})"
-        if limit is not None and limit > 0 and not is_size_query:
-            limit = min(limit, MAX_RESULT_ROWS)
+        if server_cap is not None:
+            base_query = f"{base_query}.take({server_cap + 1})"
+        elif limit is not None and limit > 0 and not is_size_query:
             base_query = f"{base_query}.take({limit})"
 
         if is_size_query:
-            return f"{base_query}.toString"
-        return f"{base_query}.toJsonPretty"
+            return f"{base_query}.toString", None
+        return f"{base_query}.toJsonPretty", server_cap
 
-    def _execute_via_client(self, joern_client: 'JoernServerClient', query: str, timeout: int) -> QueryResult:
+    def _execute_via_client(
+        self,
+        joern_client: 'JoernServerClient',
+        query: str,
+        timeout: int,
+        server_cap: Optional[int] = None,
+    ) -> QueryResult:
         """Execute query using Joern server client"""
         try:
             logger.debug(f"Executing query via Joern client: {query[:100]}...")
@@ -293,8 +316,9 @@ class QueryExecutor:
                     stdout = stdout[:MAX_QUERY_OUTPUT_BYTES]
                     truncated = True
                 data = self._parse_output(stdout)
-                if isinstance(data, list) and len(data) > MAX_RESULT_ROWS:
-                    data = data[:MAX_RESULT_ROWS]
+                row_cap = MAX_RESULT_ROWS if server_cap is None else min(server_cap, MAX_RESULT_ROWS)
+                if isinstance(data, list) and len(data) > row_cap:
+                    data = data[:row_cap]
                     truncated = True
                 row_count = len(data) if isinstance(data, list) else 1
                 return QueryResult(success=True, data=data, row_count=row_count, truncated=truncated)
