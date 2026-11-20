@@ -601,8 +601,27 @@ class ConcurrencyLimitMiddleware(BaseHTTPMiddleware):
 
 
 _max_mcp = int(os.getenv("MAX_MCP_CONNECTIONS", str(defaults.MAX_MCP_CONNECTIONS)))
+SERVER_INSTRUCTIONS = """CodeBadger answers code questions from a Joern Code Property Graph (CPG).
+
+Workflow:
+1. Reuse before building: get_backend_status lists existing CPGs with their full
+   codebase_hash (filter by language or project).
+2. Otherwise call generate_cpg. It returns a codebase_hash immediately and builds in
+   the background; poll get_cpg_status until status is "ready".
+3. Start narrow: list_methods / list_calls with name or file filters, then
+   get_call_graph or get_cfg (pass method_id from list_methods for an exact method).
+4. For security questions use find_taint_sources / find_taint_sinks, then
+   find_taint_flows or a detector (find_use_after_free, find_heap_overflow, ...).
+5. run_cpgql_query is the raw CPGQL escape hatch; see get_cpgql_syntax_help.
+
+Results are bounded: check total/returned/truncated and page or narrow filters
+instead of raising limits. Errors start with a stable code (VALIDATION_ERROR,
+QUERY_ERROR, SERVER_BUSY, TIMEOUT, ...); SERVER_BUSY and a loading CPG mean retry
+shortly. The server analyzes the graph only; it cannot read files on disk."""
+
 mcp = FastMCP(
     "CodeBadger Server",
+    instructions=SERVER_INSTRUCTIONS,
     lifespan=app_lifespan,
 )
 mcp.add_middleware(ArgumentValidationMiddleware())
