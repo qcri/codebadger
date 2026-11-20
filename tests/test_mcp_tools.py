@@ -966,6 +966,73 @@ class TestMCPTools:
         written = json.loads((codebase_dir / "compile_commands.container.json").read_text())
         assert written[0]["file"] == "/playground/codebases/553642871dd4251d/a.c"
 
+    @pytest.mark.parametrize(
+        ("db_file", "applied"),
+        [("compile_commands.json", True), ("missing_commands.json", False)],
+    )
+    @pytest.mark.asyncio
+    async def test_status_shows_whether_the_compilation_database_was_applied(
+        self, mock_services, tmp_path, db_file, applied
+    ):
+        """Applied and missing databases are distinguishable over MCP after the source is gone."""
+        import src.tools.core_tools as core_tools
+        from src.tools.core_tools import register_core_tools
+
+        key = "553642871dd4251d"
+        codebase_dir = tmp_path / "src"
+        codebase_dir.mkdir()
+        (codebase_dir / "a.c").write_text("int main(void){return 0;}\n")
+        (codebase_dir / "compile_commands.json").write_text(json.dumps([
+            {"directory": "/orig/root", "file": "/orig/root/a.c", "command": "cc -c a.c"},
+        ]))
+        cpg_path = tmp_path / "cpg.bin"
+        cpg_path.write_bytes(b"fixture")
+
+        catalog = {key: CodebaseInfo(
+            codebase_hash=key, source_type="local", source_path="/orig/root", language="c",
+            cpg_path=None, metadata={"status": "generating"},
+        )}
+
+        def update_codebase(codebase_hash, cpg_path=None, joern_port=None, metadata=None):
+            info = catalog[codebase_hash]
+            info.metadata = {**info.metadata, **(metadata or {})}
+            info.cpg_path = cpg_path or info.cpg_path
+            info.joern_port = joern_port
+
+        tracker = mock_services["codebase_tracker"]
+        tracker.get_codebase.side_effect = catalog.get
+        tracker.update_codebase.side_effect = update_codebase
+        mock_services["config"].cpg.languages_with_exclusions = []
+        mock_services["config"].cpg.ephemeral_source = True
+        manager = mock_services["joern_server_manager"]
+        manager.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=1)
+        manager.get_server_port.return_value = 14000
+        manager.is_server_running.return_value = True
+        docker_client = MagicMock()
+        docker_client.containers.get.return_value.exec_run.return_value = MagicMock(exit_code=0)
+
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client):
+            built = await core_tools._generate_cpg_async(
+                key, str(codebase_dir), str(cpg_path), "c", f"/playground/cpgs/{key}/cpg.bin",
+                mock_services, compile_commands=db_file, source_root_host="/orig/root",
+            )
+        assert built is True
+        assert not codebase_dir.exists()  # the source snapshot was reclaimed
+
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+        async with Client(mcp) as client:
+            status = (await client.call_tool("get_cpg_status", {"codebase_hash": key})).structured_content
+
+        database = status["coverage"]["compilation_database"]
+        assert database["applied"] is applied and database["source"] == "caller"
+        if applied:
+            assert (database["entries"], database["rebased"]) == (1, 2)  # directory + file
+            assert status["coverage"]["warnings"] == []
+        else:
+            assert "could not be applied" in status["coverage"]["warnings"][0]
+        assert status["user_method_count"] == 1
+
     @pytest.mark.asyncio
     async def test_compile_commands_autodetected_for_c(self, mock_services, tmp_path):
         """A compile_commands.json shipped in the source is used automatically."""
