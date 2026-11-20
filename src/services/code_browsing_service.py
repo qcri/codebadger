@@ -524,11 +524,12 @@ class CodeBrowsingService:
         build-worker critical path (see core_tools._schedule_warmup).
         """
         logger.info(f"Warming up cache for codebase {codebase_hash}")
+        # Only queries whose cache key matches a default MCP call: list_methods and
+        # list_calls with their tool defaults. (list_parameters needs a method name
+        # the warm-up can't know, and find_literals has no MCP tool.)
         tasks = [
             self.list_methods,
             self.list_calls,
-            self.list_parameters,
-            self.find_literals,
         ]
         for func in tasks:
             try:
