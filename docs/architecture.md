@@ -16,15 +16,15 @@ flowchart TB
 
     subgraph svc[Services - src/services]
         CT --> QE[QueryExecutor<br/>per-CPG lock + cache]
-        CT --> CG[CPGGenerator]
+        CT --> BQ[Build queue<br/>core_tools: frontend + overlay]
         QE --> JM[JoernServerManager<br/>spawn / sleep / evict]
-        CG --> JM
+        BQ --> JM
         JM --> PM[PortManager]
         JM --> CO[Coordinator<br/>locks]
     end
 
     JM -->|exec / containers| JC[(Joern container/s)]
-    CG -->|build CPG| JC
+    BQ -->|build CPG| JC
     QE --> STORE[(Catalog + cache + findings + jobs<br/>Postgres)]
     JM -.pool state.-> REDIS[(Redis)]
     CO -.cross-process locks.-> REDIS
@@ -156,7 +156,7 @@ main.py                      MCP server entry point, lifespan, health, status lo
 config.yaml / src/defaults   configuration + centralized defaults
 src/
   tools/        core_tools, code_browsing_tools, taint_analysis_tools, custom_tools, queries/*.scala
-  services/     joern_server_manager, query_executor, cpg_generator, codebase_tracker,
+  services/     joern_server_manager, query_executor, codebase_tracker,
                 coordination, pool_store, port_manager, git_manager
   utils/        postgres_db_manager, postgres_job_store, recommend,
                 validators, cpgql_validator, cache_cleanup, logging

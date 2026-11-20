@@ -12,7 +12,7 @@ from src.tools.mcp_tools import (
 
 def _server(disabled: str = ""):
     services = {name: MagicMock() for name in (
-        "git_manager", "cpg_generator", "codebase_tracker", "query_executor",
+        "git_manager", "codebase_tracker", "query_executor",
         "code_browsing_service", "joern_server_manager",
     )}
     services["config"] = Config()

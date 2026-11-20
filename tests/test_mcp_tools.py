@@ -13,7 +13,6 @@ from fastmcp.exceptions import ToolError
 
 from src.models import CodebaseInfo, Config, CPGLoadResult, QueryResult
 from src.services.codebase_tracker import CodebaseTracker
-from src.services.cpg_generator import CPGGenerator
 from src.services.git_manager import GitManager
 from src.tools.mcp_tools import register_tools
 
@@ -59,9 +58,6 @@ def mock_services():
     # Mock git manager
     git_manager = MagicMock(spec=GitManager)
 
-    # Mock CPG generator
-    cpg_generator = MagicMock(spec=CPGGenerator)
-
     # Mock codebase tracker
     codebase_tracker = MagicMock(spec=CodebaseTracker)
     codebase_tracker.save_codebase.return_value = CodebaseInfo(
@@ -101,7 +97,6 @@ def mock_services():
 
     return {
         "git_manager": git_manager,
-        "cpg_generator": cpg_generator,
         "codebase_tracker": codebase_tracker,
         "query_executor": query_executor,
         "config": config,
