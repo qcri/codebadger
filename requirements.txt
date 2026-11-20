@@ -1,11 +1,13 @@
-# Core dependencies
-fastmcp>=3.4.2
-mcp>=1.27.2
-httpx>=0.28.1
-aiohttp>=3.14.1
-uvicorn>=0.49.0
-websockets>=16.0
-pydantic>=2.13.4
+# Core dependencies. Every runtime requirement is bounded to the major version we
+# run (the minor version for 0.x packages and for fastmcp, whose minors have
+# changed protocol behavior), so a rebuild cannot silently cross a breaking release.
+fastmcp>=4.2.2,<4.3
+mcp>=2.3,<3
+httpx>=0.28.1,<0.29
+aiohttp>=3.14.1,<4
+uvicorn>=0.54,<0.55
+websockets>=17,<18
+pydantic>=2.14,<3
 docker==7.1.0
 gitpython==3.1.50
 PyYAML==6.0.3
@@ -14,14 +16,14 @@ psutil==7.2.2
 # Postgres backend (REQUIRED — catalog, cache, findings, durable job queue).
 # The [pool] extra adds psycopg_pool for connection reuse; without it the store
 # falls back to per-operation connects.
-psycopg[binary,pool]>=3.3.4
+psycopg[binary,pool]>=3.3.4,<4
 # Redis cross-process coordination (REQUIRED for pool-mode multi-process state).
-redis>=8.0.0
+redis>=8,<9
 
 # Telemetry (optional - OpenTelemetry)
-opentelemetry-api>=1.42.1
-opentelemetry-sdk>=1.42.1
-opentelemetry-exporter-otlp>=1.42.1
+opentelemetry-api>=1.45,<2
+opentelemetry-sdk>=1.45,<2
+opentelemetry-exporter-otlp>=1.45,<2
 
 # Development dependencies
 pytest==9.0.3
