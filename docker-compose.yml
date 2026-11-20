@@ -90,6 +90,8 @@ services:
       CPG_BUILD_HEAP_GB: ${CPG_BUILD_HEAP_GB:-6}
       # Scale knobs: HTTP in-flight cap (503 past this) and the pre-build repo-size cap.
       MAX_MCP_CONNECTIONS: ${MAX_MCP_CONNECTIONS:-16}
+      # Tool groups to hide, e.g. "admin,raw" (see docs/deployment.md).
+      CODEBADGER_DISABLED_TOOL_TAGS: ${CODEBADGER_DISABLED_TOOL_TAGS:-}
       MAX_REPO_SIZE_MB: ${MAX_REPO_SIZE_MB:-1024}
       # Port the MCP binds (also the host port, matched by the ports: mapping above).
       MCP_PORT: ${MCP_PORT:-4242}

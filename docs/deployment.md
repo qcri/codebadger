@@ -194,6 +194,7 @@ defaults — note a few differ in the shipped `docker-compose.yml` (called out b
 | `MCP_PORT` | `4242` | Port the MCP HTTP server listens on (also the host port — host networking). |
 | `MCP_LOG_LEVEL` | `INFO` | Log level. |
 | `MAX_MCP_CONNECTIONS` | `16` | Max in-flight HTTP requests; the MCP returns `503` past this. |
+| `CODEBADGER_DISABLED_TOOL_TAGS` | _(empty)_ | Comma-separated tool groups to hide and refuse: `build`, `admin` (`remove_cpg`), `browse`, `raw` (`run_cpgql_query`), `taint`, `detector`, `custom`. Example: `admin,raw` for an untrusted client. |
 | `LOG_DIR` | `logs` | Per-run log directory. |
 | `LOG_TO_FILE` | `true` | Also write a rotated per-run file in addition to stdout. |
 | `LOG_MAX_BYTES` | `52428800` (50 MB) | Per-file rotation cap. |
