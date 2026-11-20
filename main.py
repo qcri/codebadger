@@ -57,8 +57,9 @@ from src.utils.postgres_db_manager import PostgresDBManager
 # unreachable Postgres/Redis fails the boot (fail-fast), see app_lifespan.
 from src.defaults import resolve_database_url, resolve_redis_url
 from src.tools import register_tools
+from src import __version__
 
-VERSION = "0.6.2-beta"
+VERSION = __version__
 
 services = {}
 
@@ -622,6 +623,7 @@ shortly. The server analyzes the graph only; it cannot read files on disk."""
 
 mcp = FastMCP(
     "CodeBadger Server",
+    version=VERSION,
     instructions=SERVER_INSTRUCTIONS,
     lifespan=app_lifespan,
 )
