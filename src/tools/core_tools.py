@@ -521,6 +521,68 @@ def _get_git_commit_hash(path: str) -> Optional[str]:
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return None
 
+def _checkout_commit(codebase_dir: str) -> Optional[str]:
+    """HEAD commit of the staged checkout (a github clone under source/, or a local
+    copy that kept its .git), or None. Only a directory with its own .git counts:
+    git would otherwise report an enclosing repository's commit."""
+    for candidate in (os.path.join(codebase_dir, "source"), codebase_dir):
+        if os.path.isdir(os.path.join(candidate, ".git")):
+            commit = _get_git_commit_hash(candidate)
+            if commit and re.fullmatch(r"[0-9a-f]{40,64}", commit):
+                return commit
+    return None
+
+
+_JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
+
+
+def _joern_version(services: dict) -> Optional[str]:
+    """Joern release of the build container (its JOERN_VERSION env), cached per process."""
+    manager = services.get("joern_server_manager")
+    name = getattr(manager, "container_name", None)
+    if not name or name in _JOERN_VERSION_CACHE:
+        return _JOERN_VERSION_CACHE.get(name) if name else None
+    version = None
+    try:
+        env = manager.docker_client.containers.get(name).attrs["Config"]["Env"] or []
+        version = next((e.split("=", 1)[1] for e in env if e.startswith("JOERN_VERSION=")), None)
+    except Exception as e:
+        logger.debug(f"Could not read JOERN_VERSION from {name}: {e}")
+    _JOERN_VERSION_CACHE[name] = version
+    return version
+
+
+def _build_provenance(services: dict, codebase_dir: str, language: str, build_options: dict) -> dict:
+    """What produced this CPG, captured before the source snapshot is reclaimed."""
+    binary = LANGUAGE_COMMANDS.get(language, "")
+    return {
+        "known": True,
+        "recorded_at": _now_utc().isoformat(),
+        "commit": _checkout_commit(codebase_dir),
+        "joern_version": _joern_version(services),
+        "frontend": binary.rsplit("/", 1)[-1] or None,
+        "build_options": build_options,
+    }
+
+
+def _public_provenance(provenance: dict) -> dict:
+    """Bounded view for status replies: long pattern lists become a count and digest
+    (the full options stay in the catalog metadata)."""
+    public = json.loads(json.dumps(provenance))
+    settings = (public.get("build_options") or {}).get("build_settings") or {}
+    for key, value in list(settings.items()):
+        if isinstance(value, list) and len(value) > 10:
+            digest = hashlib.sha256(json.dumps(value).encode()).hexdigest()[:16]
+            settings[key] = {"count": len(value), "sha256": digest}
+    return public
+
+
+UNKNOWN_PROVENANCE = {
+    "known": False,
+    "reason": "Built before CodeBadger recorded provenance; regenerate to record it.",
+}
+
+
 def _sanitize_build_opt_list(items, kind: str) -> list:
     """Validate + normalize a list of c2cpg build options (include paths / defines).
 
@@ -1540,6 +1602,15 @@ async def _generate_cpg_async(
             "container_codebase_path": f"/playground/codebases/{codebase_hash}",
             "container_cpg_path": container_cpg_path,
             "user_method_count": load_result.user_method_count,
+            # Recorded before the source snapshot (and any clone) is reclaimed below.
+            "provenance": _build_provenance(services, codebase_dir, language, {
+                "include_paths": include_paths or [],
+                "defines": defines or [],
+                "include_globs": include_globs or [],
+                "auto_system_headers": bool(auto_system_headers),
+                "compile_commands": compile_commands,
+                "build_settings": build_settings or {},
+            }),
         }
         codebase_tracker.update_codebase(
             codebase_hash=codebase_hash,
@@ -2487,8 +2558,11 @@ Statuses:
 Returns:
     {"codebase_hash": "...", "codebase_label": "<project>@<short-hash>", "status": "...",
      "phase": "...", "language": "c", "elapsed_seconds": 12.5, "deadline_seconds": 1800,
-     "queue_position": 1, "user_method_count": 196, "error_code": "...", "error": "..."}
-    Fields appear when relevant; filesystem paths are redacted.
+     "queue_position": 1, "user_method_count": 196, "error_code": "...", "error": "...",
+     "provenance": {"known": true, "commit": "<sha>", "joern_version": "4.0.687",
+                    "frontend": "c2cpg.sh", "build_options": {...}}}
+    Fields appear when relevant; filesystem paths are redacted. provenance.known is
+    false for graphs built before provenance was recorded.
 
 Example:
     get_cpg_status(codebase_hash="abc1234567890def")""",
@@ -2636,6 +2710,13 @@ Example:
             # that claims ready usually means most code was gated/preprocessed out.
             if meta.get("user_method_count") is not None:
                 response["user_method_count"] = meta["user_method_count"]
+            # What produced the graph: commit, Joern/frontend version, build options.
+            # Graphs built before provenance was recorded say so explicitly.
+            if meta.get("provenance") or codebase_info.cpg_path:
+                response["provenance"] = (
+                    _public_provenance(meta["provenance"]) if meta.get("provenance")
+                    else UNKNOWN_PROVENANCE
+                )
 
             active_status = status in (
                 "generating", SessionStatus.GENERATING,
