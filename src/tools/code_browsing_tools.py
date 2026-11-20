@@ -766,6 +766,106 @@ Examples:
 
 
     @mcp.tool(
+        title="Diff Two CPGs",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "base": {"type": "object"}, "head": {"type": "object"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "object", "properties": {
+                    "added": {"type": "integer"}, "removed": {"type": "integer"},
+                    "modified": {"type": "integer"}, "unchanged": {"type": "integer"},
+                }, "additionalProperties": False},
+                "changes": {"type": "array", "items": {"type": "object"}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "page": {"type": "integer"}, "page_size": {"type": "integer"},
+                "total_pages": {"type": "integer"}, "truncated": {"type": "boolean"},
+            },
+            "required": ["success", "summary", "changes", "total", "truncated"],
+            "additionalProperties": False,
+        },
+        description="""Compare two CPGs method by method, e.g. two commits or two builds of a project.
+
+Build both with generate_cpg (commit=<sha> pins a revision), then pass their hashes.
+Each method is fingerprinted from its signature and its own code, without line
+numbers: a method that only moved is unchanged, and modified methods report
+whether the signature changed. Warnings flag differences that are not source
+changes (language, build options, Joern version, unknown provenance).
+
+Returns:
+    {"success": true, "base": {"codebase_hash", "label", "commit"}, "head": {...},
+     "warnings": [...], "summary": {"added": 0, "removed": 0, "modified": 1, "unchanged": 40},
+     "changes": [{"change": "modified", "filename": "kilo.c", "name": "editorDelChar",
+                  "signature": "void(void)", "base_signature": "void()",
+                  "signature_changed": true, "base_line": 761, "head_line": 761}],
+     "total": 1, "returned": 1, "page": 1, "page_size": 50, "total_pages": 1, "truncated": false}
+
+Example:
+    diff_cpgs(base_codebase_hash="895d1632702eb6da", head_codebase_hash="0eab029efd1a328e")""",
+    )
+    @tool_errors("build both CPGs with generate_cpg (poll get_cpg_status until ready) and pass their hashes.")
+    def diff_cpgs(
+        base_codebase_hash: Annotated[str, Field(description="The older CPG (e.g. the base commit)")],
+        head_codebase_hash: Annotated[str, Field(description="The newer CPG (e.g. the head commit)")],
+        change: Annotated[Optional[Literal["added", "removed", "modified"]], Field(description="Only list this kind of change")] = None,
+        file_pattern: Annotated[Optional[str], Field(description="Only list changes in files matching this regex")] = None,
+        page: Annotated[int, Field(description="Page number (1-based)", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Changes per page", ge=1, le=500)] = 50,
+    ) -> Dict[str, Any]:
+        """Method-level diff between two CPGs."""
+        from ..services.cpg_diff import comparability_warnings, diff_methods, fetch_fingerprints
+        from .core_tools import _codebase_label
+
+        if base_codebase_hash == head_codebase_hash:
+            raise ValidationError("base and head are the same CPG")
+        service = services["code_browsing_service"]
+        sides = {}
+        for role, codebase_hash in (("base", base_codebase_hash), ("head", head_codebase_hash)):
+            info = require_cpg(services, codebase_hash)
+            fetched = fetch_fingerprints(service, codebase_hash, info.cpg_path)
+            if not fetched.get("success"):
+                return fetched
+            sides[role] = (info, fetched["methods"])
+        try:
+            pattern = re.compile(file_pattern) if file_pattern else None
+        except re.error as e:
+            raise ValidationError(f"file_pattern is not a valid regex: {e}")
+
+        (base_info, base_methods), (head_info, head_methods) = sides["base"], sides["head"]
+        result = diff_methods(base_methods, head_methods)
+        changes = [
+            c for c in result["changes"]
+            if (not change or c["change"] == change)
+            and (not pattern or pattern.search(c["filename"] or ""))
+        ]
+        start = (page - 1) * page_size
+        page_changes = changes[start:start + page_size]
+
+        def side(info):
+            meta = info.metadata or {}
+            return {"codebase_hash": info.codebase_hash, "label": _codebase_label(info),
+                    "commit": (meta.get("provenance") or {}).get("commit"), "language": info.language}
+
+        return {
+            "success": True,
+            "base": side(base_info),
+            "head": side(head_info),
+            "warnings": comparability_warnings(
+                base_info.metadata or {}, head_info.metadata or {}, base_info.language, head_info.language,
+            ),
+            "summary": result["summary"],
+            "changes": page_changes,
+            "total": len(changes),
+            "returned": len(page_changes),
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (len(changes) + page_size - 1) // page_size),
+            "truncated": start + len(page_changes) < len(changes),
+        }
+
+    @mcp.tool(
         title="Get Type Definition",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         output_schema={
