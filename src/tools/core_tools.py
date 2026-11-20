@@ -402,11 +402,18 @@ async def _cpg_gc_loop(services: dict, config) -> None:
 def _codebase_label(codebase_info) -> str:
     """Stable, non-sensitive label tying a hash back to what it built.
 
-    Form: '<project>@<short-hash>'. The project component is derived from the
-    repository URL / source basename / snippet label — never an absolute host
-    path — so it's safe to surface to the agent while still being recognizable.
+    Form: '<project>@<short-hash>' (see _codebase_project).
     """
     short = (codebase_info.codebase_hash or "")[:8] or "unknown"
+    return f"{_codebase_project(codebase_info)}@{short}"
+
+
+def _codebase_project(codebase_info) -> str:
+    """Project name derived from the repository URL / source basename / snippet label.
+
+    Never an absolute host path, so it's safe to surface to the agent while still
+    being recognizable.
+    """
     project = None
     meta = codebase_info.metadata or {}
     repo = meta.get("repository")
@@ -421,8 +428,7 @@ def _codebase_label(codebase_info) -> str:
             project = os.path.basename(src.rstrip("/")) or src
     except Exception:
         project = None
-    project = (project or codebase_info.source_type or "cpg").strip() or "cpg"
-    return f"{project}@{short}"
+    return (project or codebase_info.source_type or "cpg").strip() or "cpg"
 
 
 def _set_build_phase(services: dict, codebase_hash: str, phase: str) -> None:
@@ -2784,8 +2790,8 @@ Returns:
         "active_servers": live Joern query servers,
         "max_active_servers": server admission cap,
         "memory": {budget_mb, reserved_mb, free_mb, utilization_pct, ...},
-    "cpgs": [{codebase_label, status, phase, language, last_accessed}, ...],
-        "cpg_count": total tracked CPGs,
+        "cpgs": [{codebase_hash, codebase_label, project, status, phase, language, last_accessed}, ...],
+        "cpg_count": tracked CPGs matching the filters,
         "cpg_page": 1,
         "cpg_page_size": 50,
         "cpg_total_pages": ...,
@@ -2797,12 +2803,17 @@ Notes:
       before submitting more — extra builds will just queue.
     - High memory `utilization_pct` (or active_servers at max_active_servers) means
       query servers are being evicted/serialized; expect sleeping CPGs to wake slowly.
-    - Filesystem paths are not exposed; CPGs are identified by `codebase_label`.
+    - Pass a row's `codebase_hash` straight to get_cpg_status and the query tools.
+      `codebase_label` is for display; same-named projects share a `project`.
+    - Filter with `language` and/or `project` (exact, case-insensitive) before paging.
+    - Filesystem paths are not exposed.
 """,
     )
     def get_backend_status(
         page: Annotated[int, Field(description="1-based page of tracked CPGs to return")] = 1,
         page_size: Annotated[int, Field(description="Number of CPG summaries per page, capped at 200")] = 50,
+        language: Annotated[Optional[str], Field(description="Only list CPGs in this language (case-insensitive)")] = None,
+        project: Annotated[Optional[str], Field(description="Only list CPGs whose project name matches exactly (case-insensitive)")] = None,
     ) -> Dict[str, Any]:
         """Report build-queue, Joern-server and memory load for agent self-pacing."""
         try:
@@ -2840,11 +2851,20 @@ Notes:
             if tracker is not None:
                 try:
                     codebases = tracker.list_codebases_full()
+                    want_language = language.strip().lower() if language and language.strip() else None
+                    want_project = project.strip().lower() if project and project.strip() else None
                     cpgs = []
                     for cb in codebases:
                         meta = cb.metadata or {}
+                        cb_project = _codebase_project(cb)
+                        if want_language and (cb.language or "").lower() != want_language:
+                            continue
+                        if want_project and cb_project.lower() != want_project:
+                            continue
                         cpgs.append({
+                            "codebase_hash": cb.codebase_hash,
                             "codebase_label": _codebase_label(cb),
+                            "project": cb_project,
                             "status": meta.get("status", "unknown"),
                             "phase": meta.get("phase"),
                             "language": cb.language,

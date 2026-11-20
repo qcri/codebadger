@@ -1475,6 +1475,71 @@ class TestMCPTools:
         assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
 
     @pytest.mark.asyncio
+    async def test_get_backend_status_rows_resume_same_named_projects(self, mock_services):
+        """A fresh client can pick either same-named project and call the next tool with its row."""
+        from datetime import datetime, timezone
+        from src.tools.core_tools import register_core_tools
+
+        now = datetime.now(timezone.utc)
+        catalog = {
+            cb.codebase_hash: cb
+            for cb in [
+                CodebaseInfo(
+                    codebase_hash="1111aaaa00000001", source_type="local",
+                    source_path="/src/a/libpng", language="c", cpg_path="/tmp/a.cpg",
+                    last_accessed=now, metadata={"status": "ready"},
+                ),
+                CodebaseInfo(
+                    codebase_hash="1111aaaa00000002", source_type="local",
+                    source_path="/src/b/libpng", language="c", cpg_path="/tmp/b.cpg",
+                    last_accessed=now, metadata={"status": "sleeping"},
+                ),
+                CodebaseInfo(
+                    codebase_hash="2222bbbb00000003", source_type="github",
+                    source_path="https://github.com/x/libpng", language="java",
+                    cpg_path="/tmp/c.cpg", last_accessed=now,
+                    metadata={"status": "ready", "repository": "https://github.com/x/libpng.git"},
+                ),
+                CodebaseInfo(
+                    codebase_hash="3333cccc00000004", source_type="local",
+                    source_path="/src/zlib", language="c", cpg_path="/tmp/d.cpg",
+                    last_accessed=now, metadata={"status": "ready"},
+                ),
+            ]
+        }
+        tracker = mock_services["codebase_tracker"]
+        tracker.list_codebases_full.return_value = list(catalog.values())
+        tracker.get_codebase.side_effect = catalog.get
+
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+
+        async with Client(mcp) as client:
+            listing = (await client.call_tool(
+                "get_backend_status", {"project": "LibPNG", "language": "c"}
+            )).structured_content
+            by_language = (await client.call_tool(
+                "get_backend_status", {"language": "java"}
+            )).structured_content
+            statuses = [
+                (await client.call_tool(
+                    "get_cpg_status", {"codebase_hash": row["codebase_hash"]}
+                )).structured_content
+                for row in listing["cpgs"]
+            ]
+
+        rows = listing["cpgs"]
+        assert listing["cpg_count"] == 2
+        assert listing["cpg_truncated"] is False
+        assert {row["codebase_hash"] for row in rows} == {"1111aaaa00000001", "1111aaaa00000002"}
+        # The short labels collide; the full hash is what tells the rows apart.
+        assert {row["codebase_label"] for row in rows} == {"libpng@1111aaaa"}
+        assert {row["project"] for row in rows} == {"libpng"}
+        assert [s["codebase_hash"] for s in statuses] == [row["codebase_hash"] for row in rows]
+        assert [row["codebase_hash"] for row in by_language["cpgs"]] == ["2222bbbb00000003"]
+        assert by_language["cpg_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
         from datetime import datetime, timezone
         from src.tools.core_tools import register_core_tools
