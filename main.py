@@ -625,6 +625,9 @@ mcp = FastMCP(
     "CodeBadger Server",
     version=VERSION,
     instructions=SERVER_INSTRUCTIONS,
+    # Tools raise coded ToolErrors ("CODE: message Hint: ..."), which pass through;
+    # any other exception that escapes is reported generically, never verbatim.
+    mask_error_details=True,
     lifespan=app_lifespan,
 )
 mcp.add_middleware(ArgumentValidationMiddleware())
