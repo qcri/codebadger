@@ -29,7 +29,7 @@ def register_custom_tools(mcp, services: dict) -> None:
     @mcp.tool(
         title="Find Command Injection Sinks",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Find potential OS command injection sinks (CWE-78).
 
 Identifies call sites where shell-execution functions receive a non-literal
