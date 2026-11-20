@@ -2946,8 +2946,8 @@ Notes:
 """,
     )
     def get_backend_status(
-        page: Annotated[int, Field(description="1-based page of tracked CPGs to return")] = 1,
-        page_size: Annotated[int, Field(description="Number of CPG summaries per page, capped at 200")] = 50,
+        page: Annotated[int, Field(description="1-based page of tracked CPGs to return", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Number of CPG summaries per page", ge=1, le=200)] = 50,
         language: Annotated[Optional[str], Field(description="Only list CPGs in this language (case-insensitive)")] = None,
         project: Annotated[Optional[str], Field(description="Only list CPGs whose project name matches exactly (case-insensitive)")] = None,
     ) -> Dict[str, Any]:

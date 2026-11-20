@@ -835,7 +835,7 @@ class TestCodeBadgerIntegration:
         cfg_result = await client.call_tool("get_cfg", {
             "codebase_hash": codebase_hash,
             "method_name": "device_process_state_machine",
-            "max_nodes": 100
+            "limit": 100
         })
 
         if hasattr(cfg_result, 'content') and cfg_result.content:

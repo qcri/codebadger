@@ -69,18 +69,19 @@ Returns:
 """,
     tags={"security", "CWE-NNN"},
 )
+# Name the result cap `limit`, like every built-in tool.
 def my_tool(
     codebase_hash: Annotated[str, Field(description="Codebase hash from generate_cpg")],
     my_param: Annotated[str, Field(description="Detection pattern")] = "default",
-    max_results: Annotated[int, Field(description="Max findings", ge=1, le=500)] = 50,
+    limit: Annotated[int, Field(description="Max findings", ge=1, le=500)] = 50,
 ) -> str:
     try:
         info = _get_codebase(services, codebase_hash)
-        query = QueryLoader.load("my_tool", my_pattern=my_param, max_results=max_results)
+        query = QueryLoader.load("my_tool", my_pattern=my_param, max_results=limit)
         return _run_query(
             services, codebase_hash, info.cpg_path, query,
             timeout=60, tool_name="my_tool",
-            cache_params={"my_param": my_param, "max_results": max_results},
+            cache_params={"my_param": my_param, "max_results": limit},
         )
     except (ValueError, RuntimeError) as e:
         return f"Error: {e}"

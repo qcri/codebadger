@@ -57,7 +57,7 @@ Examples:
         codebase_hash: Annotated[str, Field(description="Codebase hash from generate_cpg")],
         language: Annotated[Optional[str], Field(description="Language for sink selection (auto-detected if omitted)")] = None,
         filename: Annotated[Optional[str], Field(description="Optional filename to restrict results")] = None,
-        max_results: Annotated[int, Field(description="Maximum sink call sites to return", ge=1, le=200)] = 50,
+        limit: Annotated[int, Field(description="Maximum sink call sites to return", ge=1, le=200)] = 50,
     ) -> Dict[str, Any]:
         """Identify shell-execution call sites that receive dynamic arguments."""
         try:
@@ -80,7 +80,7 @@ Examples:
             cache_params = {
                 "language": lang,
                 "filename": filename or "",
-                "max_results": max_results,
+                "max_results": limit,
                 "sink_pattern": sink_pattern,
             }
 
@@ -88,7 +88,7 @@ Examples:
                 "command_injection_sinks",
                 sink_pattern=sink_pattern,
                 file_filter=filename or "",
-                max_results=max_results,
+                max_results=limit,
             )
 
             return {"success": True, "summary": run_query(

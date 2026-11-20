@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Annotated, Literal
 from pydantic import Field
 from fastmcp.exceptions import ToolError
 
+from ..defaults import MAX_RESULT_ROWS
 from ..exceptions import (
             ValidationError,
 )
@@ -137,9 +138,9 @@ Examples:
         file_pattern: Annotated[Optional[str], Field(description="Optional regex to filter by file path")] = None,
         callee_pattern: Annotated[Optional[str], Field(description="Optional regex to filter for methods that call a specific function (e.g., 'memcpy|free|malloc')")] = None,
         include_external: Annotated[bool, Field(description="Include external/library methods")] = False,
-        limit: Annotated[int, Field(description="Maximum number of matching methods made available for pagination (capped at 10000); total still reports the exact match count")] = 1000,
-        page: Annotated[int, Field(description="Page number")] = 1,
-        page_size: Annotated[int, Field(description="Number of results per page")] = 100,
+        limit: Annotated[int, Field(description="Maximum number of matching methods made available for pagination; total still reports the exact match count", ge=1, le=MAX_RESULT_ROWS)] = 1000,
+        page: Annotated[int, Field(description="Page number (1-based)", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Number of results per page", ge=1, le=1000)] = 100,
     ) -> Dict[str, Any]:
         """Discover all methods and functions defined in the codebase."""
         code_browsing_service = services["code_browsing_service"]
@@ -214,9 +215,9 @@ Examples:
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         caller_pattern: Annotated[Optional[str], Field(description="Optional regex to filter caller method names")] = None,
         callee_pattern: Annotated[Optional[str], Field(description="Optional regex to filter callee method names")] = None,
-        limit: Annotated[int, Field(description="Maximum number of matching calls made available for pagination (capped at 10000); total still reports the exact match count")] = 1000,
-        page: Annotated[int, Field(description="Page number")] = 1,
-        page_size: Annotated[int, Field(description="Number of results per page")] = 100,
+        limit: Annotated[int, Field(description="Maximum number of matching calls made available for pagination; total still reports the exact match count", ge=1, le=MAX_RESULT_ROWS)] = 1000,
+        page: Annotated[int, Field(description="Page number (1-based)", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Number of results per page", ge=1, le=1000)] = 100,
     ) -> Dict[str, Any]:
         """Find function call relationships in the codebase."""
         code_browsing_service = services["code_browsing_service"]
@@ -730,7 +731,7 @@ Examples:
     def get_cfg(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         method_name: Annotated[Optional[str], Field(description="Name of the method (regex; must match one method)")] = None,
-        max_nodes: Annotated[int, Field(description="Maximum CFG nodes to return (for large methods)")] = 100,
+        limit: Annotated[int, Field(description="Maximum CFG nodes to return (for large methods)", ge=1, le=MAX_RESULT_ROWS)] = 100,
         method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
         """Get nodes and edges representing control flow in a method."""
@@ -745,7 +746,7 @@ Examples:
                 "cfg",
                 method_name=method_name,
                 method_id=node_id,
-                max_nodes=max_nodes
+                max_nodes=limit
             )
 
             result = query_executor.execute_query(
@@ -753,11 +754,11 @@ Examples:
                 cpg_path=codebase_info.cpg_path,
                 query=query,
                 timeout=30,
-                limit=max_nodes,
+                limit=limit,
             )
 
             if not result.success:
-                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower max_nodes for large methods.")
+                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower limit for large methods.")
             return {"success": True, "summary": unwrap_result(result)}
 
         except ValidationError as e:
@@ -813,7 +814,7 @@ Examples:
     def get_type_definition(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         type_name: Annotated[str, Field(description="Type name pattern (regex, e.g., '.*Buffer.*')")],
-        limit: Annotated[int, Field(description="Maximum types to return")] = 10,
+        limit: Annotated[int, Field(description="Maximum types to return", ge=1, le=MAX_RESULT_ROWS)] = 10,
     ) -> Dict[str, Any]:
         """Get struct/class definition with member names and types."""
         validate_codebase_hash(codebase_hash)
