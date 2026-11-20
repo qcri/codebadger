@@ -74,38 +74,43 @@ def test_find_taint_flows_missing_source_message(taint_tools):
         assert "CORRECT USAGE WORKFLOW" in str(e)
         assert "YOU MUST PROVIDE THIS" in str(e)
 
-def test_find_taint_flows_legacy_arg_detection(taint_tools):
-    """Test that legacy arguments like source_pattern trigger specific error"""
-    find_taint_flows = taint_tools["find_taint_flows"]
-    
-    try:
-        result = find_taint_flows(
-            codebase_hash="1234567812345678",
-            source_location="main.c:10",
-            sink_location="main.c:20",
-            source_pattern="broken"  # Legacy arg
-        )
-        assert "Unexpected arguments: ['source_pattern']" in result
-        assert "deprecated" in result
-    except Exception as e:
-        assert "Unexpected arguments: ['source_pattern']" in str(e)
-        assert "deprecated" in str(e)
 
-def test_find_taint_flows_multiple_legacy_args(taint_tools):
-    """Test detection of multiple legacy arguments"""
-    find_taint_flows = taint_tools["find_taint_flows"]
-    
-    try:
-        result = find_taint_flows(
-            codebase_hash="1234567812345678",
-            source_location="main.c:10",
-            sink_location="main.c:20",
-            mode="intra",
-            depth=5
-        )
-        assert "Unexpected arguments" in result
-        assert "mode" in result
-        assert "depth" in result
-    except Exception as e:
-        assert "Unexpected arguments" in str(e)
-        assert "mode" in str(e)
+LEGACY_ARGS = {"source_pattern": "getenv", "sink_pattern": "system", "depth": 5}
+
+
+def _mcp_server(services):
+    from fastmcp import FastMCP
+    from src.tools.argument_errors import ArgumentValidationMiddleware
+
+    mcp = FastMCP("TestServer")
+    mcp.add_middleware(ArgumentValidationMiddleware())
+    register_taint_analysis_tools(mcp, services)
+    return mcp
+
+
+async def test_find_taint_flows_schema_omits_removed_legacy_args(mock_services):
+    from fastmcp import Client
+
+    async with Client(_mcp_server(mock_services)) as client:
+        tool = next(t for t in await client.list_tools() if t.name == "find_taint_flows")
+
+    assert set(LEGACY_ARGS).isdisjoint(tool.input_schema["properties"])
+    assert "DEPRECATED" not in str(tool.input_schema)
+
+
+@pytest.mark.parametrize("arg", sorted(LEGACY_ARGS))
+async def test_find_taint_flows_rejects_legacy_args_by_name(mock_services, arg):
+    from fastmcp import Client
+
+    arguments = {
+        "codebase_hash": "1234567812345678",
+        "source_location": "main.c:10",
+        "sink_location": "main.c:20",
+        arg: LEGACY_ARGS[arg],
+    }
+    async with Client(_mcp_server(mock_services)) as client:
+        result = await client.call_tool("find_taint_flows", arguments, raise_on_error=False)
+
+    assert result.is_error
+    assert result.content[0].text.startswith(f"VALIDATION_ERROR: {arg}: Unexpected keyword argument")
+    mock_services["query_executor"].execute_query.assert_not_called()
