@@ -153,3 +153,9 @@ async def test_missing_cpg_is_a_validation_error():
         result = await client.call_tool("diff_cpgs", {
             "base_codebase_hash": BASE, "head_codebase_hash": HEAD}, raise_on_error=False)
     assert result.is_error and result.content[0].text.startswith("VALIDATION_ERROR: CPG not found")
+
+
+def test_global_fingerprint_ignores_function_definitions():
+    from src.tools.queries import QueryLoader
+    query = QueryLoader.load("method_fingerprints", offset=0, limit=10)
+    assert 'm.name == "<global>" && n.isInstanceOf[io.shiftleft.codepropertygraph.generated.nodes.MethodRef]' in query
