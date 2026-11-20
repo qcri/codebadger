@@ -71,3 +71,18 @@ async def test_values_outside_the_enum_are_rejected_before_querying(tool, field)
     assert result.is_error
     assert result.content[0].text.startswith(f"VALIDATION_ERROR: {field}: Input should be")
     services["query_executor"].execute_query.assert_not_called()
+
+
+async def test_every_tool_argument_has_a_description():
+    """Clients rely on per-field descriptions; a bare parameter publishes only its type."""
+    mcp, _ = _server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    undocumented = sorted(
+        f"{tool.name}.{name}"
+        for tool in tools
+        for name, schema in tool.input_schema.get("properties", {}).items()
+        if not schema.get("description")
+    )
+    assert undocumented == []
