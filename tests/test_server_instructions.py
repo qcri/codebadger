@@ -39,3 +39,8 @@ def test_server_reports_codebadger_version():
 
     assert main.VERSION == __version__
     assert main.mcp.version == __version__
+
+
+def test_server_masks_uncoded_exception_details():
+    """Coded ToolErrors pass through; anything else must not leak its raw text."""
+    assert main.mcp._mask_error_details is True
