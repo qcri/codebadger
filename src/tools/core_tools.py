@@ -2895,12 +2895,13 @@ Example:
                 "queue_depth": {"type": "integer"},
                 "in_flight": {"type": "integer"},
                 "active_servers": {"type": "integer"},
-                "cpg_count": {"type": "integer"},
+                "total": {"type": "integer"},
                 "cpgs": {"type": "array"},
-                "cpg_page": {"type": "integer"},
-                "cpg_page_size": {"type": "integer"},
-                "cpg_total_pages": {"type": "integer"},
-                "cpg_truncated": {"type": "boolean"},
+                "returned": {"type": "integer"},
+                "page": {"type": "integer"},
+                "page_size": {"type": "integer"},
+                "total_pages": {"type": "integer"},
+                "truncated": {"type": "boolean"},
             },
             "additionalProperties": True,
         },
@@ -2927,11 +2928,12 @@ Returns:
         "max_active_servers": server admission cap,
         "memory": {budget_mb, reserved_mb, free_mb, utilization_pct, ...},
         "cpgs": [{codebase_hash, codebase_label, project, status, phase, language, last_accessed}, ...],
-        "cpg_count": tracked CPGs matching the filters,
-        "cpg_page": 1,
-        "cpg_page_size": 50,
-        "cpg_total_pages": ...,
-        "cpg_truncated": true when more CPGs are available
+        "total": tracked CPGs matching the filters,
+        "returned": CPG summaries in this page,
+        "page": 1,
+        "page_size": 50,
+        "total_pages": ...,
+        "truncated": true when more CPGs are available
     }
 
 Notes:
@@ -3008,14 +3010,14 @@ Notes:
                         }
                         for cb in page_rows
                     ]
-                    response["cpg_count"] = total
-                    response["cpg_page"] = safe_page
-                    response["cpg_page_size"] = safe_page_size
-                    response["cpg_returned"] = len(response["cpgs"])
-                    response["cpg_total_pages"] = (
+                    response["total"] = total
+                    response["page"] = safe_page
+                    response["page_size"] = safe_page_size
+                    response["returned"] = len(response["cpgs"])
+                    response["total_pages"] = (
                         (total + safe_page_size - 1) // safe_page_size if total else 1
                     )
-                    response["cpg_truncated"] = start + len(response["cpgs"]) < total
+                    response["truncated"] = start + len(response["cpgs"]) < total
                 except Exception as e:
                     logger.debug(f"get_backend_status: codebase listing failed: {e}")
 

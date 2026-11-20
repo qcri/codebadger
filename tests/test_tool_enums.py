@@ -120,3 +120,19 @@ async def test_old_cap_names_are_rejected():
         )
     assert result.content[0].text.startswith("VALIDATION_ERROR: max_nodes: Unexpected keyword argument")
     services["query_executor"].execute_query.assert_not_called()
+
+
+async def test_paged_replies_use_only_the_standard_fields():
+    """total/returned/truncated (+ page/page_size/total_pages when paged), nothing tool-specific."""
+    mcp, _ = _server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    legacy = {"available", "result_cap", "has_more", "cpg_count", "cpg_page", "cpg_page_size",
+              "cpg_returned", "cpg_total_pages", "cpg_truncated"}
+    offenders = {t.name: sorted(legacy & set((t.output_schema or {}).get("properties", {}))) for t in tools}
+    assert {k: v for k, v in offenders.items() if v} == {}
+    paged = [t for t in tools if "page" in t.input_schema["properties"]]
+    for tool in paged:
+        assert {"total", "returned", "truncated", "page", "page_size", "total_pages"} <= set(
+            tool.output_schema["properties"]), tool.name

@@ -1581,13 +1581,13 @@ class TestMCPTools:
             assert r["active_servers"] == 2
             assert r["max_active_servers"] == 3
             assert r["memory"]["budget_mb"] == 24000
-            assert r["cpg_count"] == 1
+            assert r["total"] == 1
             assert r["cpgs"][0]["codebase_label"] == "repo@55364287"
             assert r["cpgs"][0]["status"] == "ready"
-            assert r["cpg_page"] == 1
-            assert r["cpg_page_size"] == 50
-            assert r["cpg_total_pages"] == 1
-            assert r["cpg_truncated"] is False
+            assert r["page"] == 1
+            assert r["page_size"] == 50
+            assert r["total_pages"] == 1
+            assert r["truncated"] is False
 
     @pytest.mark.asyncio
     async def test_core_status_tools_expose_titles_and_safe_annotations(self, mock_services):
@@ -1738,15 +1738,15 @@ class TestMCPTools:
             ]
 
         rows = listing["cpgs"]
-        assert listing["cpg_count"] == 2
-        assert listing["cpg_truncated"] is False
+        assert listing["total"] == 2
+        assert listing["truncated"] is False
         assert {row["codebase_hash"] for row in rows} == {"1111aaaa00000001", "1111aaaa00000002"}
         # The short labels collide; the full hash is what tells the rows apart.
         assert {row["codebase_label"] for row in rows} == {"libpng@1111aaaa"}
         assert {row["project"] for row in rows} == {"libpng"}
         assert [s["codebase_hash"] for s in statuses] == [row["codebase_hash"] for row in rows]
         assert [row["codebase_hash"] for row in by_language["cpgs"]] == ["2222bbbb00000003"]
-        assert by_language["cpg_count"] == 1
+        assert by_language["total"] == 1
 
     @pytest.mark.asyncio
     async def test_get_backend_status_pages_large_cpg_catalog(self, mock_services):
@@ -1774,13 +1774,13 @@ class TestMCPTools:
             import json
             response = json.loads(result.content[0].text)
 
-        assert response["cpg_count"] == 55
+        assert response["total"] == 55
         assert len(response["cpgs"]) == 20
-        assert response["cpg_page"] == 2
-        assert response["cpg_page_size"] == 20
-        assert response["cpg_returned"] == 20
-        assert response["cpg_total_pages"] == 3
-        assert response["cpg_truncated"] is True
+        assert response["page"] == 2
+        assert response["page_size"] == 20
+        assert response["returned"] == 20
+        assert response["total_pages"] == 3
+        assert response["truncated"] is True
         # Only the requested page is asked for; the full catalog is never listed.
         page_stub.assert_called_once_with(offset=20, limit=20, language=None, project=None)
         mock_services["codebase_tracker"].list_codebases_full.assert_not_called()
