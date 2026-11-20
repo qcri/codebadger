@@ -22,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 
+from src.tools.argument_errors import ArgumentValidationMiddleware
 from src.config import load_config
 from src import defaults
 from src.tools.core_tools import CPGGenerationQueue, DurableCPGQueue, _cpg_gc_loop, _schedule_restart_server_task
@@ -604,6 +605,7 @@ mcp = FastMCP(
     "CodeBadger Server",
     lifespan=app_lifespan,
 )
+mcp.add_middleware(ArgumentValidationMiddleware())
 # Tools are registered inside the lifespan (app_lifespan), not here.
 
 
