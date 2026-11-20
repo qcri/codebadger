@@ -75,7 +75,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 generation_deadline_grace=int(os.getenv("CPG_GENERATION_DEADLINE_GRACE", str(defaults.CPG_GENERATION_DEADLINE_GRACE))),
                 max_repo_size_mb=int(os.getenv("MAX_REPO_SIZE_MB", str(defaults.MAX_REPO_SIZE_MB))),
                 supported_languages=defaults.SUPPORTED_LANGUAGES,
-                exclusion_patterns=defaults.EXCLUSION_PATTERNS,
+                exclusion_patterns=None,  # None = per-language defaults (exclusion_patterns_for)
                 languages_with_exclusions=defaults.LANGUAGES_WITH_EXCLUSIONS,
                 taint_sources={},
                 taint_sinks={},
@@ -201,8 +201,6 @@ def _dict_to_config(data: dict) -> Config:
         cpg_data = {**cpg_data, "generation_timeout": defaults.CPG_GENERATION_TIMEOUT}
     if "supported_languages" not in cpg_data:
         cpg_data = {**cpg_data, "supported_languages": defaults.SUPPORTED_LANGUAGES}
-    if "exclusion_patterns" not in cpg_data:
-        cpg_data = {**cpg_data, "exclusion_patterns": defaults.EXCLUSION_PATTERNS}
     if "languages_with_exclusions" not in cpg_data:
         cpg_data = {**cpg_data, "languages_with_exclusions": defaults.LANGUAGES_WITH_EXCLUSIONS}
 
