@@ -47,6 +47,10 @@ cpg:
   # single-process runs only). Postgres backs the whole store (catalog, cache,
   # findings, queue).
   queue_backend: ${CPG_QUEUE_BACKEND:durable}
+  # Persist Joern's dataflow overlay into cpg.bin at build time: first loads (and
+  # every wake of a sleeping CPG) deserialize instead of recomputing it, ~5x
+  # faster, at ~2.7x the file size. Best-effort; a failure keeps the base CPG.
+  persist_dataflow_overlay: ${CPG_PERSIST_DATAFLOW_OVERLAY:true}
   # build_workers * build_heap_gb must fit the build container's mem_limit (~7GB/worker incl. JVM).
   build_workers: ${CPG_BUILD_WORKERS:8}
   max_repo_size_mb: ${MAX_REPO_SIZE_MB:1024}

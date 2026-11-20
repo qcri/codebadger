@@ -92,6 +92,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
                 ephemeral_source=os.getenv(
                     "CPG_EPHEMERAL_SOURCE", str(defaults.CPG_EPHEMERAL_SOURCE)
                 ).lower() not in ("false", "0", "no", "off"),
+                persist_dataflow_overlay=os.getenv(
+                    "CPG_PERSIST_DATAFLOW_OVERLAY", "true"
+                ).lower() not in ("false", "0", "no", "off"),
                 large_project_guard=os.getenv(
                     "CPG_LARGE_PROJECT_GUARD", str(defaults.CPG_LARGE_PROJECT_GUARD)
                 ).lower() not in ("false", "0", "no", "off"),

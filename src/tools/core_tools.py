@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import shutil
+import time
 import tarfile
 from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Literal, Set
 from pydantic import Field
@@ -537,6 +538,27 @@ def _checkout_commit(codebase_dir: str) -> Optional[str]:
 
 _JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
 _COVERAGE_MAX_WARNINGS = 10
+
+
+def _overlay_script(container_cpg_file: str) -> str:
+    """Shell script that persists Joern's default overlays (incl. dataflowOss) into
+    container_cpg_file in place, via importCpg in a scratch workspace.
+
+    The path is derived from the validated 16-hex codebase hash (plus an optional
+    attempt id), so it carries no untrusted input.
+    """
+    ws = container_cpg_file + ".ovlws"
+    return (
+        "set -euo pipefail; "
+        f'SRC="{container_cpg_file}"; WS="{ws}"; '
+        'rm -rf "$WS"; mkdir -p "$WS"; cd "$WS"; '
+        'printf \'importCpg("%s", "ovl")\\n\' "$SRC" > ovl.sc; '
+        "/opt/joern/joern-cli/joern --script ovl.sc; "
+        "OUT=\"$(find \"$WS\" -name cpg.bin -printf '%s\\t%p\\n' | sort -rn | head -1 | cut -f2)\"; "
+        'if [ -z "$OUT" ] || [ ! -f "$OUT" ]; then echo OVERLAY_NO_OUTPUT; rm -rf "$WS"; exit 3; fi; '
+        'mv -f "$OUT" "$SRC"; rm -rf "$WS"; '
+        'echo "OVERLAY_OK bytes=$(stat -c %s "$SRC")"'
+    )
 
 
 def _compile_db_example_root(db_host: str) -> str:
@@ -1592,6 +1614,53 @@ async def _generate_cpg_async(
             )
             return False
 
+        # The load ceiling applies to the frontend's graph, measured before the
+        # overlay pass grows the file (~2.7x).
+        try:
+            base_cpg_mb = os.path.getsize(output_path) / (1024 * 1024)
+        except OSError:
+            base_cpg_mb = 0
+        max_load_mb = config.cpg.max_load_mb if config else 2048
+        over_ceiling = bool(max_load_mb and max_load_mb > 0 and base_cpg_mb > max_load_mb)
+
+        # Persist the dataflow overlay now, in the build container with the build
+        # heap, so every later load deserializes it instead of recomputing it.
+        persist_overlay = getattr(getattr(config, "cpg", None), "persist_dataflow_overlay", True)
+        if persist_overlay and not over_ceiling:
+            _set_build_phase(services, codebase_hash, "overlay")
+            started = time.monotonic()
+            persisted = False
+            try:
+                overlay_result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: container.exec_run(
+                            cmd=["bash", "-lc", _overlay_script(container_output_path)],
+                            stream=False, environment={"JAVA_OPTS": frontend_java_opts},
+                        ),
+                    ),
+                    timeout=generation_timeout,
+                )
+                raw = overlay_result.output
+                text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else ""
+                persisted = overlay_result.exit_code == 0 and "OVERLAY_OK" in text
+                if not persisted:
+                    coverage_warning(
+                        f"dataflow overlay not persisted (exit {overlay_result.exit_code}); "
+                        f"loads will recompute it. Tail: {text[-200:]}"
+                    )
+            except asyncio.TimeoutError:
+                coverage_warning(
+                    f"dataflow overlay timed out after {generation_timeout}s; loads will recompute it"
+                )
+            except Exception as e:
+                coverage_warning(f"dataflow overlay failed ({e}); loads will recompute it")
+            coverage["dataflow_overlay"] = {
+                "persisted": persisted, "seconds": round(time.monotonic() - started, 1),
+            }
+        else:
+            coverage["dataflow_overlay"] = {"persisted": False, "seconds": 0}
+
         if renew_claim and not await renew_claim(partial(os.replace, output_path, cpg_path)):
             return
         logger.info(f"CPG generated successfully: {cpg_path}")
@@ -1601,32 +1670,27 @@ async def _generate_cpg_async(
         # was the motivating case). Fail fast HERE with actionable guidance —
         # scope the build — instead of letting reload_with_retry emit the opaque
         # "failed to reload into a Joern server" after a long stall.
-        max_load_mb = config.cpg.max_load_mb if config else 2048
-        if max_load_mb and max_load_mb > 0:
-            try:
-                cpg_size_mb = os.path.getsize(cpg_path) / (1024 * 1024)
-            except OSError:
-                cpg_size_mb = 0
-            if cpg_size_mb > max_load_mb:
-                error_msg = (
-                    f"CPG is {cpg_size_mb:.0f} MB, above the {max_load_mb} MB load ceiling — "
-                    f"it likely won't load into a query server. Scope the build to a "
-                    f"sub-component (point source_path at a subdirectory, or pass include_paths/"
-                    f"defines to narrow what is parsed), or raise CPG_MAX_LOAD_MB / the Joern "
-                    f"load heap if you have the RAM."
-                )
-                logger.error(f"CPG too large to load for {codebase_hash}: {error_msg}")
-                codebase_tracker.update_codebase(
-                    codebase_hash=codebase_hash,
-                    cpg_path=cpg_path,
-                    metadata={
-                        "status": SessionStatus.FAILED,
-                        "error_code": "CPG_TOO_LARGE",
-                        "error": error_msg,
-                        "cpg_size_mb": round(cpg_size_mb, 1),
-                    },
-                )
-                return False
+        if over_ceiling:
+            cpg_size_mb = base_cpg_mb
+            error_msg = (
+                f"CPG is {cpg_size_mb:.0f} MB, above the {max_load_mb} MB load ceiling — "
+                f"it likely won't load into a query server. Scope the build to a "
+                f"sub-component (point source_path at a subdirectory, or pass include_paths/"
+                f"defines to narrow what is parsed), or raise CPG_MAX_LOAD_MB / the Joern "
+                f"load heap if you have the RAM."
+            )
+            logger.error(f"CPG too large to load for {codebase_hash}: {error_msg}")
+            codebase_tracker.update_codebase(
+                codebase_hash=codebase_hash,
+                cpg_path=cpg_path,
+                metadata={
+                    "status": SessionStatus.FAILED,
+                    "error_code": "CPG_TOO_LARGE",
+                    "error": error_msg,
+                    "cpg_size_mb": round(cpg_size_mb, 1),
+                },
+            )
+            return False
 
         # Persist cpg_path before attempting server spawn so that the watchdog's
         # _respawn_server can find it even if spawn_server fails mid-flight.

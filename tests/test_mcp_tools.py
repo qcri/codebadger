@@ -1013,6 +1013,7 @@ class TestMCPTools:
         manager.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=1)
         manager.get_server_port.return_value = 14000
         manager.is_server_running.return_value = True
+        mock_services["config"].cpg.persist_dataflow_overlay = False  # covered in test_overlay
         docker_client = MagicMock()
         docker_client.containers.get.return_value.exec_run.return_value = MagicMock(exit_code=0)
 
@@ -1179,6 +1180,7 @@ class TestMCPTools:
         elif load_failure == "no-manager":
             mock_services["joern_server_manager"] = None
 
+        mock_services["config"].cpg.persist_dataflow_overlay = False  # covered in test_overlay
         docker_client = MagicMock()
         frontend = docker_client.containers.get.return_value.exec_run
         frontend.return_value = MagicMock(exit_code=0)

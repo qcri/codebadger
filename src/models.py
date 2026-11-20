@@ -230,6 +230,10 @@ class CPGConfig:
     # Delete the source snapshot once the CPG is built (the CPG is the only
     # persisted artifact; nothing reads source from disk). Regenerate re-fetches.
     ephemeral_source: bool = True
+    # Persist Joern's dataflow overlay into cpg.bin at build time (one importCpg in
+    # the build container). Loads then deserialize instead of recomputing
+    # ReachingDefPass: ~5x faster first loads, at ~2.7x the cpg.bin size.
+    persist_dataflow_overlay: bool = True
     # Large-project guard (generate_cpg declines local sources above either
     # threshold unless force=True). Turn off for unattended/batch drivers.
     large_project_guard: bool = True
