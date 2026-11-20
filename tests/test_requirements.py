@@ -21,3 +21,9 @@ def test_every_runtime_requirement_is_bounded():
 def test_fastmcp_stays_on_the_tested_minor():
     fastmcp = next(r for r in _requirements() if r.startswith("fastmcp"))
     assert "<4.3" in fastmcp
+
+
+def test_directly_imported_packages_are_declared():
+    """A package the code imports itself must not depend on another package's dependencies."""
+    names = {re.split(r"[\[<>=!~ ]", r, maxsplit=1)[0].lower() for r in _requirements()}
+    assert "starlette" in names
