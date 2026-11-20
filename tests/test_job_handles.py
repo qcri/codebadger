@@ -119,3 +119,65 @@ async def test_generate_cpg_returns_the_job_handle(tmp_path):
 
     assert (first["status"], first["job_id"]) == ("generating", 7)
     assert again["job_id"] == 7 and "already in progress" in again["message"]
+
+
+def _job_server(store, tracker=None):
+    from fastmcp import FastMCP
+
+    from src.models import Config
+    from src.tools.argument_errors import ArgumentValidationMiddleware
+    from src.tools.core_tools import register_core_tools
+
+    queue = DurableCPGQueue.__new__(DurableCPGQueue)
+    queue.store = store
+    mcp = FastMCP("TestServer")
+    mcp.add_middleware(ArgumentValidationMiddleware())
+    register_core_tools(mcp, {"codebase_tracker": tracker or MagicMock(), "config": Config(),
+                              "cpg_queue": queue, "joern_server_manager": MagicMock()})
+    return mcp
+
+
+async def test_cancel_tool_marks_the_build_cancelled_and_reports_lost_races(store):
+    from fastmcp import Client
+
+    from src.models import CodebaseInfo
+
+    queued, _ = store.enqueue_job("c" * 16, "generate_cpg", {})
+    claimed_id, _ = store.enqueue_job("d" * 16, "generate_cpg", {})
+    with store._connect() as conn:  # make the second job the oldest so the claim takes it
+        conn.execute("UPDATE jobs SET created_at = '2000-01-01' WHERE id = %s", (claimed_id,))
+        conn.commit()
+    assert store.claim_next_job("generate_cpg")["id"] == claimed_id
+
+    tracker = MagicMock()
+    tracker.get_codebase.return_value = CodebaseInfo(
+        codebase_hash="c" * 16, source_type="local", source_path="/x", language="c",
+        metadata={"status": "generating", "phase": "queued"},
+    )
+    async with Client(_job_server(store, tracker)) as client:
+        won = (await client.call_tool("cancel_cpg_job", {"job_id": queued})).structured_content
+        lost = (await client.call_tool("cancel_cpg_job", {"job_id": claimed_id})).structured_content
+        missing = await client.call_tool("cancel_cpg_job", {"job_id": 999999}, raise_on_error=False)
+        history = (await client.call_tool("list_cpg_jobs", {"page_size": 1})).structured_content
+
+    assert (won["cancelled"], won["status"], won["codebase_hash"]) == (True, "cancelled", "c" * 16)
+    assert (lost["cancelled"], lost["status"]) == (False, "running")
+    assert missing.is_error and missing.content[0].text.startswith("VALIDATION_ERROR: Build job 999999")
+    meta = tracker.update_codebase.call_args.kwargs["metadata"]
+    assert (meta["status"], meta["error_code"]) == ("failed", "CANCELLED")
+    assert tracker.update_codebase.call_count == 1  # only the cancelled build's row changed
+    assert (history["total"], history["returned"], history["truncated"]) == (2, 1, True)
+
+
+async def test_job_tools_need_the_durable_queue():
+    from fastmcp import Client, FastMCP
+
+    from src.models import Config
+    from src.tools.core_tools import register_core_tools
+
+    mcp = FastMCP("TestServer")
+    register_core_tools(mcp, {"codebase_tracker": MagicMock(), "config": Config(),
+                              "cpg_queue": CPGGenerationQueue.__new__(CPGGenerationQueue)})
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_cpg_jobs", {}, raise_on_error=False)
+    assert result.is_error and result.content[0].text.startswith("NOT_SUPPORTED: ")
