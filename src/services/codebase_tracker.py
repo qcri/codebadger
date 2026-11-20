@@ -86,6 +86,21 @@ class CodebaseTracker:
         """List all tracked codebase hashes"""
         return self.db.list_codebases()
 
+    def list_codebase_page(
+        self, *, offset: int, limit: int, language=None, project=None
+    ) -> tuple[list[CodebaseInfo], int]:
+        """One page of catalog summaries (database-side paging) and the filtered total."""
+        rows, total = self.db.list_codebase_page(
+            offset=offset, limit=limit, language=language, project=project
+        )
+        out = []
+        for data in rows:
+            try:
+                out.append(CodebaseInfo.from_dict(data))
+            except Exception as e:
+                logger.warning(f"Skipping malformed codebase row {data.get('hash')}: {e}")
+        return out, total
+
     def list_codebases_full(self) -> list[CodebaseInfo]:
         """All codebases as CodebaseInfo in a single bulk query (read-only).
 
