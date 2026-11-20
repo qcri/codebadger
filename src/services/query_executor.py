@@ -29,6 +29,12 @@ _DATAFLOW_PATTERNS = (".reachableByFlows", "reachableByFlows")
 _DATAFLOW_RESULT_LIMIT = 50
 _DATAFLOW_DEFAULT_TIMEOUT = 120  # seconds
 
+# Scala 3 compiler diagnostics, e.g. "-- [E008] Not Found Error: ---" or "-- Error: ---".
+# Joern prints them to stdout with a successful HTTP reply, so they must be detected here.
+_COMPILE_ERROR_RE = re.compile(r"^-- (?:\[E\d+\] )?[A-Za-z ]*Error:", re.MULTILINE)
+_ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+_MAX_COMPILE_ERROR_CHARS = 2000
+
 
 class QueryExecutor:
     """Service for executing CPGQL queries against CPGs using Joern HTTP server"""
@@ -309,6 +315,14 @@ class QueryExecutor:
 
             if result.get("success"):
                 stdout = result.get("stdout", "")
+                compile_error = self._compile_error(stdout)
+                if compile_error:
+                    logger.warning(f"Query failed to compile: {compile_error[:200]}")
+                    return QueryResult(
+                        success=False,
+                        error=sanitize_error_text(compile_error, max_len=_MAX_COMPILE_ERROR_CHARS),
+                        error_code="QUERY_ERROR",
+                    )
                 # Bound the raw payload we parse/return so a single query can't
                 # exhaust memory or flood the response channel.
                 truncated = False
@@ -340,6 +354,21 @@ class QueryExecutor:
         except Exception as e:
             logger.error(f"Error executing query via Joern client: {e}")
             return QueryResult(success=False, error=sanitize_error_text(str(e)), error_code="QUERY_ERROR")
+
+    @staticmethod
+    def _compile_error(stdout: str) -> Optional[str]:
+        """Return compiler diagnostics when Joern rejected the query, else None.
+
+        A query that compiled and ran may print anything, including text that looks
+        like a diagnostic, so output carrying a <codebadger_result> envelope is trusted.
+        """
+        if not stdout or "<codebadger_result>" in stdout:
+            return None
+        text = _ANSI_RE.sub("", stdout)
+        match = _COMPILE_ERROR_RE.search(text)
+        if not match:
+            return None
+        return f"Query failed to compile: {text[match.start():].strip()}"
 
     def _parse_output(self, output: str) -> Union[list, int, float, str]:
         """Parse Joern query output"""
