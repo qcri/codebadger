@@ -1166,11 +1166,11 @@ Examples:
     get_variable_flow(codebase_hash="abc", location="main.c:50", variable="len", direction="backward")""",
     )
     def get_variable_flow(
-        codebase_hash: str,
-        location: str,
-        variable: str,
-        direction: Literal["backward", "forward"] = "backward",
-        detail: Literal["compact", "full"] = "compact",
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        location: Annotated[str, Field(description="'filename:line' relative to the project root. Example: 'main.c:50'")],
+        variable: Annotated[str, Field(description="Name of the variable at that location. Example: 'len'")],
+        direction: Annotated[Literal["backward", "forward"], Field(description="'backward' finds definitions and assignments; 'forward' finds uses and propagation")] = "backward",
+        detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact bounds the rendered flow report")] = "compact",
     ) -> Dict[str, Any]:
         """Analyze variable data dependencies in backward or forward direction."""
         try:
