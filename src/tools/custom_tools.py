@@ -37,13 +37,6 @@ argument — the minimal syntactic signal that user-controlled data might reach
 a command interpreter.  Works across C, C++, Python, Java, JavaScript, Go,
 PHP, and Ruby.
 
-Args:
-    codebase_hash: Hash returned by generate_cpg.
-    language:      Narrow to a language's sink set (c, cpp, python, java,
-                   javascript, go, php, ruby).  Auto-detected when omitted.
-    filename:      Optional filename to restrict results (substring match).
-    max_results:   Upper bound on returned call sites (default 50).
-
 Returns:
     Text report listing each sink call site with location and code snippet,
     followed by a suggested next step (find_taint_flows).

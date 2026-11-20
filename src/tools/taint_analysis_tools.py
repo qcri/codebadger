@@ -516,13 +516,6 @@ def register_taint_analysis_tools(mcp, services: dict):
 Search for function calls that could be entry points for untrusted data,
 such as user input, environment variables, or network data.
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    language: Programming language (c, cpp, java, python, javascript, go, csharp, php, ruby, swift, kotlin, etc). Default: uses CPG language.
-    source_patterns: Optional list of patterns for source functions (e.g., ['getenv', 'read']).
-    filename: Optional regex to filter by filename (relative to project root).
-    limit: Max results (default 200).
-
 Returns:
     {
         "success": true,
@@ -637,14 +630,6 @@ Examples:
 
 Search for function calls that could be security-sensitive destinations
 for data, such as system execution, file operations, or format strings.
-
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    language: Programming language (c, cpp, java, python, javascript, go, csharp, php, ruby, swift, kotlin, etc). Default: uses CPG language.
-    sink_patterns: Optional list of regex patterns for sink functions (e.g., ['system', 'exec']).
-    broad: Include low-signal C/C++ sink categories (default False).
-    filename: Optional regex to filter by filename (relative to project root).
-    limit: Max results (default 200).
 
 Returns:
     {
@@ -763,20 +748,6 @@ MODE 2 - Auto (mode="auto"): Batch-test ALL default sources against ALL default 
   - Ideal for security audits: one call covers hundreds of source-sink pairs.
   - Optionally filter by language, filename, or custom source/sink patterns.
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    mode: Set to "auto" to run batch analysis with all default sources/sinks. Omit for manual mode.
-    source_location: (Manual mode) Source at 'file:line' (e.g., 'xsltproc/xsltproc.c:818').
-    sink_location: (Manual mode) Sink at 'file:line' (e.g., 'libxslt/numbers.c:229').
-    source_node_id: (Manual mode) Alternative: node ID from find_taint_sources output.
-    sink_node_id: (Manual mode) Alternative: node ID from find_taint_sinks output.
-    language: (Auto mode) Programming language for default patterns (c, cpp, java, python, etc). Auto-detected if omitted.
-    source_patterns: (Auto mode) Optional list of source function names to override defaults (e.g., ['getenv', 'read']).
-    sink_patterns: (Auto mode) Optional list of sink function names to override defaults (e.g., ['system', 'strcpy']).
-    filename: (Auto mode) Optional regex to filter sources/sinks by filename.
-    max_results: Maximum flows to return (default 20).
-    timeout: Query timeout in seconds (default 120 for manual, 300 for auto).
-
 Returns:
     Human-readable text showing:
     - Source and sink matched
@@ -813,7 +784,6 @@ Examples:
         sink_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sink function names (e.g., ['system', 'strcpy'])")] = None,
         filename: Annotated[Optional[str], Field(description="(Auto mode) Regex to filter sources/sinks by filename")] = None,
         sanitizer_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sanitizer function names. Flows through sanitizers are filtered out.")] = None,
-        # Legacy/Deprecated arguments - included to provide helpful error messages
     ) -> Dict[str, Any]:
         """Find data flow paths between source and sink using Joern's native taint analysis."""
         try:
@@ -990,14 +960,6 @@ Examples:
 Creates a program slice showing code that affects (backward) or is affected by (forward)
 a specific call, including dataflow and control dependencies. Optimized for static code analysis.
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    location: 'filename:line' or 'filename:line:call_name' (file relative to project root).
-    direction: 'backward' (default, what affects the call) or 'forward' (what is affected by the call).
-    max_depth: Depth limit for recursive dependency tracking (default 5).
-    include_control_flow: Include control dependencies like if/while conditions (default True).
-    timeout: Maximum execution time in seconds (default 60).
-
 Returns:
     Human-readable text summary showing:
     - Target call info (name, code, location)
@@ -1102,12 +1064,6 @@ Examples:
 
 Finds code locations that influence (backward) or are influenced by (forward)
 a variable, with support for pointer aliasing.
-
-Args:
-    codebase_hash: The codebase hash.
-    location: "filename:line" (e.g., "parser.c:3393"), filename relative to project root.
-    variable: Variable name to analyze.
-    direction: "backward" (definitions) or "forward" (usages).
 
 Returns:
     Human-readable text showing:
@@ -1214,12 +1170,6 @@ Filters out false positives:
 
 Supports free() variants: free, cfree, g_free, xmlFree, xsltFree*
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'runtest.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 300, higher due to dataflow analysis).
-
 Returns:
     Human-readable text showing:
     - Each potential UAF issue with free site location [file:line]
@@ -1299,12 +1249,6 @@ Filters out false positives:
 
 Supports free() variants: free, cfree, g_free, xmlFree, xsltFree*
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'parser.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 300).
-
 Returns:
     Human-readable text showing:
     - Each potential double-free issue with pointer name
@@ -1379,12 +1323,6 @@ Filters out false positives:
 Allocation functions checked: malloc, calloc, realloc, strdup, strndup, aligned_alloc,
 reallocarray, fopen, fdopen, freopen, tmpfile, popen, dlopen, mmap,
 xmlMalloc, xmlMallocAtomic, xmlRealloc, xmlStrdup, xmlStrndup
-
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'parser.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 300).
 
 Returns:
     Human-readable text showing:
@@ -1469,12 +1407,6 @@ Filters out false positives:
 - Single-variable + constant additions (e.g., len + 1)
 - Array indices with preceding bounds checks
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'parser.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 300).
-
 Returns:
     Human-readable text showing:
     - Each potential overflow issue with location [file:line]
@@ -1549,12 +1481,6 @@ Detection:
 Functions checked: printf, vprintf, fprintf, vfprintf, dprintf, sprintf, vsprintf,
 snprintf, vsnprintf, syslog, vsyslog, err, errx, warn, warnx, asprintf, vasprintf
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'logger.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 120).
-
 Returns:
     Human-readable text showing each potential format string issue with:
     - Location [file:line] and function name
@@ -1623,12 +1549,6 @@ Filters out:
 - Buffer reassignments between allocation and write
 - Writes in mutually exclusive branches from the allocation
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'net.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 240).
-
 Returns:
     Human-readable text showing each potential heap overflow with:
     - Allocation site [file:line] with buffer name and size expression
@@ -1695,12 +1615,6 @@ Filters out:
 - Writes guarded by a preceding bounds-check (if comparison on the size variable)
 - Writes in mutually exclusive branches from the declaration
 
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'parser.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 240).
-
 Returns:
     Human-readable text showing each potential stack overflow with:
     - Stack buffer declaration [file:line] with variable name, type, and array size
@@ -1761,12 +1675,6 @@ Analyzes the codebase for the classic TOCTOU pattern:
 3. Both calls appear in the same function with the check preceding the use
 
 Between the check and the use an attacker may replace the file or swap it for a symlink, bypassing the access-control decision made at check time.
-
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'fs_utils.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 240).
 
 Returns:
     Human-readable text showing each potential TOCTOU issue with:
@@ -1835,12 +1743,6 @@ Detection strategy:
 2. Locate the first explicit assignment to that variable (if any)
 3. Flag any read of the variable that precedes the first assignment, or any
    read of a variable that is never assigned
-
-Args:
-    codebase_hash: The codebase hash from generate_cpg.
-    filename: Optional filename regex to filter results (e.g., 'parser.c').
-    limit: Maximum results to return (default 100).
-    timeout: Query timeout in seconds (default 240).
 
 Returns:
     Human-readable text showing each potential uninitialized read with:
