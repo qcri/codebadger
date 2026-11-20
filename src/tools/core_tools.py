@@ -540,6 +540,29 @@ _JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
 _COVERAGE_MAX_WARNINGS = 10
 
 
+def _repo_root_prefix(codebase_dir: str) -> str:
+    """Prefix from the frontend's input dir to the repository root.
+
+    A github clone lives in codebase_dir/source (the frontend parses codebase_dir),
+    so caller paths written relative to the repo root (include_globs, relative
+    include_paths, compile_commands) need "source/" in front. Local copies and
+    snippets are staged at codebase_dir itself.
+    """
+    try:
+        entries = os.listdir(codebase_dir)
+    except OSError:
+        return ""
+    if entries == ["source"] and os.path.isdir(os.path.join(codebase_dir, "source", ".git")):
+        return "source/"
+    return ""
+
+
+def _under_repo_root(prefix: str, path: str) -> str:
+    """Rebase a repo-root-relative path onto the frontend input dir."""
+    path = path.strip().lstrip("./")
+    return path if not prefix or path.startswith(prefix) else prefix + path
+
+
 def _overlay_script(container_cpg_file: str) -> str:
     """Shell script that persists Joern's default overlays (incl. dataflowOss) into
     container_cpg_file in place, via importCpg in a scratch workspace.
@@ -1359,6 +1382,7 @@ async def _generate_cpg_async(
             raise ValueError(f"Unsupported language: {language}")
 
         cmd = [cmd_binary, f"/playground/codebases/{codebase_hash}", "-o", container_output_path]
+        repo_prefix = await asyncio.to_thread(_repo_root_prefix, codebase_dir)
         if build_settings is None:
             build_settings = _cpg_build_settings(config, language, compile_commands)
 
@@ -1403,7 +1427,9 @@ async def _generate_cpg_async(
             src_exts = SCOPE_SOURCE_EXTENSIONS.get(
                 language, [LANGUAGE_EXTENSIONS.get(language, language)]
             )
-            scope_rx = scope_exclude_regex(list(include_globs), src_exts)
+            scope_rx = scope_exclude_regex(
+                [_under_repo_root(repo_prefix, g) for g in include_globs], src_exts
+            )
             if scope_rx:
                 exclude_parts.append(scope_rx)
                 coverage["scope"]["applied"] = True
@@ -1436,7 +1462,9 @@ async def _generate_cpg_async(
 
             auto_rel = await asyncio.to_thread(_autodetect_c_includes, codebase_dir)
             inc_dirs, seen_inc = [], set()
-            for p in [_to_container(x) for x in auto_rel] + [_to_container(x) for x in (include_paths or [])]:
+            explicit = [x if os.path.isabs(x.strip()) else _under_repo_root(repo_prefix, x)
+                        for x in (include_paths or []) if x and x.strip()]
+            for p in [_to_container(x) for x in auto_rel] + [_to_container(x) for x in explicit]:
                 if p and p not in seen_inc:
                     seen_inc.add(p)
                     inc_dirs.append(p)
@@ -1493,6 +1521,8 @@ async def _generate_cpg_async(
 
         if compile_commands and frontend_supports(language, "compilation_database"):
             rel = str(compile_commands).strip().lstrip("/")
+            if coverage["compilation_database"]["source"] == "caller":
+                rel = _under_repo_root(repo_prefix, rel)  # autodetected paths already include it
             db_host = os.path.realpath(os.path.join(codebase_dir, rel))
             cdir_real = os.path.realpath(codebase_dir)
             container_root = f"/playground/codebases/{codebase_hash}"
@@ -2301,9 +2331,16 @@ Examples:
                 "build_settings": _cpg_build_settings(config, language, compile_commands),
             }
             snippet_name = snippet_filename(language, filename) if source_type == "snippet" else None
+            key_extra = {**build_options, "snippet_filename": snippet_name}
+            if source_type == "github" and (
+                build_options["include_globs"] or build_options["include_paths"] or compile_commands
+            ):
+                # Repo-root paths now resolve inside the clone's source/ dir; graphs
+                # built before that excluded every in-scope file, so don't reuse them.
+                key_extra["repo_root_paths"] = 1
             codebase_hash = get_cpg_cache_key(
                 source_type, source_path, language, commit_hash, content=content_fp,
-                extra={**build_options, "snippet_filename": snippet_name}, branch=branch,
+                extra=key_extra, branch=branch,
             )
             logger.info(f"Processing codebase with hash: {codebase_hash}")
 
