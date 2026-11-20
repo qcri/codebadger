@@ -14,7 +14,7 @@ from src.services.code_browsing_service import CodeBrowsingService
 
 
 def _make_service(calls, failing=()):
-    """A CodeBrowsingService whose 5 warm-up queries just record their order."""
+    """A CodeBrowsingService whose candidate warm-up queries just record their order."""
     svc = CodeBrowsingService.__new__(CodeBrowsingService)  # bypass __init__ deps
 
     def make(name):
@@ -29,17 +29,56 @@ def _make_service(calls, failing=()):
     return svc
 
 
-def test_warm_up_cache_runs_all_queries_in_order():
+def test_warm_up_cache_runs_only_queries_a_client_can_hit():
     calls = []
     _make_service(calls).warm_up_cache("h1")
-    assert calls == ["list_methods", "list_calls", "list_parameters", "find_literals"]
+    assert calls == ["list_methods", "list_calls"]
+
+
+async def test_warm_up_cache_keys_match_default_tool_calls():
+    """The warm-up must populate the cache entries that default MCP calls look up."""
+    import json
+    from unittest.mock import MagicMock
+
+    from fastmcp import Client, FastMCP
+
+    from src.models import QueryResult
+    from src.tools.code_browsing_tools import register_code_browsing_tools
+
+    def key(call):
+        tool_name, codebase_hash, params = call.args[:3]
+        return tool_name, codebase_hash, json.dumps(params, sort_keys=True)
+
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(success=True, data=[], row_count=0)
+    db = MagicMock()
+    db.get_cached_tool_output.return_value = None
+    tracker = MagicMock()
+    svc = CodeBrowsingService(tracker, executor, db_manager=db)
+
+    svc.warm_up_cache("553642871dd4251d")
+    warmed = {key(c) for c in db.cache_tool_output.call_args_list}
+    db.reset_mock()
+    db.get_cached_tool_output.return_value = None
+
+    mcp = FastMCP("TestServer")
+    register_code_browsing_tools(mcp, {
+        "code_browsing_service": svc, "codebase_tracker": tracker, "query_executor": executor,
+    })
+    async with Client(mcp) as client:
+        for tool in ("list_methods", "list_calls"):
+            await client.call_tool(tool, {"codebase_hash": "553642871dd4251d"})
+    looked_up = {key(c) for c in db.get_cached_tool_output.call_args_list}
+
+    assert len(warmed) == 2
+    assert looked_up == warmed
 
 
 def test_warm_up_cache_continues_after_a_failing_query():
     calls = []
     # A failure in the middle must not abort the remaining warm-up queries.
-    _make_service(calls, failing={"list_calls"}).warm_up_cache("h1")
-    assert calls == ["list_methods", "list_calls", "list_parameters", "find_literals"]
+    _make_service(calls, failing={"list_methods"}).warm_up_cache("h1")
+    assert calls == ["list_methods", "list_calls"]
 
 
 @pytest.mark.asyncio
