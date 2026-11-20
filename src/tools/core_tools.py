@@ -1941,23 +1941,6 @@ Only call generate_cpg after the user either provides a scoped path or explicitl
 they want the full project. Pass force=True when the user confirms the full project.
 This guard does NOT apply to GitHub URLs — size is unknown until cloned.
 
-Args:
-    source_type: One of 'local', 'github' (a github.com/gitlab.com repo, or a repo
-                 on a configured GIT_CLONE_EXTRA_HOSTS server), or 'snippet'.
-    source_path: REQUIRED for local (absolute path) and github (an https
-                 github.com/gitlab.com URL, or an ssh:// URL on a host the
-                 operator allowlisted via GIT_CLONE_EXTRA_HOSTS). OPTIONAL for
-                 snippet — a short label; when omitted the server derives one from
-                 the filename/language.
-    language: Programming language (java, c, cpp, python, javascript, go, etc.).
-              REQUIRED for local/github. Optional for snippets that carry a
-              <code language="..."> tag (the tag wins) or whose language is inferable.
-    code: For snippets, the code wrapped in <code language="..."> ... </code> tag(s).
-    github_token: Optional PAT for private repos (never embed it in the URL).
-    branch: Optional specific git branch.
-    force: Set to True to skip the large-project size warning (use when the user has
-           explicitly confirmed they want to analyze the full project).
-
 Returns:
     {
         "codebase_hash": "hash of the codebase",
@@ -2538,9 +2521,6 @@ and returns immediately with status 'generating'. Poll this tool with the return
 codebase_hash until status becomes 'ready' (or 'failed') — that is the intended way
 to wait for a CPG to finish generating. It returns the CPG's current status and, once
 ready, the Joern server port to use for queries.
-
-Args:
-    codebase_hash: The unique hash identifier returned by generate_cpg.
 
 Returns:
     {

@@ -108,15 +108,6 @@ def register_code_browsing_tools(mcp, services: dict):
 
 Discover all methods and functions defined in the analyzed code.
 
-Args:
-    codebase_hash: The codebase hash.
-    name_pattern: Regex filter for method name.
-    file_pattern: Regex filter for filename.
-    callee_pattern: Regex filter for methods that call this specific function.
-    include_external: Include external (library) methods (default False).
-    limit: Max results.
-    page: Page number.
-
 Returns:
     {
         "success": true,
@@ -195,13 +186,6 @@ Examples:
 
 Discover call relationships between functions.
 
-Args:
-    codebase_hash: The codebase hash.
-    caller_pattern: Regex for the calling method.
-    callee_pattern: Regex for the called method.
-    limit: Max results.
-    page: Page number.
-
 Returns:
     {
         "success": true,
@@ -254,13 +238,6 @@ Examples:
 
 Understand what functions a method calls (outgoing) or what functions
 call it (incoming).
-
-Args:
-    codebase_hash: The codebase hash.
-    method_name: Name of the method to analyze (must match one method).
-    method_id: Exact node_id from list_methods; overrides method_name.
-    depth: Traversal depth (default 5).
-    direction: 'outgoing' (callees) or 'incoming' (callers).
 
 Returns:
     A human-readable text summary:
@@ -371,10 +348,6 @@ Examples:
 Get detailed information about method parameters including their names,
 types, and order.
 
-Args:
-    codebase_hash: The codebase hash.
-    method_name: Method name pattern.
-
 Returns:
     {
         "success": true,
@@ -426,12 +399,6 @@ Examples:
 
 Run arbitrary Code Property Graph Query Language (CPGQL) queries
 for advanced analysis.
-
-Args:
-    codebase_hash: The codebase hash.
-    query: The CPGQL query string.
-    timeout: Optional execution timeout.
-    validate: Validate syntax before execution (default False).
 
 Returns:
     {
@@ -548,10 +515,6 @@ Examples:
 Verify if buffer accesses have corresponding bounds checks by analyzing
 comparison operations involving the index variable.
 
-Args:
-    codebase_hash: The codebase hash.
-    buffer_access_location: 'filename:line' of the access (e.g., 'buf[i] = x').
-
 Returns:
     A human-readable text summary of the bounds check analysis.
 
@@ -629,9 +592,6 @@ Examples:
         description="""Get comprehensive CPGQL syntax help and examples.
 
 Provides syntax documentation, common patterns, node types, and error solutions.
-
-Args:
-    None.
 
 Returns:
     {
@@ -745,12 +705,6 @@ Examples:
 
 Understand the control flow of a method with a human-readable graph.
 
-Args:
-    codebase_hash: The codebase hash.
-    method_name: Name of the method (must match one method).
-    method_id: Exact node_id from list_methods; overrides method_name.
-    max_nodes: Limit nodes returned (default 100).
-
 Returns:
     A human-readable text graph:
     
@@ -835,11 +789,6 @@ Examples:
         description="""Get type/struct definition with members.
 
 Inspect struct or class memory layouts.
-
-Args:
-    codebase_hash: The codebase hash.
-    type_name: Regex for type name.
-    limit: Max results.
 
 Returns:
     {

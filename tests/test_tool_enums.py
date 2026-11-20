@@ -86,3 +86,12 @@ async def test_every_tool_argument_has_a_description():
         if not schema.get("description")
     )
     assert undocumented == []
+
+
+async def test_descriptions_do_not_repeat_argument_docs():
+    """Per-argument docs live in field descriptions; an Args: block only repeats them."""
+    mcp, _ = _server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    assert [t.name for t in tools if "\nArgs:\n" in (t.description or "")] == []
