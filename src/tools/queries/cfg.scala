@@ -4,9 +4,38 @@
   val maxNodes = {{max_nodes}}
   val sb = new StringBuilder()
 
-  val m = cpg.method.name(methodName).take(1).l.headOption
-  m match {
-    case Some(method) =>
+  // Resolve the root: an exact graph node ID wins; otherwise the name pattern must
+  // identify one method (internal definitions preferred over external stubs).
+  val methodId = {{method_id}}L
+  val candidates =
+    if (methodId >= 0) cpg.method.filter(_.id == methodId).l
+    else {
+      val all = cpg.method.name(methodName).l
+      val internal = all.filterNot(_.isExternal)
+      if (internal.nonEmpty) internal else all
+    }
+  def describeCandidates(sb: StringBuilder): Unit = {
+    sb.append(s"Ambiguous method name '$methodName': ${candidates.size} matches. Re-run with method_id set to one of:\n")
+    candidates.sortBy(_.id).take(10).foreach { c =>
+      val loc = s"${c.file.name.headOption.getOrElse("unknown")}:${c.lineNumber.getOrElse(-1)}"
+      sb.append(s"  method_id=${c.id}  ${c.fullName}  ($loc)\n")
+    }
+    if (candidates.size > 10) sb.append(s"  ... and ${candidates.size - 10} more; narrow method_name.\n")
+  }
+  def describeMissing(sb: StringBuilder): Unit = {
+    if (methodId >= 0) sb.append(s"Method not found for method_id $methodId\n")
+    else {
+      sb.append(s"Method not found: $methodName\n")
+      val similar = cpg.method.name(s".*$methodName.*").name.l.distinct.take(10)
+      if (similar.nonEmpty) {
+        sb.append(s"\nDid you mean one of these?\n")
+        similar.foreach(m => sb.append(s"  - $m\n"))
+      }
+    }
+  }
+
+  candidates match {
+    case List(method) =>
       sb.append(s"Control Flow Graph for ${method.name}\n")
       sb.append("=" * 60 + "\n")
 
@@ -37,13 +66,8 @@
         }
       }
 
-    case None =>
-      sb.append(s"Method not found: $methodName\n")
-      val similar = cpg.method.name(s".*$methodName.*").name.l.distinct.take(10)
-      if (similar.nonEmpty) {
-        sb.append(s"\nDid you mean one of these?\n")
-        similar.foreach(m => sb.append(s"  - $m\n"))
-      }
+    case Nil => describeMissing(sb)
+    case _ => describeCandidates(sb)
   }
   
   "<codebadger_result>\n" + sb.toString() + "</codebadger_result>"
