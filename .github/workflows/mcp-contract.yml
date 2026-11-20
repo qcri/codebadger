@@ -36,6 +36,13 @@ jobs:
           done
           docker compose logs codebadger-mcp
           exit 1
+      - name: Call a tool over the deployed MCP transport
+        run: >-
+          docker run --rm --network host
+          -v "$PWD:/workspace:ro"
+          -w /workspace
+          codebadger-mcp:latest
+          python scripts/mcp_smoke.py --url http://127.0.0.1:4242/mcp
       - name: Create integration test database
         run: docker compose exec -T codebadger-postgres createdb -U codebadger codebadger_test
       - name: Run live integration and detector tests
