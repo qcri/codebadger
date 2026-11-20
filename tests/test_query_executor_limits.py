@@ -17,14 +17,14 @@ def test_normalize_query_caps_unbounded_query():
     """A raw query with no limit gets a default .take() ceiling."""
     qe = _make_executor()
     out = qe._normalize_query("cpg.method.l", None)
-    assert f".take({MAX_RESULT_ROWS})" in out
+    assert f".take({MAX_RESULT_ROWS + 1})" in out
 
 
 def test_normalize_query_clamps_huge_explicit_limit():
     """An absurd caller limit is clamped to the hard ceiling."""
     qe = _make_executor()
     out = qe._normalize_query("cpg.method", 1_000_000_000)
-    assert f".take({MAX_RESULT_ROWS})" in out
+    assert f".take({MAX_RESULT_ROWS + 1})" in out
 
 
 def test_normalize_query_leaves_size_queries_alone():

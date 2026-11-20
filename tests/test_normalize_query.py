@@ -47,13 +47,13 @@ def test_size_query_uses_toString_no_take():
 def test_unbounded_query_capped():
     qe = _qe()
     out = qe._normalize_query("cpg.method.l", None)
-    assert f".take({MAX_RESULT_ROWS})" in out
+    assert f".take({MAX_RESULT_ROWS + 1})" in out
 
 
 def test_huge_explicit_limit_clamped():
     qe = _qe()
     out = qe._normalize_query("cpg.method", 1_000_000_000)
-    assert f".take({MAX_RESULT_ROWS})" in out
+    assert f".take({MAX_RESULT_ROWS + 1})" in out
 
 
 def test_marker_block_passthrough_unchanged():
