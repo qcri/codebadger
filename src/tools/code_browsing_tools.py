@@ -484,9 +484,12 @@ Examples:
         if validate:
             validation_result = CPGQLValidator.validate_query(query.strip())
             if not validation_result['valid'] and validation_result['errors']:
-                raise ValidationError(
-                    "Query validation failed: " + "; ".join(map(str, validation_result['errors']))
-                )
+                problems = [
+                    f"{e.get('message', e)}" + (f" ({e['suggestion']})" if e.get("suggestion") else "")
+                    if isinstance(e, dict) else str(e)
+                    for e in validation_result['errors']
+                ]
+                raise ValidationError("Query validation failed: " + "; ".join(problems))
 
         # Dataflow queries (reachableByFlows) legitimately need more time.
         # Use a higher default when the caller didn't specify an explicit timeout.
