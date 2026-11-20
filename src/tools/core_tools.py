@@ -941,16 +941,8 @@ def _calculate_repo_size_mb(source_path: str) -> int:
     return size_mb
 
 
-def _estimate_processing_time(source_path: str, language: str, has_cpg: bool = False) -> str:
-    """Estimate processing time based on codebase size and whether CPG already exists.
-    
-    Returns a human-readable time estimate string.
-    """
-    try:
-        size_mb = _calculate_repo_size_mb(source_path)
-    except Exception:
-        size_mb = 0
-
+def _estimate_processing_time(size_mb: int, has_cpg: bool = False) -> str:
+    """Map a source size to a human-readable processing-time estimate."""
     if has_cpg:
         if size_mb > 200:
             return "~3-8 minutes (loading large CPG into Joern server)"
@@ -967,6 +959,22 @@ def _estimate_processing_time(source_path: str, language: str, has_cpg: bool = F
             return "~1-3 minutes (CPG generation + server loading)"
         else:
             return "~30-90 seconds (CPG generation + server loading)"
+
+
+async def _estimate_processing_time_async(
+    source_path: str, has_cpg: bool = False, size_mb: Optional[int] = None
+) -> str:
+    """Estimate processing time without blocking the event loop.
+
+    Reuses a size measured earlier in the request; otherwise the tree walk runs in a
+    worker thread so a large source can't stall unrelated MCP requests.
+    """
+    if size_mb is None:
+        try:
+            size_mb = await asyncio.to_thread(_calculate_repo_size_mb, source_path)
+        except Exception:
+            size_mb = 0
+    return _estimate_processing_time(size_mb, has_cpg)
 
 
 # Strong refs to in-flight fire-and-forget warm-up futures so they aren't GC'd
@@ -2030,11 +2038,13 @@ Examples:
             # blocking FS work — run them off the event loop so a big project's tree
             # walk can't freeze every other concurrent generate_cpg call.
             guard_on = config.cpg.large_project_guard if config else True
+            measured_size_mb = None
             if source_type == "local" and not force and guard_on:
                 max_mb = config.cpg.large_project_max_mb if config else 2000
                 max_loc = config.cpg.large_project_max_loc if config else 2_000_000
                 resolved = await asyncio.to_thread(resolve_host_path, source_path)
                 size_mb, loc = await asyncio.to_thread(_scan_repo, resolved)
+                measured_size_mb = size_mb
                 if size_mb > max_mb or loc > max_loc:
                     return {
                         "success": True,  # no error; an informational soft-decline
@@ -2159,7 +2169,9 @@ Examples:
                             os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "playground")),
                             "codebases", codebase_hash
                         )
-                        estimate = _estimate_processing_time(codebase_dir, existing_codebase.language, has_cpg=True)
+                        estimate = await _estimate_processing_time_async(
+                            codebase_dir, has_cpg=True, size_mb=measured_size_mb
+                        )
                         return {
                             "success": True,
                             "codebase_hash": codebase_hash,
@@ -2201,7 +2213,9 @@ Examples:
                         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "playground")),
                         "codebases", codebase_hash
                     )
-                    estimate = _estimate_processing_time(codebase_dir, existing_codebase.language, has_cpg=True)
+                    estimate = await _estimate_processing_time_async(
+                        codebase_dir, has_cpg=True, size_mb=measured_size_mb
+                    )
 
                     return {
                         "success": True,
@@ -2430,7 +2444,9 @@ Examples:
                 else:
                     asyncio.create_task(_generate_cpg_async(**job))
 
-                estimate = _estimate_processing_time(codebase_dir, language, has_cpg=False)
+                estimate = await _estimate_processing_time_async(
+                    codebase_dir, has_cpg=False, size_mb=measured_size_mb
+                )
 
                 return {
                     "success": True,
