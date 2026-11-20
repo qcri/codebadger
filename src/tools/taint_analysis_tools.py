@@ -16,7 +16,7 @@ from ..utils.query_rendering import escape_scala_string
 from ..utils.validators import clamp_int, validate_codebase_hash
 from ..defaults import MAX_RESULT_ROWS
 from .queries import QueryLoader
-from ._common import require_cpg, unwrap_result, is_error_output, cache_policy
+from ._common import cache_policy, is_error_output, require_cpg, tool_errors, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +508,6 @@ def register_taint_analysis_tools(mcp, services: dict):
                 }, "additionalProperties": False}},
                 "total": {"type": "integer"}, "returned": {"type": "integer"}, "limit": {"type": "integer"},
                 "has_more": {"type": "boolean"}, "truncated": {"type": "boolean"}, "message": {"type": "string"},
-                "error": {"type": ["string", "object"]},
             },
             "required": ["success"], "additionalProperties": False,
         },
@@ -545,6 +544,7 @@ Examples:
     find_taint_sources(codebase_hash="abc", language="c")
     find_taint_sources(codebase_hash="abc", source_patterns=["read_from_socket"])""",
     )
+    @tool_errors("verify the CPG is ready (get_cpg_status) and narrow language, patterns, or filename.")
     def find_taint_sources(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         language: Annotated[Optional[str], Field(description="Programming language (c, cpp, java, python, javascript). If not provided, uses the CPG's language")] = None,
@@ -553,80 +553,67 @@ Examples:
         limit: Annotated[int, Field(description="Maximum number of results to return")] = 200,
     ) -> Dict[str, Any]:
         """Find function calls that are entry points for external/untrusted data."""
-        try:
-            validate_codebase_hash(codebase_hash)
+        validate_codebase_hash(codebase_hash)
 
-            query_executor = services["query_executor"]
+        query_executor = services["query_executor"]
 
-            # Verify CPG exists for this codebase
-            codebase_info = require_cpg(services, codebase_hash)
+        # Verify CPG exists for this codebase
+        codebase_info = require_cpg(services, codebase_hash)
 
-            # Determine language and patterns
-            lang = language or codebase_info.language or "c"
-            
-            # Try config first, then fall back to built-in defaults
-            cfg = services["config"]
-            # Priority: explicit caller patterns, then filtered config/defaults.
-            patterns = _resolve_source_patterns(cfg, lang, source_patterns)
-            if not patterns:
-                return {"success": True, "sources": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sources configured for language {lang}. Supported: {', '.join(DEFAULT_SOURCES.keys())}"}
+        # Determine language and patterns
+        lang = language or codebase_info.language or "c"
 
-            # Build Joern .name() regex from patterns, extracting short names
-            # from qualified patterns (e.g., 'os.system' -> 'system')
-            joined = _build_joern_name_pattern(patterns)
+        # Try config first, then fall back to built-in defaults
+        cfg = services["config"]
+        # Priority: explicit caller patterns, then filtered config/defaults.
+        patterns = _resolve_source_patterns(cfg, lang, source_patterns)
+        if not patterns:
+            return {"success": True, "sources": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sources configured for language {lang}. Supported: {', '.join(DEFAULT_SOURCES.keys())}"}
 
-            cache_params = {
-                "lang": lang,
-                "patterns": sorted(set(patterns)),
-                "filename": filename,
+        # Build Joern .name() regex from patterns, extracting short names
+        # from qualified patterns (e.g., 'os.system' -> 'system')
+        joined = _build_joern_name_pattern(patterns)
+
+        cache_params = {
+            "lang": lang,
+            "patterns": sorted(set(patterns)),
+            "filename": filename,
+            "limit": limit,
+            "result_shape": "named-map-v1",
+        }
+
+        def _execute():
+            query = _build_taint_location_query(joined, filename, limit)
+
+            result = query_executor.execute_query(
+                codebase_hash=codebase_hash,
+                cpg_path=codebase_info.cpg_path,
+                query=query,
+                timeout=30,
+                limit=limit,
+            )
+
+            if not result.success:
+                return {"success": False, "error": result.error, "error_code": result.error_code or "QUERY_ERROR"}
+
+            sources = []
+            for item in result.data:
+                source = _decode_taint_location(item)
+                if source is not None:
+                    sources.append(source)
+
+            return {
+                "success": True,
+                "sources": sources,
+                "total": len(sources),
+                "returned": len(sources),
                 "limit": limit,
-                "result_shape": "named-map-v1",
+                "has_more": len(sources) >= limit,
+                "truncated": len(sources) >= limit,
             }
 
-            def _execute():
-                query = _build_taint_location_query(joined, filename, limit)
+        return _cached_taint_query(services, "find_taint_sources", codebase_hash, cache_params, _execute)
 
-                result = query_executor.execute_query(
-                    codebase_hash=codebase_hash,
-                    cpg_path=codebase_info.cpg_path,
-                    query=query,
-                    timeout=30,
-                    limit=limit,
-                )
-
-                if not result.success:
-                    return {"success": False, "error": result.error}
-
-                sources = []
-                for item in result.data:
-                    source = _decode_taint_location(item)
-                    if source is not None:
-                        sources.append(source)
-
-                return {
-                    "success": True,
-                    "sources": sources,
-                    "total": len(sources),
-                    "returned": len(sources),
-                    "limit": limit,
-                    "has_more": len(sources) >= limit,
-                    "truncated": len(sources) >= limit,
-                }
-
-            return _cached_taint_query(services, "find_taint_sources", codebase_hash, cache_params, _execute)
-
-        except ValidationError as e:
-            logger.error(f"Error finding taint sources: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
-        except Exception as e:
-            logger.error(f"Unexpected error finding taint sources: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-            }
 
     @mcp.tool(
         title="Find Taint Sinks",
@@ -642,7 +629,7 @@ Examples:
                 }, "additionalProperties": False}},
                 "total": {"type": "integer"}, "returned": {"type": "integer"}, "limit": {"type": "integer"},
                 "has_more": {"type": "boolean"}, "truncated": {"type": "boolean"}, "mode": {"type": "string"},
-                "message": {"type": "string"}, "error": {"type": ["string", "object"]},
+                "message": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
         },
@@ -678,6 +665,7 @@ Examples:
     find_taint_sinks(codebase_hash="abc", language="c")
     find_taint_sinks(codebase_hash="abc", sink_patterns=["custom_exec"])""",
     )
+    @tool_errors("verify the CPG is ready (get_cpg_status) and narrow language, patterns, or filename.")
     def find_taint_sinks(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         language: Annotated[Optional[str], Field(description="Programming language (c, cpp, java, python, javascript, etc). If not provided, uses the CPG's language")] = None,
@@ -687,88 +675,75 @@ Examples:
         limit: Annotated[int, Field(description="Maximum number of results to return")] = 200,
     ) -> Dict[str, Any]:
         """Find security-sensitive function calls where untrusted data could cause harm."""
-        try:
-            validate_codebase_hash(codebase_hash)
+        validate_codebase_hash(codebase_hash)
 
-            query_executor = services["query_executor"]
+        query_executor = services["query_executor"]
 
-            # Verify CPG exists for this codebase
-            codebase_info = require_cpg(services, codebase_hash)
+        # Verify CPG exists for this codebase
+        codebase_info = require_cpg(services, codebase_hash)
 
-            lang = language or codebase_info.language or "c"
-            
-            cfg = services["config"]
-            patterns = _resolve_sink_patterns(cfg, lang, sink_patterns, broad)
-            if not patterns:
-                return {"success": True, "sinks": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sinks configured for language {lang}. Supported: {', '.join(DEFAULT_SINKS.keys())}"}
+        lang = language or codebase_info.language or "c"
 
-            # Build Joern .name() regex from patterns, extracting short names
-            # from qualified patterns (e.g., 'os.system' -> 'system')
-            joined = _build_joern_name_pattern(patterns)
+        cfg = services["config"]
+        patterns = _resolve_sink_patterns(cfg, lang, sink_patterns, broad)
+        if not patterns:
+            return {"success": True, "sinks": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sinks configured for language {lang}. Supported: {', '.join(DEFAULT_SINKS.keys())}"}
 
-            cache_params = {
-                "lang": lang,
-                "patterns": sorted(set(patterns)),
-                "broad": broad,
-                "filename": filename,
+        # Build Joern .name() regex from patterns, extracting short names
+        # from qualified patterns (e.g., 'os.system' -> 'system')
+        joined = _build_joern_name_pattern(patterns)
+
+        cache_params = {
+            "lang": lang,
+            "patterns": sorted(set(patterns)),
+            "broad": broad,
+            "filename": filename,
+            "limit": limit,
+            "result_shape": "named-map-v1",
+        }
+
+        def _execute():
+            query = _build_taint_location_query(joined, filename, limit)
+
+            result = query_executor.execute_query(
+                codebase_hash=codebase_hash,
+                cpg_path=codebase_info.cpg_path,
+                query=query,
+                timeout=30,
+                limit=limit,
+            )
+
+            if not result.success:
+                return {"success": False, "error": result.error, "error_code": result.error_code or "QUERY_ERROR"}
+
+            sinks = []
+            for item in result.data:
+                sink = _decode_taint_location(item)
+                if sink is not None:
+                    sinks.append(sink)
+
+            return {
+                "success": True,
+                "sinks": sinks,
+                "total": len(sinks),
+                "returned": len(sinks),
                 "limit": limit,
-                "result_shape": "named-map-v1",
+                "has_more": len(sinks) >= limit,
+                "truncated": len(sinks) >= limit,
+                "mode": (
+                    "explicit"
+                    if sink_patterns
+                    else ("broad" if broad else "focused")
+                ),
             }
 
-            def _execute():
-                query = _build_taint_location_query(joined, filename, limit)
+        return _cached_taint_query(services, "find_taint_sinks", codebase_hash, cache_params, _execute)
 
-                result = query_executor.execute_query(
-                    codebase_hash=codebase_hash,
-                    cpg_path=codebase_info.cpg_path,
-                    query=query,
-                    timeout=30,
-                    limit=limit,
-                )
-
-                if not result.success:
-                    return {"success": False, "error": result.error}
-
-                sinks = []
-                for item in result.data:
-                    sink = _decode_taint_location(item)
-                    if sink is not None:
-                        sinks.append(sink)
-
-                return {
-                    "success": True,
-                    "sinks": sinks,
-                    "total": len(sinks),
-                    "returned": len(sinks),
-                    "limit": limit,
-                    "has_more": len(sinks) >= limit,
-                    "truncated": len(sinks) >= limit,
-                    "mode": (
-                        "explicit"
-                        if sink_patterns
-                        else ("broad" if broad else "focused")
-                    ),
-                }
-
-            return _cached_taint_query(services, "find_taint_sinks", codebase_hash, cache_params, _execute)
-
-        except ValidationError as e:
-            logger.error(f"Error finding taint sinks: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
-        except Exception as e:
-            logger.error(f"Unexpected error finding taint sinks: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-            }
 
     @mcp.tool(
         title="Find Taint Flows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
 Detects data flow from a specific source node to a specific sink node.
@@ -1009,7 +984,7 @@ Examples:
     @mcp.tool(
         title="Get Program Slice",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Build a program slice from a specific call location.
 
 Creates a program slice showing code that affects (backward) or is affected by (forward)
@@ -1122,7 +1097,7 @@ Examples:
     @mcp.tool(
         title="Get Variable Flow",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Analyze data dependencies for a variable at a specific location.
 
 Finds code locations that influence (backward) or are influenced by (forward)
@@ -1222,7 +1197,7 @@ Examples:
     @mcp.tool(
         title="Find Use-After-Free Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Use-After-Free vulnerabilities by finding free(ptr) calls where ptr is used afterward.
 
 Analyzes the codebase for potential UAF issues using three-phase detection:
@@ -1308,7 +1283,7 @@ Notes:
     @mcp.tool(
         title="Find Double-Free Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Double-Free vulnerabilities by finding multiple free() calls on the same pointer.
 
 Analyzes the codebase for potential double-free issues using:
@@ -1384,7 +1359,7 @@ Returns:
     @mcp.tool(
         title="Find Null Pointer Dereferences",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Null Pointer Dereference vulnerabilities (CWE-476) by finding unchecked return values from allocation functions.
 
 Analyzes the codebase for cases where:
@@ -1471,7 +1446,7 @@ Notes:
     @mcp.tool(
         title="Find Integer Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Integer Overflow/Underflow vulnerabilities (CWE-190) before allocation or array indexing.
 
 Analyzes the codebase for cases where arithmetic operations (multiplication, left-shift,
@@ -1560,7 +1535,7 @@ Notes:
     @mcp.tool(
         title="Find Format String Vulnerabilities",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Format String vulnerabilities (CWE-134) where a non-literal value is used as a printf-family format argument.
 
 Analyzes the codebase for calls to format-string functions (printf, fprintf, sprintf,
@@ -1632,7 +1607,7 @@ Examples:
     @mcp.tool(
         title="Find Heap Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Heap Overflow vulnerabilities (CWE-122) where a write to a heap buffer exceeds its allocated size.
 
 Analyzes the codebase for pairs of (allocation, write) where the write may exceed
@@ -1705,7 +1680,7 @@ Examples:
     @mcp.tool(
         title="Find Stack Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect Stack Buffer Overflow vulnerabilities (CWE-121) where a write to a fixed-size stack array may exceed its declared dimension.
 
 Analyzes the codebase for local fixed-size array declarations (e.g. char buf[64]) combined
@@ -1777,7 +1752,7 @@ Examples:
     @mcp.tool(
         title="Find TOCTOU Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect TOCTOU (Time-of-Check-Time-of-Use) race condition vulnerabilities (CWE-367) where a file is checked with access()/stat()/lstat() and then opened or operated on in a separate step.
 
 Analyzes the codebase for the classic TOCTOU pattern:
@@ -1847,7 +1822,7 @@ Examples:
     @mcp.tool(
         title="Find Uninitialized Reads",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}, "error": {"type": "object", "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": False}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
         description="""Detect uninitialized variable reads (CWE-457) — variables used before assignment.
 
 Analyzes the codebase for local variables that are read before they have been
