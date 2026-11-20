@@ -6,10 +6,13 @@
 # other frontend's native astgen keeps working on noble.
 FROM eclipse-temurin:21-jdk-noble
 
+# php-cli: php2cpg shells out to `php` (7.1+) to run its bundled php-parser;
+# without it every PHP build fails with "Cannot run program \"php\"".
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
     unzip \
+    php-cli \
     && rm -rf /var/lib/apt/lists/*
 
 ENV JOERN_VERSION=4.0.687
@@ -45,7 +48,7 @@ ENV PATH="/opt/cargo/bin:${PATH}"
 
 RUN mkdir -p /playground
 
-RUN joern --help && rustc --version && cargo --version
+RUN joern --help && rustc --version && cargo --version && php --version
 
 RUN echo '#!/bin/bash\n\
 set -e\n\
