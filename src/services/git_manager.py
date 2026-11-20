@@ -39,6 +39,18 @@ def _mask_token_in_text(text: str) -> str:
     return re.sub(r"(https?://)[^@\s]+@", r"\1***@", text)
 
 
+def _ls_remote(url: str, ref: str, env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """First commit `git ls-remote` reports for ref, or None."""
+    g = git.cmd.Git()
+    with g.custom_environment(**(env or {})):
+        out = g.ls_remote("--", url, ref)
+    for line in out.splitlines():
+        sha, _, name = line.partition("\t")
+        if name == ref and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+            return sha
+    return None
+
+
 def _ssh_clone_env() -> Dict[str, str]:
     """Environment overrides for an ssh:// clone of a custom git server.
 
@@ -91,37 +103,65 @@ class GitManager:
         self.repos_dir = os.path.join(workspace_root, "repos")
         os.makedirs(self.repos_dir, exist_ok=True)
 
+    @staticmethod
+    def _remote_access(repo_url: str, token: Optional[str]):
+        """Validated (auth_url, env, injected_credential) for talking to a remote."""
+        # Validate URL (scheme/host allowlist, no embedded credentials, …)
+        validate_github_url(repo_url)
+        parsed = urlparse(repo_url)
+        auth_url = repo_url
+        clone_env: Optional[Dict[str, str]] = None
+        injected_credential = False
+        if parsed.scheme in ("http", "https"):
+            # Built-in github.com/gitlab.com hosts only (the validator
+            # rejects every other host): the per-call token rides in the
+            # URL username and is stripped from .git/config afterwards.
+            if token:
+                auth_url = (
+                    f"{parsed.scheme}://{quote(token, safe='')}"
+                    f"@{parsed.netloc}{parsed.path}"
+                )
+                injected_credential = True
+        elif parsed.scheme == "ssh":
+            # ssh:// (custom GIT_CLONE_EXTRA_HOSTS server): auth comes from
+            # the key/agent via GIT_SSH_COMMAND, not from the URL.
+            clone_env = _ssh_clone_env()
+        return auth_url, clone_env, injected_credential
+
+    async def resolve_remote_ref(
+        self, repo_url: str, branch: Optional[str] = None, token: Optional[str] = None,
+    ) -> str:
+        """Current commit of `branch` (default: the remote HEAD) via git ls-remote."""
+        try:
+            auth_url, env, _ = self._remote_access(repo_url, token)
+            ref = f"refs/heads/{branch}" if branch else "HEAD"
+            loop = asyncio.get_event_loop()
+            commit = await loop.run_in_executor(None, _ls_remote, auth_url, ref, env)
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise GitOperationError(f"Failed to resolve remote ref: {_mask_token_in_text(str(e))}")
+        if not commit:
+            raise ValidationError(
+                f"Branch {branch!r} not found on the remote" if branch
+                else "The remote has no HEAD commit"
+            )
+        return commit
+
     async def clone_repository(
         self,
         repo_url: str,
         target_path: str,
         branch: Optional[str] = None,
         token: Optional[str] = None,
+        commit: Optional[str] = None,
     ) -> str:
-        """Clone a repo (https for github/gitlab; ssh for custom hosts)"""
+        """Clone a repo (https for github/gitlab; ssh for custom hosts).
+
+        With `commit`, fetch exactly that commit (shallow) and check it out detached.
+        """
         try:
-            # Validate URL (scheme/host allowlist, no embedded credentials, …)
-            validate_github_url(repo_url)
-
-            parsed = urlparse(repo_url)
-            auth_url = repo_url
-            clone_env: Optional[Dict[str, str]] = None
-            injected_credential = False
-
-            if parsed.scheme in ("http", "https"):
-                # Built-in github.com/gitlab.com hosts only (the validator
-                # rejects every other host): the per-call token rides in the
-                # URL username and is stripped from .git/config afterwards.
-                if token:
-                    auth_url = (
-                        f"{parsed.scheme}://{quote(token, safe='')}"
-                        f"@{parsed.netloc}{parsed.path}"
-                    )
-                    injected_credential = True
-            elif parsed.scheme == "ssh":
-                # ssh:// (custom GIT_CLONE_EXTRA_HOSTS server): auth comes from
-                # the key/agent via GIT_SSH_COMMAND, not from the URL.
-                clone_env = _ssh_clone_env()
+            auth_url, clone_env, injected_credential = self._remote_access(repo_url, token)
 
             # Create target directory
             os.makedirs(target_path, exist_ok=True)
@@ -134,7 +174,7 @@ class GitManager:
             loop = asyncio.get_event_loop()
             try:
                 await loop.run_in_executor(
-                    None, self._do_clone, auth_url, staging_path, branch, clone_env
+                    None, self._do_clone, auth_url, staging_path, branch, clone_env, commit
                 )
 
                 # Remove the embedded credential from .git/config so the token
@@ -164,10 +204,18 @@ class GitManager:
         target: str,
         branch: Optional[str],
         env: Optional[Dict[str, str]] = None,
+        commit: Optional[str] = None,
     ):
         """Blocking clone operation"""
         try:
-            if branch:
+            if commit:
+                # Fetch by URL, not via a named remote, so no credential-bearing
+                # origin is written to .git/config.
+                repo = git.Repo.init(target)
+                with repo.git.custom_environment(**(env or {})):
+                    repo.git.fetch("--depth", "1", "--", url, commit)
+                repo.git.checkout("--detach", "FETCH_HEAD")
+            elif branch:
                 git.Repo.clone_from(url, target, branch=branch, depth=1, env=env)
             else:
                 git.Repo.clone_from(url, target, depth=1, env=env)
