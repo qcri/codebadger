@@ -231,6 +231,61 @@ class PostgresDBManager(PostgresJobStore):
             logger.error(f"Failed to list all codebases: {e}")
             return []
 
+    # Project name as core_tools._codebase_project derives it: the repository URL's
+    # last segment without .git, else the source path's last segment, else the
+    # source type. Metadata is read as text, so one malformed row cannot fail the
+    # query (json.dumps leaves the URL's slashes unescaped).
+    _PROJECT_SQL = r"""COALESCE(
+        NULLIF(regexp_replace(regexp_replace(rtrim(
+            substring(metadata from '"repository":\s*"([^"]*)"'), '/'), '^.*/', ''), '\.git$', ''), ''),
+        NULLIF(regexp_replace(rtrim(source_path, '/'), '^.*/', ''), ''),
+        NULLIF(source_path, ''),
+        NULLIF(source_type, ''),
+        'cpg')"""
+
+    def list_codebase_page(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        language: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """One page of catalog summaries plus the filtered total.
+
+        Ordered most recently used first (hash breaks ties) so pages are stable.
+        Only the requested page is fetched; the total comes from COUNT(*).
+        """
+        where, params = [], []
+        if language:
+            where.append("lower(language) = lower(%s)")
+            params.append(language)
+        if project:
+            where.append(f"lower({self._PROJECT_SQL}) = lower(%s)")
+            params.append(project)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT count(*) AS n FROM codebases {clause}", params
+            ).fetchone()["n"]
+            rows = conn.execute(
+                f"""SELECT hash, source_type, source_path, language, metadata,
+                           created_at, last_accessed
+                    FROM codebases {clause}
+                    ORDER BY last_accessed DESC NULLS LAST, hash
+                    LIMIT %s OFFSET %s""",
+                [*params, max(0, int(limit)), max(0, int(offset))],
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d["metadata"]) if d.get("metadata") else {}
+            except (json.JSONDecodeError, TypeError):
+                d["metadata"] = {}
+            out.append(d)
+        return out, total
+
     def delete_codebase(self, codebase_hash: str) -> bool:
         try:
             with self._connect() as conn:

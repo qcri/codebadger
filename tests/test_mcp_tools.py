@@ -34,6 +34,25 @@ def _error_reply(result):
     message = rest.rsplit(" Hint: ", 1)[0]
     return {"success": False, "error_code": code, "error": message}
 
+
+def _catalog_page_stub(rows):
+    """Stand-in for CodebaseTracker.list_codebase_page over an in-memory catalog.
+
+    Filtering and paging happen in Postgres in production (covered by
+    test_postgres_db_manager); this mirrors that contract for tool-level tests.
+    """
+    from src.tools.core_tools import _codebase_project
+
+    def page(*, offset, limit, language=None, project=None):
+        matched = [
+            cb for cb in rows
+            if (not language or (cb.language or "").lower() == language.lower())
+            and (not project or _codebase_project(cb).lower() == project.lower())
+        ]
+        return matched[offset:offset + limit], len(matched)
+
+    return MagicMock(side_effect=page)
+
 @pytest.fixture
 def mock_services():
     """Create mock services for testing"""
@@ -1363,7 +1382,7 @@ class TestMCPTools:
         mgr._max_active = 3
         mgr.get_memory_stats.return_value = {"budget_mb": 24000, "reserved_mb": 8000, "free_mb": 16000}
 
-        mock_services["codebase_tracker"].list_codebases_full.return_value = [
+        mock_services["codebase_tracker"].list_codebase_page = _catalog_page_stub([
             CodebaseInfo(
                 codebase_hash="553642871dd4251d",
                 source_type="github",
@@ -1373,7 +1392,7 @@ class TestMCPTools:
                 last_accessed=datetime.now(timezone.utc),
                 metadata={"status": "ready", "phase": "ready", "repository": "https://github.com/test/repo.git"},
             )
-        ]
+        ])
 
         mcp = FastMCP("TestServer")
         register_core_tools(mcp, mock_services)
@@ -1525,7 +1544,7 @@ class TestMCPTools:
             ]
         }
         tracker = mock_services["codebase_tracker"]
-        tracker.list_codebases_full.return_value = list(catalog.values())
+        tracker.list_codebase_page = _catalog_page_stub(list(catalog.values()))
         tracker.get_codebase.side_effect = catalog.get
 
         mcp = FastMCP("TestServer")
@@ -1562,14 +1581,15 @@ class TestMCPTools:
         from src.tools.core_tools import register_core_tools
 
         now = datetime.now(timezone.utc)
-        mock_services["codebase_tracker"].list_codebases_full.return_value = [
+        page_stub = _catalog_page_stub([
             CodebaseInfo(
                 codebase_hash=f"{index:016x}", source_type="local",
                 source_path="/tmp/repo", language="c", cpg_path="/tmp/test.cpg",
                 last_accessed=now, metadata={"status": "ready"},
             )
             for index in range(55)
-        ]
+        ])
+        mock_services["codebase_tracker"].list_codebase_page = page_stub
 
         mcp = FastMCP("TestServer")
         register_core_tools(mcp, mock_services)
@@ -1588,6 +1608,9 @@ class TestMCPTools:
         assert response["cpg_returned"] == 20
         assert response["cpg_total_pages"] == 3
         assert response["cpg_truncated"] is True
+        # Only the requested page is asked for; the full catalog is never listed.
+        page_stub.assert_called_once_with(offset=20, limit=20, language=None, project=None)
+        mock_services["codebase_tracker"].list_codebases_full.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_cpg_status_not_found(self, mock_services):

@@ -2882,39 +2882,36 @@ Notes:
 
             if tracker is not None:
                 try:
-                    codebases = tracker.list_codebases_full()
-                    want_language = language.strip().lower() if language and language.strip() else None
-                    want_project = project.strip().lower() if project and project.strip() else None
-                    cpgs = []
-                    for cb in codebases:
-                        meta = cb.metadata or {}
-                        cb_project = _codebase_project(cb)
-                        if want_language and (cb.language or "").lower() != want_language:
-                            continue
-                        if want_project and cb_project.lower() != want_project:
-                            continue
-                        cpgs.append({
-                            "codebase_hash": cb.codebase_hash,
-                            "codebase_label": _codebase_label(cb),
-                            "project": cb_project,
-                            "status": meta.get("status", "unknown"),
-                            "phase": meta.get("phase"),
-                            "language": cb.language,
-                            "last_accessed": cb.last_accessed.isoformat() if cb.last_accessed else None,
-                        })
-                    response["cpg_count"] = len(cpgs)
+                    want_language = language.strip() if language and language.strip() else None
+                    want_project = project.strip() if project and project.strip() else None
                     safe_page = max(1, page)
                     safe_page_size = max(1, min(page_size, 200))
                     start = (safe_page - 1) * safe_page_size
-                    response["cpgs"] = cpgs[start:start + safe_page_size]
+                    # Paged and filtered in the database: only this page is fetched.
+                    page_rows, total = tracker.list_codebase_page(
+                        offset=start, limit=safe_page_size,
+                        language=want_language, project=want_project,
+                    )
+                    response["cpgs"] = [
+                        {
+                            "codebase_hash": cb.codebase_hash,
+                            "codebase_label": _codebase_label(cb),
+                            "project": _codebase_project(cb),
+                            "status": (cb.metadata or {}).get("status", "unknown"),
+                            "phase": (cb.metadata or {}).get("phase"),
+                            "language": cb.language,
+                            "last_accessed": cb.last_accessed.isoformat() if cb.last_accessed else None,
+                        }
+                        for cb in page_rows
+                    ]
+                    response["cpg_count"] = total
                     response["cpg_page"] = safe_page
                     response["cpg_page_size"] = safe_page_size
                     response["cpg_returned"] = len(response["cpgs"])
                     response["cpg_total_pages"] = (
-                        (len(cpgs) + safe_page_size - 1) // safe_page_size
-                        if cpgs else 1
+                        (total + safe_page_size - 1) // safe_page_size if total else 1
                     )
-                    response["cpg_truncated"] = start + len(response["cpgs"]) < len(cpgs)
+                    response["cpg_truncated"] = start + len(response["cpgs"]) < total
                 except Exception as e:
                     logger.debug(f"get_backend_status: codebase listing failed: {e}")
 

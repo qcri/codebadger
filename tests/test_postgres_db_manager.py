@@ -134,3 +134,67 @@ def test_job_methods_inherited(db):
     assert claimed["id"] == jid and claimed["payload"] == {"language": "c"}
     db.complete_job(jid, claimed["attempts"])
     assert db.get_job(jid)["status"] == "done"
+
+
+def _seed_catalog(db, rows):
+    """rows: (hash, source_type, source_path, language, metadata, last_accessed)."""
+    for h, source_type, source_path, language, metadata, _ in rows:
+        db.save_codebase({"hash": h, "source_type": source_type, "source_path": source_path,
+                          "language": language, "metadata": metadata})
+    with db._connect() as conn:
+        for h, *_, last in rows:
+            conn.execute("UPDATE codebases SET last_accessed = %s WHERE hash = %s", (last, h))
+        conn.commit()
+
+
+def test_catalog_page_fetches_one_stable_page_and_the_total(db):
+    rows = [
+        (f"{i:016x}", "local", f"/src/p{i % 7}", "c" if i % 3 else "java", {"status": "ready"},
+         f"2026-11-{1 + i % 28:02d}T00:00:00+00:00")
+        for i in range(250)
+    ]
+    _seed_catalog(db, rows)
+
+    pages = [db.list_codebase_page(offset=o, limit=50) for o in range(0, 250, 50)]
+
+    assert all(total == 250 and len(page) == 50 for page, total in pages)
+    hashes = [r["hash"] for page, _ in pages for r in page]
+    assert len(hashes) == len(set(hashes)) == 250  # disjoint pages cover the catalog
+    stamps = [r["last_accessed"] for page, _ in pages for r in page]
+    assert stamps == sorted(stamps, reverse=True)  # most recently used first
+    assert db.list_codebase_page(offset=250, limit=50) == ([], 250)
+
+    java, java_total = db.list_codebase_page(offset=0, limit=500, language="JAVA")
+    assert java_total == len(java) == sum(1 for r in rows if r[3] == "java")
+
+
+def test_catalog_project_filter_matches_python_derivation(db):
+    from src.models import CodebaseInfo
+    from src.tools.core_tools import _codebase_project
+
+    now = "2026-11-20T00:00:00+00:00"
+    rows = [
+        ("a" * 16, "github", "https://github.com/x/libpng", "c",
+         {"repository": "https://github.com/x/libpng.git"}, now),
+        ("b" * 16, "github", "https://gitlab.com/y/LibPNG/", "c",
+         {"repository": "https://gitlab.com/y/LibPNG/"}, now),
+        ("c" * 16, "local", "/srv/src/libpng/", "c", {}, now),
+        ("d" * 16, "local", "/srv/src/zlib", "c", {}, now),
+        ("e" * 16, "snippet", "", "c", {}, now),
+        ("f" * 16, "local", "/srv/src/libpng", "c", {}, now),
+    ]
+    _seed_catalog(db, rows)
+    with db._connect() as conn:  # a malformed metadata row must not break the query
+        conn.execute("UPDATE codebases SET metadata = %s WHERE hash = %s", ("{not json", "f" * 16))
+        conn.commit()
+
+    for h, *_ in rows:
+        info = CodebaseInfo.from_dict(next(
+            r for r in db.list_codebase_page(offset=0, limit=10)[0] if r["hash"] == h
+        ))
+        project = _codebase_project(info)
+        matched, _ = db.list_codebase_page(offset=0, limit=10, project=project.upper())
+        assert h in {r["hash"] for r in matched}, (h, project)
+
+    libpng, total = db.list_codebase_page(offset=0, limit=10, project="libpng")
+    assert total == 4 and {r["hash"] for r in libpng} == {"a" * 16, "b" * 16, "c" * 16, "f" * 16}
