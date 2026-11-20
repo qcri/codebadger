@@ -1900,74 +1900,33 @@ def register_core_tools(mcp, services: dict):
             "idempotentHint": True,
             "openWorldHint": True,
         },
-        description="""Generate a Code Property Graph (CPG) for a codebase.
+        description="""Build a Code Property Graph (CPG) for a codebase, in the background.
 
-This tool initiates the analysis process by generating a CPG for the specified codebase.
-For git repositories, it clones the repo first. For local paths, it copies the source code.
-The CPG is cached by a hash of the codebase.
+Returns immediately with a codebase_hash; poll get_cpg_status until status is
+"ready". CPGs are cached by source content and build options, so repeating a
+request reuses the existing graph (status "ready" or "loading").
 
-Accepted git repositories (source_type='github'):
-  - Public/private repos on github.com or gitlab.com via https:// URLs of the form:
-      https://github.com/<owner>/<repo>   or   https://gitlab.com/<owner>/<repo>
-    (gitlab nested subgroups are allowed; a trailing .git is fine).
-  - Repos on the server's CUSTOM git hosts, when the operator configured
-    GIT_CLONE_EXTRA_HOSTS (e.g. a self-hosted Forgejo). Those hosts accept
-    ssh:// URLs (with custom ports), e.g.:
-      ssh://git@192.168.152.14:3000/<owner>/<repo>.git
-  - Embedded credentials in the URL are always rejected. Use github_token for a
-    private github.com/gitlab.com repo — do NOT embed the token in the URL.
-    (Custom hosts authenticate via the operator's ssh key, not a token.)
+Sources:
+  - local: an absolute path; the tree is copied into the server's playground.
+  - github: an https://github.com/... or https://gitlab.com/... URL, or an ssh://
+    URL on a host the operator allowlisted (GIT_CLONE_EXTRA_HOSTS). Credentials
+    in the URL are rejected; pass github_token for private github/gitlab repos.
+  - snippet: pass code wrapped in <code language="c"> ... </code> (the tag's
+    language wins); several blocks must share one language.
 
-Pasting code directly (source_type='snippet'):
-  Wrap the code in a <code> tag whose `language` attribute is one of the supported
-  languages, and pass the whole tagged string in the `code` argument. The server
-  parses the language and body out of the tag — do not also rely on the `language`
-  argument, the tag wins. Use the EXACT supported language id (see Notes).
-    Single block:
-      <code language="c">
-      int main(void){ char b[8]; gets(b); return 0; }
-      </code>
-    Multiple blocks are concatenated into one file, but they MUST all declare the
-    SAME language (one CPG is single-language).
-
-IMPORTANT — large project guard:
-Before calling this tool for a local path, check the project size. If the project has more than
-15,000 lines of code OR is larger than 150 MB, you MUST warn the user first:
-  "This project is large (X lines / Y MB). CPG generation may take a long time and consume
-   significant resources. Consider providing the absolute path to a specific sub-component
-   (e.g. /path/to/repo/src/module) to scope the analysis. If you still want to analyze the
-   full project, I will proceed."
-Only call generate_cpg after the user either provides a scoped path or explicitly confirms
-they want the full project. Pass force=True when the user confirms the full project.
-This guard does NOT apply to GitHub URLs — size is unknown until cloned.
+Large local projects: the server measures size first and replies with status
+"large_project_warning" (size_mb, lines_of_code) instead of building. Ask the
+user to scope source_path (or include_globs) to a sub-component, or retry with
+force=True once they confirm the full project.
 
 Returns:
-    {
-        "codebase_hash": "hash of the codebase",
-        "status": "ready" | "generating" | "cached",
-        "message": "Status message",
-        "cpg_path": "path to CPG file"
-    }
-
-Notes:
-    - This is an async operation. Use get_cpg_status to check progress.
-    - Large codebases may take several minutes to analyze.
-    - Supported languages: c, cpp, java, javascript, python, go, kotlin, csharp, php, ruby, swift.
-    - Git repos: only https://github.com/... and https://gitlab.com/... are
-      accepted, plus ssh:// URLs on hosts the operator configured via the
-      GIT_CLONE_EXTRA_HOSTS environment variable (e.g. a LAN Forgejo).
+    {"success": true, "codebase_hash": "...", "status": "generating" | "loading" |
+     "ready" | "failed" | "queue_full" | "large_project_warning", "message": "...",
+     "estimated_time": "~1-3 minutes ...", ...}
 
 Examples:
-    generate_cpg(
-        source_type="github",
-        source_path="https://gitlab.com/owner/repo",
-        language="java"
-    )
-    generate_cpg(
-        source_type="snippet",
-        source_path="overflow_demo",
-        code="<code language=\\"c\\">int main(void){ char b[8]; gets(b); }</code>"
-    )""",
+    generate_cpg(source_type="github", source_path="https://github.com/owner/repo", language="c")
+    generate_cpg(source_type="snippet", code="<code language=\"c\">int main(void){ char b[8]; gets(b); }</code>")""",
     )
     async def generate_cpg(
         source_type: Annotated[Literal["local", "github", "snippet"], Field(description="'local' path, 'github' URL, or 'snippet' (code pasted directly into the chat)")],
@@ -2514,43 +2473,25 @@ Examples:
             "idempotentHint": True,
             "openWorldHint": False,
         },
-        description="""Get the current status of a CPG and its Joern server.
+        description="""Get a CPG's build/load status. Poll this after generate_cpg until "ready".
 
-USE THIS TO WAIT FOR generate_cpg: generate_cpg starts the build in the background
-and returns immediately with status 'generating'. Poll this tool with the returned
-codebase_hash until status becomes 'ready' (or 'failed') — that is the intended way
-to wait for a CPG to finish generating. It returns the CPG's current status and, once
-ready, the Joern server port to use for queries.
+Statuses:
+    generating / loading -> in progress; poll again shortly. `phase`, `elapsed_seconds`,
+        and `queue_position` tell queued from parsing; deadline_seconds at 0 while still
+        generating means the build is likely stuck.
+    ready     -> queryable with the browsing, taint, and detector tools.
+    sleeping  -> on disk but unloaded; the next query (or this poll) reloads it.
+    failed    -> see error_code/error; fix the request and call generate_cpg again.
+    not_found -> unknown hash; call generate_cpg (or get_backend_status to find one).
 
 Returns:
-    {
-        "codebase_hash": "hash",
-        "codebase_label": "<project>@<short-hash>",  # non-sensitive, ties hash to what it built
-        "status": "generating" | "loading" | "ready" | "sleeping" | "failed" | "not_found",
-        "cpg_path": "path to CPG if exists",
-        "joern_port": port number or null,
-        "language": "programming language",
-        "phase": "queued" | "frontend" | "loading" | "ready" | ...,  # finer-grained than status
-        "elapsed_seconds": live build time (or recorded duration for terminal states),
-        "deadline_seconds": seconds of budget left while building (0 outside active builds),
-        "queue_position": 1-based position behind other queued builds (only while queued),
-        "user_method_count": verified user-defined methods in the loaded CPG (coverage check)
-    }
+    {"codebase_hash": "...", "codebase_label": "<project>@<short-hash>", "status": "...",
+     "phase": "...", "language": "c", "elapsed_seconds": 12.5, "deadline_seconds": 1800,
+     "queue_position": 1, "user_method_count": 196, "error_code": "...", "error": "..."}
+    Fields appear when relevant; filesystem paths are redacted.
 
-Notes:
-    - 'generating'/'loading' → build or server startup in progress; wait briefly and poll again.
-      Use `phase`/`elapsed_seconds`/`queue_position` to tell "queued behind others" from
-      "actively parsing" from "wedged" (deadline_seconds at 0 and still generating = likely stuck).
-    - 'ready' → the CPG is loaded and available for queries (use joern_port).
-    - 'sleeping' → CPG exists on disk but the server was evicted; it auto-wakes on the next query
-      (polling also triggers a restart).
-    - 'failed' → generation or load failed; regenerate with generate_cpg.
-    - 'not_found' → no such codebase; call generate_cpg first.
-    - Filesystem paths in responses are redacted.
-
-Examples:
-    # Poll until ready after generate_cpg:
-    get_cpg_status(codebase_hash="abc123456789")  # repeat while status is 'generating'""",
+Example:
+    get_cpg_status(codebase_hash="abc1234567890def")""",
     )
     def get_cpg_status(
         codebase_hash: Annotated[str, Field(description="The hash identifier of the codebase")]

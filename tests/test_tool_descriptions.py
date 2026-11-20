@@ -27,3 +27,20 @@ async def test_run_cpgql_query_description_matches_output_schema():
     missing = [key for key in tool.output_schema["properties"] if f'"{key}"' not in returns]
     assert missing == []
     assert "stdout" not in returns and "stderr" not in returns
+
+
+async def test_generate_cpg_description_names_exactly_its_statuses():
+    import re
+
+    from src.models import Config
+    from src.tools.core_tools import register_core_tools
+
+    mcp = FastMCP("TestServer")
+    register_core_tools(mcp, {"codebase_tracker": MagicMock(), "config": Config()})
+    async with Client(mcp) as client:
+        tool = next(t for t in await client.list_tools() if t.name == "generate_cpg")
+
+    returns = tool.description.split("Returns:", 1)[1].split("Examples:", 1)[0]
+    status_line = re.search(r'"status": ([^,]*(?:\|[^,]*)*),', returns, re.S).group(1)
+    described = set(re.findall(r'"([a-z_]+)"', status_line))
+    assert described == set(tool.output_schema["properties"]["status"]["enum"])
