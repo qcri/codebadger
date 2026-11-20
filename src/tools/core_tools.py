@@ -1754,6 +1754,12 @@ class CPGGenerationQueue:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
+    supports_job_ids = False  # in-process queue: no durable job records
+
+    async def submit_job(self, codebase_hash: str, job: dict) -> tuple:
+        """(status, job_id); the in-memory queue has no job ids."""
+        return await self.submit(codebase_hash, job), None
+
     async def submit(self, codebase_hash: str, job: dict) -> str:
         """Submit a CPG generation job.
 
@@ -1850,17 +1856,23 @@ class DurableCPGQueue:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
-    async def submit(self, codebase_hash: str, job: dict) -> str:
+    supports_job_ids = True
+
+    async def submit_job(self, codebase_hash: str, job: dict) -> tuple:
+        """(status, job_id). A duplicate resolves to the active job's id."""
         # `services` is the live process state — not serializable; the worker
         # re-injects it. Persist only the plain job parameters.
         payload = {k: v for k, v in job.items() if k != "services"}
         loop = asyncio.get_running_loop()
-        _job_id, status = await loop.run_in_executor(
+        job_id, status = await loop.run_in_executor(
             None, self.store.enqueue_job, codebase_hash, self.JOB_TYPE, payload, self._maxsize
         )
         if status == "error":
-            return self.QUEUE_FULL  # treat a DB error as backpressure; client retries
-        return status
+            return self.QUEUE_FULL, None  # treat a DB error as backpressure; client retries
+        return status, job_id
+
+    async def submit(self, codebase_hash: str, job: dict) -> str:
+        return (await self.submit_job(codebase_hash, job))[0]
 
     async def _worker(self) -> None:
         idle_delay = self._poll_interval
@@ -2007,6 +2019,7 @@ def register_core_tools(mcp, services: dict):
                 ]},
                 "message": {"type": "string"},
                 "estimated_time": {"type": "string"},
+                "job_id": {"type": "integer"},
                 "joern_port": {"type": ["integer", "null"]},
                 "error_code": {"type": "string"},
                 "size_mb": {"type": "number"},
@@ -2523,9 +2536,15 @@ Examples:
                     **build_options,
                 )
                 cpg_queue = services.get("cpg_queue")
+                job_id = None
                 if cpg_queue:
                     try:
-                        submit_result = await cpg_queue.submit(codebase_hash, job)
+                        # Only real queue classes return job ids; check the class so a
+                        # test double's auto-created attribute isn't mistaken for one.
+                        if callable(getattr(type(cpg_queue), "submit_job", None)):
+                            submit_result, job_id = await cpg_queue.submit_job(codebase_hash, job)
+                        else:
+                            submit_result = await cpg_queue.submit(codebase_hash, job)
                     except Exception:
                         logger.exception("Could not enqueue CPG generation for %s", codebase_hash)
                         submit_result = "error"
@@ -2535,6 +2554,7 @@ Examples:
                             "codebase_hash": codebase_hash,
                             "status": SessionStatus.GENERATING,
                             "message": "CPG build already in progress for this codebase.",
+                            **({"job_id": job_id} if job_id is not None else {}),
                         }
                     if submit_result in (CPGGenerationQueue.QUEUE_FULL, "error"):
                         queue_full = submit_result == CPGGenerationQueue.QUEUE_FULL
@@ -2575,6 +2595,7 @@ Examples:
                     "status": SessionStatus.GENERATING,
                     "message": f"CPG generation started in background. Estimated time: {estimate}. Use get_cpg_status to check progress.",
                     "estimated_time": estimate,
+                    **({"job_id": job_id} if job_id is not None else {}),
                     **_public_codebase_fields(
                         source_type=source_type,
                         source_path=source_path,
