@@ -54,6 +54,7 @@ to pull node `.code` from the graph.)
 |------|--------------|
 | `list_methods` | List methods/functions, with optional regex filters on name and file. |
 | `list_calls` | List call relationships, filterable by caller and callee pattern. |
+| `diff_cpgs` | Method-level diff between two CPGs, such as two commits (build each with `generate_cpg(commit=...)`) or two builds: added, removed, and modified methods, with whether a signature changed. Line-only moves count as unchanged. Warns when language, build options, or Joern version differ. |
 | `get_call_graph` | Outgoing (callees) or incoming (callers) call graph for a method, to a given depth. Select the root by `method_name` or by the exact `method_id` (`node_id` from `list_methods`); an ambiguous name lists candidate IDs. |
 | `list_parameters` | Names, types, and order of a method's parameters. |
 

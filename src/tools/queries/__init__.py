@@ -39,7 +39,7 @@ class QueryLoader:
     # worst. Coerce to int and fail fast otherwise.
     _INT_PLACEHOLDERS = frozenset({
         "line_num", "source_line", "sink_line", "source_node_id", "sink_node_id",
-        "method_id",
+        "method_id", "offset",
     })
 
     # Placeholders interpolated as bare Scala booleans (`val includeForward =

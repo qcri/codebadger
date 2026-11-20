@@ -1,0 +1,1 @@
+cpg.method.isExternal(false).drop({{offset}}).take({{limit}}).map(m => (m.filename, m.name, m.signature, m.fullName, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), (m.signature +: m.ast.collectAll[io.shiftleft.codepropertygraph.generated.nodes.CfgNode].filter(_.method == m).code.l).mkString("\u0000").hashCode)).l
