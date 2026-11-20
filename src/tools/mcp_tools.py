@@ -28,7 +28,7 @@ TOOL_GROUPS = {
     "raw": {"run_cpgql_query"},
     "taint": {
         "find_taint_sources", "find_taint_sinks", "find_taint_flows",
-        "get_program_slice", "get_variable_flow",
+        "get_program_slice", "get_variable_flow", "diff_findings",
     },
     "detector": {
         "find_bounds_checks", "find_use_after_free", "find_double_free",
