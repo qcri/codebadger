@@ -212,15 +212,67 @@ class PostgresJobStore:
             return bool(updated.rowcount)
 
     def purge_finished_jobs(self, max_age_seconds: int) -> int:
-        """Delete done/failed jobs last updated before the cutoff; never active ones."""
+        """Delete done/failed/cancelled jobs updated before the cutoff; never active ones."""
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
         with self._connect() as conn:
             deleted = conn.execute(
-                "DELETE FROM jobs WHERE status IN ('done', 'failed') AND updated_at < %s",
+                "DELETE FROM jobs WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < %s",
                 (cutoff,),
             )
             conn.commit()
             return deleted.rowcount
+
+    def cancel_queued_job(self, job_id: int) -> tuple:
+        """Cancel a job only while it is still queued.
+
+        Returns (cancelled, status, codebase_hash). The UPDATE and a worker's claim
+        contend for the same row, so exactly one wins; when the claim (or a
+        finish) won, `status` is the job's current status. A missing job returns
+        (False, None, None).
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "UPDATE jobs SET status = 'cancelled', updated_at = %s, "
+                "error = 'cancelled while queued' WHERE id = %s AND status = 'queued' "
+                "RETURNING codebase_hash",
+                (_now(), job_id),
+            ).fetchone()
+            conn.commit()
+            if row:
+                return True, "cancelled", row["codebase_hash"]
+            current = conn.execute(
+                "SELECT status, codebase_hash FROM jobs WHERE id = %s", (job_id,)
+            ).fetchone()
+        if not current:
+            return False, None, None
+        return False, current["status"], current["codebase_hash"]
+
+    _JOB_SUMMARY_COLUMNS = (
+        "id, codebase_hash, job_type, status, attempts, created_at, updated_at, "
+        "left(error, 300) AS error"
+    )
+
+    def list_jobs(
+        self, *, codebase_hash: Optional[str] = None, status: Optional[str] = None,
+        offset: int = 0, limit: int = 20,
+    ) -> tuple:
+        """One page of job summaries, newest first, plus the filtered total."""
+        where, params = [], []
+        if codebase_hash:
+            where.append("codebase_hash = %s")
+            params.append(codebase_hash)
+        if status:
+            where.append("status = %s")
+            params.append(status)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        with self._connect() as conn:
+            total = conn.execute(f"SELECT count(*) AS n FROM jobs {clause}", params).fetchone()["n"]
+            rows = conn.execute(
+                f"SELECT {self._JOB_SUMMARY_COLUMNS} FROM jobs {clause} "
+                "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+                [*params, max(0, int(limit)), max(0, int(offset))],
+            ).fetchall()
+        return [dict(r) for r in rows], total
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         try:
