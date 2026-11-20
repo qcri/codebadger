@@ -1793,3 +1793,103 @@ Examples:
         except Exception as e:
             logger.error(f"Unexpected error detecting uninitialized reads: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
+
+    detectors = {
+        "use_after_free": find_use_after_free, "double_free": find_double_free,
+        "null_pointer_deref": find_null_pointer_deref, "integer_overflow": find_integer_overflow,
+        "format_string_vulns": find_format_string_vulns, "heap_overflow": find_heap_overflow,
+        "stack_overflow": find_stack_overflow, "toctou": find_toctou,
+        "uninitialized_reads": find_uninitialized_reads,
+    }
+
+    @mcp.tool(
+        title="Diff Findings Between Builds",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"}, "detector": {"type": "string"},
+                "base": {"type": "object"}, "head": {"type": "object"},
+                "summary": {"type": "object", "properties": {
+                    "new": {"type": "integer"}, "fixed": {"type": "integer"},
+                    "unchanged": {"type": "integer"}, "unconfirmed": {"type": "integer"},
+                }, "additionalProperties": False},
+                "findings": {"type": "array", "items": {"type": "object"}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "page": {"type": "integer"}, "page_size": {"type": "integer"},
+                "total_pages": {"type": "integer"}, "truncated": {"type": "boolean"},
+            },
+            "required": ["success", "summary", "findings", "total", "truncated"],
+            "additionalProperties": False,
+        },
+        description="""Run one detector on two CPGs (e.g. two commits) and compare its findings.
+
+Each finding is identified by its site (code, file, function) without line
+numbers, so an unchanged finding keeps its identity when code shifts. Statuses:
+new (only in head), fixed (only in base), unchanged, and unconfirmed: when either
+report was cut off by `limit`, a finding missing from the other side may just be
+beyond the cutoff, so it is never reported as fixed or new. Use diff_cpgs for
+method-level code changes.
+
+Returns:
+    {"success": true, "detector": "use_after_free",
+     "base": {"codebase_hash": "...", "findings": 3, "complete": true}, "head": {...},
+     "summary": {"new": 1, "fixed": 0, "unchanged": 2, "unconfirmed": 0},
+     "findings": [{"status": "new", "fingerprint": "...", "title": "Free Site: free(buf)",
+                   "location": "Location: parser.c in parse()", "confidence": "HIGH", "text": "..."}],
+     "total": 3, "returned": 3, "page": 1, "page_size": 20, "total_pages": 1, "truncated": false}
+
+Example:
+    diff_findings(base_codebase_hash="...", head_codebase_hash="...", detector="use_after_free")""",
+    )
+    def diff_findings(
+        base_codebase_hash: Annotated[str, Field(description="The older CPG (e.g. the base commit)")],
+        head_codebase_hash: Annotated[str, Field(description="The newer CPG (e.g. the head commit)")],
+        detector: Annotated[Literal[
+            "use_after_free", "double_free", "null_pointer_deref", "integer_overflow",
+            "format_string_vulns", "heap_overflow", "stack_overflow", "toctou", "uninitialized_reads",
+        ], Field(description="Which detector to run on both CPGs")],
+        status: Annotated[Optional[Literal["new", "fixed", "unchanged", "unconfirmed"]], Field(description="Only list findings with this status")] = None,
+        filename: Annotated[Optional[str], Field(description="Optional filename regex passed to the detector")] = None,
+        limit: Annotated[int, Field(description="Maximum findings per detector run", ge=1, le=MAX_RESULT_ROWS)] = 500,
+        page: Annotated[int, Field(description="Page number (1-based)", ge=1)] = 1,
+        page_size: Annotated[int, Field(description="Findings per page", ge=1, le=200)] = 20,
+        timeout: Annotated[int, Field(description="Query timeout in seconds per run", ge=1, le=3600)] = 300,
+    ) -> Dict[str, Any]:
+        """Compare one detector's findings between two builds."""
+        from ..services.finding_diff import diff_findings as compare, parse_findings
+
+        try:
+            validate_codebase_hash(base_codebase_hash)
+            validate_codebase_hash(head_codebase_hash)
+            if base_codebase_hash == head_codebase_hash:
+                raise ValidationError("base and head are the same CPG")
+        except ValidationError as e:
+            raise ToolError(f"VALIDATION_ERROR: {e} Hint: pass the hashes of two built CPGs.") from e
+
+        run = detectors[detector]
+        reports = {
+            role: parse_findings(run(codebase_hash=h, filename=filename, limit=limit, timeout=timeout)["summary"])
+            for role, h in (("base", base_codebase_hash), ("head", head_codebase_hash))
+        }
+        every = compare(reports["base"], reports["head"])
+        findings = [f for f in every if not status or f["status"] == status]
+        start = (page - 1) * page_size
+        page_items = findings[start:start + page_size]
+        return {
+            "success": True,
+            "detector": detector,
+            "base": {"codebase_hash": base_codebase_hash, "findings": len(reports["base"]["findings"]),
+                     "complete": reports["base"]["complete"]},
+            "head": {"codebase_hash": head_codebase_hash, "findings": len(reports["head"]["findings"]),
+                     "complete": reports["head"]["complete"]},
+            "summary": {s: sum(1 for f in every if f["status"] == s)
+                        for s in ("new", "fixed", "unchanged", "unconfirmed")},
+            "findings": page_items,
+            "total": len(findings),
+            "returned": len(page_items),
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (len(findings) + page_size - 1) // page_size),
+            "truncated": start + len(page_items) < len(findings),
+        }
