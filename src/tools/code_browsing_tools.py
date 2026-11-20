@@ -478,12 +478,20 @@ Args:
 Returns:
     {
         "success": true,
-        "stdout": "raw output",
-        "stderr": "error output"
+        "data": [...],               # parsed JSON rows (or a scalar for .size queries)
+        "row_count": 2,
+        "execution_time": 0.06,
+        "truncated": true,           # only when the server's row/size cap cut results off
+        "truncation_note": "...",
+        "validation": {...}          # only when validate=true
     }
+    On failure: {"success": false, "error": "...", "error_code": "QUERY_ERROR" |
+    "TIMEOUT" | "SERVER_BUSY" | "SERVER_UNAVAILABLE", "suggestion": ..., "help": ...}.
+    Compile errors (e.g. an unknown step) return QUERY_ERROR with the compiler message.
 
 Notes:
     - Power user tool. Requires knowledge of Joern CPGQL.
+    - Unbounded queries are capped at 10,000 rows; add .take(n) or filters to narrow.
     - Use get_cpgql_syntax_help for reference.
 
 Examples:
