@@ -21,6 +21,19 @@ from src.tools.mcp_tools import register_tools
 from fastmcp import FastMCP, Client
 
 
+
+def _call_err(client, *args, **kwargs):
+    """Call a tool expecting failure: return the error result instead of raising."""
+    return client.call_tool(*args, raise_on_error=False, **kwargs)
+
+
+def _error_reply(result):
+    """Parse a coded MCP error 'CODE: message Hint: ...' into a dict."""
+    assert result.is_error
+    code, _, rest = result.content[0].text.partition(": ")
+    message = rest.rsplit(" Hint: ", 1)[0]
+    return {"success": False, "error_code": code, "error": message}
+
 @pytest.fixture
 def mock_services():
     """Create mock services for testing"""
@@ -348,7 +361,7 @@ class TestMCPTools:
             register_core_tools(mcp, mock_services)
 
             async with Client(mcp) as client:
-                result = await client.call_tool(
+                result = await _call_err(client,
                     "generate_cpg",
                     {
                         "source_type": "local",
@@ -358,9 +371,10 @@ class TestMCPTools:
                 )
 
                 import json
-                result_dict = json.loads(result.content[0].text)
+                result_dict = _error_reply(result)
 
                 assert result_dict["success"] is False
+                assert result_dict["error_code"] == "VALIDATION_ERROR"
                 assert result_dict["error"] == "Failed to copy local source directory"
                 assert str(source_dir) not in result_dict["error"]
 
@@ -393,13 +407,14 @@ class TestMCPTools:
             register_core_tools(mcp, mock_services)
 
             async with Client(mcp) as client:
-                result = await client.call_tool(
+                result = await _call_err(client,
                     "generate_cpg",
                     {"source_type": "local", "source_path": ancestor, "language": "c"},
                 )
-                result_dict = json.loads(result.content[0].text)
+                result_dict = _error_reply(result)
 
             assert result_dict["success"] is False
+            assert result_dict["error_code"] == "VALIDATION_ERROR"
             assert "playground" in result_dict["error"].lower()
             # The bomb must never be staged.
             copy_mock.assert_not_called()
@@ -623,14 +638,15 @@ class TestMCPTools:
         register_core_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
-            result = await client.call_tool(
+            result = await _call_err(client,
                 "generate_cpg",
                 {"source_type": "snippet", "source_path": "", "language": "c"},
             )
 
         import json
-        result_dict = json.loads(result.content[0].text)
+        result_dict = _error_reply(result)
         assert result_dict["success"] is False
+        assert result_dict["error_code"] == "VALIDATION_ERROR"
         # Helpful, actionable message telling the LLM how to supply the code.
         err = result_dict["error"]
         assert "no snippet code" in err.lower() and "<code language=" in err
@@ -647,14 +663,15 @@ class TestMCPTools:
         register_core_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
-            result = await client.call_tool(
+            result = await _call_err(client,
                 "generate_cpg",
                 {"source_type": "local", "source_path": str(tmp_path), "language": "c"},
             )
 
         import json
-        result_dict = json.loads(result.content[0].text)
+        result_dict = _error_reply(result)
         assert result_dict["success"] is False
+        assert result_dict["error_code"] == "VALIDATION_ERROR"
         err = result_dict["error"]
         assert "disabled" in err.lower()
         # Steer the LLM to the allowed alternatives.
@@ -1600,11 +1617,12 @@ class TestMCPTools:
         register_core_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
-            result = await client.call_tool("get_cpg_status", {"codebase_hash": "nonexistent"})
+            result = await _call_err(client, "get_cpg_status", {"codebase_hash": "nonexistent"})
             import json
-            result_dict = json.loads(result.content[0].text)
+            result_dict = _error_reply(result)
 
             assert result_dict["success"] is False
+            assert result_dict["error_code"] == "VALIDATION_ERROR"
             assert "16-character hex" in result_dict["error"]
 
     @pytest.mark.asyncio
@@ -1616,13 +1634,14 @@ class TestMCPTools:
         register_core_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
-            result = await client.call_tool(
+            result = await _call_err(client,
                 "remove_cpg", {"codebase_hash": "../../etc", "delete_files": True}
             )
             import json
-            result_dict = json.loads(result.content[0].text)
+            result_dict = _error_reply(result)
 
             assert result_dict["success"] is False
+            assert result_dict["error_code"] == "VALIDATION_ERROR"
             assert "16-character hex" in result_dict["error"]
             mock_services["codebase_tracker"].get_codebase.assert_not_called()
 

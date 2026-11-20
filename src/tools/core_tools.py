@@ -35,7 +35,9 @@ from ..utils.build_scoping import combine_exclude_regexes, scope_exclude_regex
 from ..utils.compile_db import find_compile_db, prepare_container_compile_db
 from ..utils.postgres_job_store import JOB_LEASE_SECONDS
 from ..models import CodebaseInfo, CPGLoadResult, SessionStatus
+from ._common import tool_error
 from ..utils.validators import (
+    sanitize_error_text,
     parse_snippet_blocks,
     validate_and_infer_snippet_language,
     validate_code_snippet,
@@ -2469,16 +2471,16 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Validation error: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            raise tool_error(
+                "VALIDATION_ERROR", str(e),
+                "check source_type, source_path, language, and build options.",
+            ) from e
         except Exception as e:
             logger.error(f"Failed to generate CPG: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            raise tool_error(
+                "INTERNAL_ERROR", sanitize_error_text(str(e)),
+                "retry shortly; check get_backend_status if builds keep failing.",
+            ) from e
 
     @mcp.tool(
         title="Get CPG Status",
@@ -2743,12 +2745,15 @@ Examples:
 
             return response
 
+        except ValidationError as e:
+            raise tool_error(
+                "VALIDATION_ERROR", str(e), "pass the codebase_hash returned by generate_cpg."
+            ) from e
         except Exception as e:
             logger.error(f"Failed to get CPG status: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            raise tool_error(
+                "INTERNAL_ERROR", sanitize_error_text(str(e)), "retry shortly."
+            ) from e
 
     @mcp.tool(
         title="Get Backend Status",
@@ -2896,7 +2901,9 @@ Notes:
             return response
         except Exception as e:
             logger.error(f"Failed to get backend status: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            raise tool_error(
+                "INTERNAL_ERROR", sanitize_error_text(str(e)), "retry shortly."
+            ) from e
 
     @mcp.tool(
         title="Remove or Evict CPG",
@@ -2932,7 +2939,7 @@ delete_files=True:
 
             codebase_info = codebase_tracker.get_codebase(codebase_hash)
             if not codebase_info:
-                return {"success": False, "error": f"Codebase {codebase_hash} not found"}
+                raise ValidationError(f"Codebase {codebase_hash} not found")
 
             if not delete_files:
                 _teardown_codebase(services, codebase_hash, delete_files=False)
@@ -2962,6 +2969,12 @@ delete_files=True:
                 "remaining_artifacts": e.remaining_artifacts,
                 "error": "Some artifacts remain. Retry remove_cpg to complete removal.",
             }
+        except ValidationError as e:
+            raise tool_error(
+                "VALIDATION_ERROR", str(e), "list existing CPGs with get_backend_status."
+            ) from e
         except Exception as e:
             logger.error(f"Failed to remove CPG {codebase_hash}: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            raise tool_error(
+                "INTERNAL_ERROR", sanitize_error_text(str(e)), "retry remove_cpg shortly."
+            ) from e
