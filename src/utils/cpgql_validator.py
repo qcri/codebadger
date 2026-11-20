@@ -113,7 +113,9 @@ class CPGQLValidator:
         CPGQLValidator._check_method_chaining(query, results)
         CPGQLValidator._check_string_literals(query, results)
         CPGQLValidator._check_lambda_expressions(query, results)
-        
+
+        # Errors are blocking; warnings are advice. A query with any error is invalid.
+        results['valid'] = not results['errors']
         return results
     
     @staticmethod
@@ -123,8 +125,10 @@ class CPGQLValidator:
         direct_matches = re.findall(r'\.matches\s*\(["\']', query)
         if direct_matches:
             # Check if it's inside a filter/where
+            # Heuristic only (valid inside map/filterNot/lambdas), so advise rather than
+            # block; Joern's compiler reports real misuse as a QUERY_ERROR.
             if not re.search(r'\.filter\s*\(.*\.matches|\.where\s*\(.*\.matches', query):
-                results['errors'].append({
+                results['warnings'].append({
                     'type': 'REGEX_SYNTAX',
                     'message': '.matches() called outside of filter/where lambda - likely incorrect',
                     'suggestion': 'Wrap in .filter(_.property.matches("regex"))',
@@ -134,8 +138,10 @@ class CPGQLValidator:
     @staticmethod
     def _check_filter_syntax(query: str, results: Dict) -> None:
         """Check for common filter/where syntax errors"""
-        # Check for unmatched parentheses
-        if query.count('(') != query.count(')'):
+        # Check for unmatched parentheses outside string literals (a regex such as
+        # ".*\\(.*" legitimately holds an unbalanced paren).
+        code = re.sub(r'"""[\s\S]*?"""|"(?:\\.|[^"\\])*"', '""', query)
+        if code.count('(') != code.count(')'):
             results['errors'].append({
                 'type': 'SYNTAX_ERROR',
                 'message': 'Unmatched parentheses in query',
