@@ -91,7 +91,7 @@ def register_tools(mcp, services: dict):
     register_core_tools(mcp, services)
     register_code_browsing_tools(mcp, services)
     register_taint_analysis_tools(mcp, services)
-    register_presentation_tools(mcp)
+    register_presentation_tools(mcp, services.get("config"))
 
     try:
         from .custom_tools import register_custom_tools

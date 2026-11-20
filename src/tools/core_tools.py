@@ -27,7 +27,6 @@ from ..defaults import (
     LANGUAGE_COMMANDS,
     LANGUAGE_EXTENSIONS,
     SCOPE_SOURCE_EXTENSIONS,
-    SUPPORTED_LANGUAGES,
     frontend_supports,
 )
 from ..exceptions import ValidationError
@@ -37,6 +36,7 @@ from ..utils.postgres_job_store import JOB_LEASE_SECONDS
 from ..models import CodebaseInfo, CPGLoadResult, SessionStatus
 from ._common import tool_error
 from ..utils.validators import (
+    effective_languages,
     sanitize_error_text,
     parse_snippet_blocks,
     validate_and_infer_snippet_language,
@@ -1864,6 +1864,10 @@ class DurableCPGQueue:
 
 def register_core_tools(mcp, services: dict):
     """Register core MCP tools with the FastMCP server"""
+    # One language list for admission, discovery, and this schema: the configured
+    # languages that have a Joern frontend (all supported ones by default).
+    allowed_languages = effective_languages(services.get("config"))
+    LanguageId = Literal[tuple(allowed_languages)]
 
     @mcp.tool(
         title="Generate Code Property Graph",
@@ -1985,7 +1989,7 @@ Examples:
     async def generate_cpg(
         source_type: Annotated[Literal["local", "github", "snippet"], Field(description="'local' path, 'github' URL, or 'snippet' (code pasted directly into the chat)")],
         source_path: Annotated[Optional[str], Field(description="REQUIRED for local (absolute path to source directory) and github (an https URL on github.com or gitlab.com ONLY, e.g. https://github.com/user/repo; additionally ssh:// URLs on hosts the operator allowlisted via GIT_CLONE_EXTRA_HOSTS, e.g. ssh://git@192.168.152.14:3000/user/repo.git — embedded credentials are always rejected). OPTIONAL for snippet: a short human label for the pasted code (e.g. a function name); when omitted the server derives one from the filename/language.")] = None,
-        language: Annotated[str, Field(description="Programming language - one of: java, c, cpp, javascript, python, go, kotlin, csharp, ghidra, jimple, php, ruby, swift. REQUIRED for local/github. For a snippet whose code carries a <code language=\"...\"> tag, the tag's language wins and this is optional.")] = "",
+        language: Annotated[Optional[LanguageId], Field(description="Programming language of the source. REQUIRED for local/github. For a snippet whose code carries a <code language=\"...\"> tag, the tag's language wins and this is optional.")] = None,
         code: Annotated[Optional[str], Field(description="Required when source_type='snippet'. Wrap the code in a <code language=\"LANG\"> ... </code> tag where LANG is a supported language id, e.g. <code language=\"c\">int main(){...}</code>. Multiple blocks are concatenated but must share one language. Ignored for local/github.")] = None,
         filename: Annotated[Optional[str], Field(description="Optional filename for a snippet (e.g. 'parser.c'); defaults to snippet.<ext> from the language. Ignored for local/github.")] = None,
         github_token: Annotated[Optional[str], Field(description="Access token for private github.com/gitlab.com repositories (optional; sent as the clone URL username). Custom GIT_CLONE_EXTRA_HOSTS servers authenticate via the operator's ssh key instead — a token is not used there. Never embed the token in the URL.")] = None,
@@ -2045,13 +2049,13 @@ Examples:
                         "either wrap the code in a <code language=\"...\"> ... </code> "
                         "tag (e.g. <code language=\"c\">int main(){...}</code>) or pass "
                         "the `language` argument. Supported languages: "
-                        f"{', '.join(SUPPORTED_LANGUAGES)}."
+                        f"{', '.join(allowed_languages)}."
                     )
                 declared = parsed[0] if parsed else language
                 if parsed:
                     code = parsed[1]
                 language = validate_and_infer_snippet_language(code, declared or None)
-            validate_language(language)
+            validate_language(language, allowed_languages)
             # Validate every caller-supplied input up front (no-ops when unset).
             validate_git_branch(branch)
             validate_github_token(github_token)

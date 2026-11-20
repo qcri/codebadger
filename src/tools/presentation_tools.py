@@ -3,11 +3,12 @@
 import json
 
 
-SUPPORTED_LANGUAGES = ["c", "cpp", "java", "javascript", "python"]
+from ..utils.validators import effective_languages
 
 
-def register_presentation_tools(mcp):
+def register_presentation_tools(mcp, config=None):
     """Register static guidance that helps clients choose a bounded workflow."""
+    languages = effective_languages(config)
 
     @mcp.resource(
         "codebadger://supported-languages",
@@ -19,7 +20,7 @@ def register_presentation_tools(mcp):
     def supported_languages() -> str:
         return json.dumps(
             {
-                "languages": SUPPORTED_LANGUAGES,
+                "languages": languages,
                 "workflow": [
                     "Call get_backend_status (optionally filtered by language or project) to discover indexed codebases.",
                     "Call get_cpg_status with the selected row's codebase_hash.",

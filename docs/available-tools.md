@@ -22,7 +22,9 @@ The tools fall into five groups:
 > `run_cpgql_query` for graph-level code access (node `.code`).
 
 > **Languages:** C, C++, Java, JavaScript, Python, Go, Kotlin, C#, PHP, Ruby,
-> Swift, Ghidra, and Jimple. The memory-safety detectors are C/C++-focused;
+> Swift, Rust, Ghidra, and Jimple by default; `cpg.supported_languages` narrows
+> the list, and the `codebadger://supported-languages` resource reports the
+> deployment's effective set. The memory-safety detectors are C/C++-focused;
 > taint, browsing, and semantic tools work across all supported languages.
 
 ---
