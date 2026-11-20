@@ -839,26 +839,9 @@ Examples:
         filename: Annotated[Optional[str], Field(description="(Auto mode) Regex to filter sources/sinks by filename")] = None,
         sanitizer_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sanitizer function names. Flows through sanitizers are filtered out.")] = None,
         # Legacy/Deprecated arguments - included to provide helpful error messages
-        source_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
-        sink_pattern: Annotated[Optional[str], Field(description="DEPRECATED: Do not use")] = None,
-        depth: Annotated[Optional[int], Field(description="DEPRECATED: Do not use")] = None,
     ) -> Dict[str, Any]:
         """Find data flow paths between source and sink using Joern's native taint analysis."""
         try:
-            # Check for legacy arguments that LLMs might hallucinate
-            legacy_args = []
-            if source_pattern: legacy_args.append("source_pattern")
-            if sink_pattern: legacy_args.append("sink_pattern")
-            if depth: legacy_args.append("depth")
-
-            if legacy_args:
-                raise ValidationError(
-                    f"Unexpected arguments: {legacy_args}. "
-                    "These arguments are deprecated. "
-                    "Use 'find_taint_sources' to find sources by pattern, then use the resulting 'node_id' here. "
-                    "Or use mode='auto' for batch analysis."
-                )
-
             validate_codebase_hash(codebase_hash)
 
             query_executor = services["query_executor"]
