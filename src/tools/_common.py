@@ -6,11 +6,14 @@ string the tool returns. These were copy-pasted ~20+ times across the tool
 modules (and had drifted), so they live here as single sources of truth.
 """
 
+import functools
 import logging
 from typing import Optional
 
+from fastmcp.exceptions import ToolError
+
 from ..exceptions import ValidationError
-from ..utils.validators import validate_codebase_hash
+from ..utils.validators import sanitize_error_text, validate_codebase_hash
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,41 @@ ERROR_PREFIXES = ("Error:", "Validation Error:", "Internal Error:")
 def is_error_output(text) -> bool:
     """True if a string tool result is an error sentinel (so: don't cache it)."""
     return isinstance(text, str) and text.startswith(ERROR_PREFIXES)
+
+
+def tool_error(code: str, message: str, hint: str) -> ToolError:
+    """The one failure shape for MCP tools: an isError result 'CODE: message Hint: ...'."""
+    return ToolError(f"{code}: {message} Hint: {hint}")
+
+
+def tool_errors(hint: str):
+    """Map a tool's failures onto tool_error.
+
+    ValidationError -> VALIDATION_ERROR; a returned {"success": False, ...} dict ->
+    its error_code (QUERY_ERROR when absent); any other exception -> INTERNAL_ERROR.
+    ToolErrors raised by the tool pass through unchanged.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                result = fn(*args, **kwargs)
+            except ToolError:
+                raise
+            except ValidationError as e:
+                raise tool_error("VALIDATION_ERROR", str(e), hint) from e
+            except Exception as e:
+                logger.error("Unexpected error in %s: %s", fn.__name__, e, exc_info=True)
+                raise tool_error("INTERNAL_ERROR", sanitize_error_text(str(e)), hint) from e
+            if isinstance(result, dict) and result.get("success") is False:
+                raise tool_error(
+                    result.get("error_code") or "QUERY_ERROR",
+                    str(result.get("error") or "Request failed"),
+                    hint,
+                )
+            return result
+        return wrapper
+    return decorate
 
 
 def cache_policy(services: dict) -> tuple[bool, int]:

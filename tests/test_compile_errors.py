@@ -4,7 +4,6 @@ import json
 from contextlib import nullcontext
 from unittest.mock import MagicMock
 
-import jsonschema
 import pytest
 from fastmcp import Client, FastMCP
 
@@ -96,17 +95,15 @@ def _server(executor: QueryExecutor) -> FastMCP:
 
 async def test_run_cpgql_query_reports_compile_error():
     async with Client(_server(_executor(NOT_FOUND))) as client:
-        tools = await client.list_tools()
-        schema = next(t for t in tools if t.name == "run_cpgql_query").output_schema
         result = await client.call_tool(
-            "run_cpgql_query", {"codebase_hash": CODEBASE_HASH, "query": "cpg.methd.name.l"}
+            "run_cpgql_query", {"codebase_hash": CODEBASE_HASH, "query": "cpg.methd.name.l"},
+            raise_on_error=False,
         )
 
-    reply = result.structured_content
-    jsonschema.validate(reply, schema)
-    assert reply["success"] is False
-    assert reply["error_code"] == "QUERY_ERROR"
-    assert "value methd is not a member" in reply["error"]
+    assert result.is_error
+    text = result.content[0].text
+    assert text.startswith("QUERY_ERROR: Query failed to compile")
+    assert "value methd is not a member" in text
 
 
 async def test_broken_template_fails_get_call_graph():

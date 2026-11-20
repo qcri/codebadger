@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock
 
-import jsonschema
 import pytest
 from fastmcp import Client, FastMCP
 
@@ -62,7 +61,7 @@ def _server(query_result: QueryResult) -> FastMCP:
         ("not-a-hash", QueryResult(success=True, data=[]), "VALIDATION_ERROR"),
     ],
 )
-async def test_browsing_failures_match_published_schema(
+async def test_browsing_failures_raise_coded_tool_errors(
     tool_name: str,
     codebase_hash: str,
     query_result: QueryResult,
@@ -72,12 +71,13 @@ async def test_browsing_failures_match_published_schema(
     async with Client(_server(query_result)) as client:
         tools = await client.list_tools()
         schema = next(t for t in tools if t.name == tool_name).output_schema
-        result = await client.call_tool(tool_name, arguments)
+        result = await client.call_tool(tool_name, arguments, raise_on_error=False)
 
-    jsonschema.validate(result.structured_content, schema)
-    assert result.structured_content["success"] is False
-    assert isinstance(result.structured_content["error"], str)
-    assert result.structured_content["error_code"] == error_code
+    assert result.is_error
+    assert result.content[0].text.startswith(f"{error_code}: ")
+    assert " Hint: " in result.content[0].text
+    # Success schemas no longer carry error fields.
+    assert "error" not in schema["properties"] and "error_code" not in schema["properties"]
 
 
 @pytest.mark.parametrize(
@@ -117,3 +117,37 @@ async def test_summary_tool_failures_keep_executor_error_code(
 
     assert result.is_error
     assert result.content[0].text.startswith(f"{error_code}: ")
+
+
+async def test_unexpected_failures_become_internal_errors_without_host_paths() -> None:
+    service = MagicMock()
+    service.list_methods.side_effect = RuntimeError("boom in /mnt/secret/playground/cpgs/x/cpg.bin")
+    from src.tools.code_browsing_tools import register_code_browsing_tools
+
+    mcp = FastMCP("TestServer")
+    register_code_browsing_tools(mcp, {
+        "code_browsing_service": service, "codebase_tracker": MagicMock(), "query_executor": MagicMock(),
+    })
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_methods", {"codebase_hash": CODEBASE_HASH}, raise_on_error=False)
+
+    text = result.content[0].text
+    assert result.is_error and text.startswith("INTERNAL_ERROR: boom in ")
+    assert "/mnt/secret" not in text
+
+
+async def test_run_cpgql_query_validation_failure_is_a_validation_error(monkeypatch) -> None:
+    from src.utils.cpgql_validator import CPGQLValidator
+
+    monkeypatch.setattr(CPGQLValidator, "validate_query", staticmethod(lambda q: {
+        "valid": False, "errors": [{"message": "Unmatched parentheses in query"}],
+    }))
+    async with Client(_server(QueryResult(success=True, data=[]))) as client:
+        result = await client.call_tool(
+            "run_cpgql_query",
+            {"codebase_hash": CODEBASE_HASH, "query": "cpg.method.name(.l", "validate": True},
+            raise_on_error=False,
+        )
+
+    assert result.is_error
+    assert result.content[0].text.startswith("VALIDATION_ERROR: Query validation failed: ")

@@ -1684,12 +1684,14 @@ class TestMCPTools:
         )
 
         async with Client(mcp) as client:
-            result = await client.call_tool("run_cpgql_query", {"codebase_hash": "553642871dd4251d", "query": "invalid query"})
-            import json
-            result_dict = json.loads(result.content[0].text)
+            result = await client.call_tool(
+                "run_cpgql_query",
+                {"codebase_hash": "553642871dd4251d", "query": "invalid query"},
+                raise_on_error=False,
+            )
 
-            assert result_dict["success"] is False
-            assert result_dict["error"] == "Invalid query syntax"
+            assert result.is_error
+            assert result.content[0].text.startswith("QUERY_ERROR: Invalid query syntax")
 
     @pytest.mark.asyncio
     async def test_run_cpgql_query_blocks_dangerous_query(self, mock_services):
@@ -1706,12 +1708,13 @@ class TestMCPTools:
                     "codebase_hash": "553642871dd4251d",
                     "query": 'scala.io.Source.fromFile("/etc/passwd").mkString',
                 },
+                raise_on_error=False,
             )
-            import json
-            result_dict = json.loads(result.content[0].text)
 
-            assert result_dict["success"] is False
-            assert "dangerous operation" in result_dict["error"]
+            assert result.is_error
+            text = result.content[0].text
+            assert text.startswith("VALIDATION_ERROR: ")
+            assert "dangerous operation" in text
             # Blocked before ever reaching the executor.
             mock_services["query_executor"].execute_query.assert_not_called()
 
