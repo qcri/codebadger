@@ -1401,23 +1401,23 @@ class TestMCPTools:
                 assert tool.title, f"Missing title for {tool.name}"
                 assert tool.description, f"Missing description for {tool.name}"
                 assert tool.annotations is not None, f"Missing annotations for {tool.name}"
-                assert tool.outputSchema is not None, f"Missing output schema for {tool.name}"
+                assert tool.output_schema is not None, f"Missing output schema for {tool.name}"
 
         by_name = {tool.name: tool for tool in tools}
         assert by_name["get_cpg_status"].title == "Get CPG Status"
         assert by_name["get_backend_status"].title == "Get Backend Status"
-        assert by_name["get_cpg_status"].annotations.readOnlyHint is True
-        assert by_name["get_backend_status"].annotations.destructiveHint is False
-        assert by_name["remove_cpg"].annotations.destructiveHint is True
+        assert by_name["get_cpg_status"].annotations.read_only_hint is True
+        assert by_name["get_backend_status"].annotations.destructive_hint is False
+        assert by_name["remove_cpg"].annotations.destructive_hint is True
         assert by_name["generate_cpg"].title == "Generate Code Property Graph"
-        assert by_name["generate_cpg"].annotations.readOnlyHint is False
-        assert by_name["get_cpg_status"].outputSchema["type"] == "object"
-        assert by_name["get_cpg_status"].outputSchema["additionalProperties"] is True
-        assert by_name["get_backend_status"].outputSchema["type"] == "object"
+        assert by_name["generate_cpg"].annotations.read_only_hint is False
+        assert by_name["get_cpg_status"].output_schema["type"] == "object"
+        assert by_name["get_cpg_status"].output_schema["additionalProperties"] is True
+        assert by_name["get_backend_status"].output_schema["type"] == "object"
 
         for name in ("list_methods", "list_calls", "get_call_graph", "get_type_definition", "list_parameters", "run_cpgql_query", "get_cfg", "find_bounds_checks", "get_cpgql_syntax_help"):
             assert by_name[name].title
-            assert by_name[name].annotations.readOnlyHint is True
+            assert by_name[name].annotations.read_only_hint is True
         for name in (
             "find_taint_sources", "find_taint_sinks", "find_taint_flows",
             "get_program_slice", "get_variable_flow", "find_use_after_free",
@@ -1426,20 +1426,20 @@ class TestMCPTools:
             "find_toctou", "find_uninitialized_reads",
         ):
             assert by_name[name].title
-            assert by_name[name].annotations.readOnlyHint is True
-        methods_schema = by_name["list_methods"].outputSchema
+            assert by_name[name].annotations.read_only_hint is True
+        methods_schema = by_name["list_methods"].output_schema
         assert methods_schema["required"] == ["success"]
         assert methods_schema["properties"]["truncated"]["type"] == "boolean"
         for name in ("list_methods", "list_calls", "find_taint_sources", "find_taint_sinks"):
-            props = by_name[name].outputSchema["properties"]
+            props = by_name[name].output_schema["properties"]
             assert "total" in props and "returned" in props and "truncated" in props
-        calls_schema = by_name["list_calls"].outputSchema
+        calls_schema = by_name["list_calls"].output_schema
         assert calls_schema["properties"]["calls"]["items"]["properties"]["callee"]["type"] == "string"
-        assert by_name["get_type_definition"].outputSchema["properties"]["types"]["type"] == "array"
-        assert by_name["list_parameters"].outputSchema["properties"]["methods"]["type"] == "array"
-        assert by_name["run_cpgql_query"].outputSchema["properties"]["data"] == {}
-        assert by_name["find_taint_sources"].outputSchema["properties"]["sources"]["type"] == "array"
-        assert by_name["find_taint_sinks"].outputSchema["properties"]["sinks"]["type"] == "array"
+        assert by_name["get_type_definition"].output_schema["properties"]["types"]["type"] == "array"
+        assert by_name["list_parameters"].output_schema["properties"]["methods"]["type"] == "array"
+        assert by_name["run_cpgql_query"].output_schema["properties"]["data"] == {}
+        assert by_name["find_taint_sources"].output_schema["properties"]["sources"]["type"] == "array"
+        assert by_name["find_taint_sinks"].output_schema["properties"]["sinks"]["type"] == "array"
         assert by_name["find_taint_flows"].title == "Find Taint Flows"
         assert by_name["get_program_slice"].title == "Get Program Slice"
         assert by_name["get_variable_flow"].title == "Get Variable Flow"
@@ -1452,27 +1452,27 @@ class TestMCPTools:
         assert by_name["find_stack_overflow"].title == "Find Stack Overflows"
         assert by_name["find_toctou"].title == "Find TOCTOU Issues"
         assert by_name["find_uninitialized_reads"].title == "Find Uninitialized Reads"
-        assert by_name["find_command_injection_sinks"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_call_graph"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_call_graph"].inputSchema["properties"]["detail"]["default"] == "compact"
-        assert by_name["find_taint_flows"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_taint_flows"].inputSchema["properties"]["detail"]["default"] == "compact"
-        assert by_name["get_cfg"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_bounds_checks"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_program_slice"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_program_slice"].inputSchema["properties"]["detail"]["default"] == "compact"
-        assert by_name["get_variable_flow"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_variable_flow"].inputSchema["properties"]["detail"]["default"] == "compact"
-        assert by_name["find_use_after_free"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_double_free"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_null_pointer_deref"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_integer_overflow"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_format_string_vulns"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_heap_overflow"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_stack_overflow"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_toctou"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["find_uninitialized_reads"].outputSchema["properties"]["summary"]["type"] == "string"
-        assert by_name["get_cpgql_syntax_help"].outputSchema["required"] == ["success"]
+        assert by_name["find_command_injection_sinks"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_call_graph"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_call_graph"].input_schema["properties"]["detail"]["default"] == "compact"
+        assert by_name["find_taint_flows"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_taint_flows"].input_schema["properties"]["detail"]["default"] == "compact"
+        assert by_name["get_cfg"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_bounds_checks"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_program_slice"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_program_slice"].input_schema["properties"]["detail"]["default"] == "compact"
+        assert by_name["get_variable_flow"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_variable_flow"].input_schema["properties"]["detail"]["default"] == "compact"
+        assert by_name["find_use_after_free"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_double_free"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_null_pointer_deref"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_integer_overflow"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_format_string_vulns"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_heap_overflow"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_stack_overflow"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_toctou"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["find_uninitialized_reads"].output_schema["properties"]["summary"]["type"] == "string"
+        assert by_name["get_cpgql_syntax_help"].output_schema["required"] == ["success"]
 
     @pytest.mark.asyncio
     async def test_get_backend_status_rows_resume_same_named_projects(self, mock_services):
