@@ -44,3 +44,36 @@ def test_test_and_dev_requirements_are_bounded():
     for path in ("requirements-test.txt", "requirements-dev.txt"):
         unbounded = [r for r in _requirements(path) if "==" not in r and not re.search(r"<\s*\d", r)]
         assert unbounded == [], path
+
+
+def _lock():
+    pins = {}
+    for line in pathlib.Path("requirements.lock").read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            name, _, version = line.partition("==")
+            assert version, f"lock entry is not an exact pin: {line}"
+            pins[name.lower().replace("_", "-")] = version
+    return pins
+
+
+def test_lock_pins_every_declared_requirement_within_its_range():
+    from packaging.requirements import Requirement
+
+    pins = _lock()
+    problems = []
+    for path in ("requirements.txt", "requirements-test.txt"):
+        for line in _requirements(path):
+            req = Requirement(line)
+            name = req.name.lower().replace("_", "-")
+            if name not in pins:
+                problems.append(f"{name} missing from requirements.lock")
+            elif not req.specifier.contains(pins[name], prereleases=True):
+                problems.append(f"{name}=={pins[name]} violates {req.specifier} ({path})")
+    assert problems == []
+
+
+def test_image_installs_under_the_lock():
+    dockerfile = pathlib.Path("Dockerfile.mcp").read_text()
+    assert "requirements.lock" in dockerfile
+    assert dockerfile.count("-c requirements.lock") == 2  # runtime and test installs

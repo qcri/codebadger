@@ -10,6 +10,18 @@ docker compose up -d        # Joern container, needed for integration tests
 
 See [Installation](installation.md) for prerequisites.
 
+## Dependencies
+
+`requirements.txt` (runtime) and `requirements-test.txt` (tests) declare the
+supported version ranges. `requirements.lock` pins the exact versions the MCP
+image installs, including transitive packages. After changing a requirement,
+or to pick up new patch releases, regenerate the lock and rebuild:
+
+```bash
+scripts/update_lock.sh
+docker compose build codebadger-mcp
+```
+
 ## Running tests
 
 ```bash
