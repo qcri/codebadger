@@ -21,8 +21,8 @@ def register_presentation_tools(mcp):
             {
                 "languages": SUPPORTED_LANGUAGES,
                 "workflow": [
-                    "Call get_backend_status to discover indexed codebases.",
-                    "Call get_cpg_status for the selected codebase.",
+                    "Call get_backend_status (optionally filtered by language or project) to discover indexed codebases.",
+                    "Call get_cpg_status with the selected row's codebase_hash.",
                     "Start with bounded list_methods or list_calls queries.",
                     "Use pagination fields and narrow filters before expanding scope.",
                 ]
