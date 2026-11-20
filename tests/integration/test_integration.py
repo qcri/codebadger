@@ -500,7 +500,7 @@ class TestCodeBadgerIntegration:
             "codebase_hash": codebase_hash,
             "mode": "auto",
             "language": "c",
-            "max_results": 50,
+            "limit": 50,
             "timeout": 60
         })
 
@@ -1226,7 +1226,7 @@ class TestCodeBadgerIntegration:
             "codebase_hash": codebase_hash,
             "mode": "auto",
             "language": "c",
-            "max_results": 50,
+            "limit": 50,
             "timeout": 120
         })
 

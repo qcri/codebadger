@@ -136,3 +136,17 @@ async def test_paged_replies_use_only_the_standard_fields():
     for tool in paged:
         assert {"total", "returned", "truncated", "page", "page_size", "total_pages"} <= set(
             tool.output_schema["properties"]), tool.name
+
+
+def test_no_test_or_client_passes_retired_cap_names():
+    """Retired argument names must not linger in callers (they now fail validation)."""
+    import pathlib
+    import re
+
+    offenders = []
+    for path in [*pathlib.Path("tests/integration").glob("*.py"), pathlib.Path("examples/sample_client.py"),
+                 pathlib.Path("scripts/mcp_smoke.py")]:
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r'["\'](max_results|max_nodes)["\']\s*:', line):
+                offenders.append(f"{path}:{number}")
+    assert offenders == []
