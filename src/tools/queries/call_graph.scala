@@ -33,15 +33,17 @@
 
       // BFS helper: returns (edgesByDepth, totalEdges)
       // Each edge is (fromName, toName, toFile, toLine, isCycle)
+      // Single-line parameters: Scala 3 rejects a function type wrapped onto a
+      // continuation line inside a parameter list.
+      type M = io.shiftleft.codepropertygraph.generated.nodes.Method
       def bfsEdges(
-        seed: io.shiftleft.codepropertygraph.generated.nodes.Method,
+        seed: M,
         seedDepth: Int,
-        nextNodes: io.shiftleft.codepropertygraph.generated.nodes.Method =>
-                   List[io.shiftleft.codepropertygraph.generated.nodes.Method],
+        nextNodes: M => List[M],
         edgeDir: (String, String) => (String, String)   // (from, to) ordering
       ): (scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]], Int) = {
 
-        val toVisit     = scala.collection.mutable.Queue[(io.shiftleft.codepropertygraph.generated.nodes.Method, Int)]()
+        val toVisit     = scala.collection.mutable.Queue[(M, Int)]()
         var visited     = Set[String]()
         var edgesVisited= Set[(String, String)]()
         val edgesByDepth= scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
