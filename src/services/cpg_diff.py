@@ -2,8 +2,9 @@
 
 Each internal method gets a fingerprint over its signature and the code of its own
 CFG nodes. Line numbers are not part of it, so a method that only moved is
-unchanged, and a file's <global> pseudo-method does not change when a function in
-that file does.
+unchanged. A file's <global> pseudo-method holds a METHOD_REF per function defined
+in the file; those are left out of its fingerprint, so adding, removing, or editing
+a function does not mark <global> modified.
 """
 
 from collections import defaultdict
@@ -41,7 +42,7 @@ def fetch_fingerprints(service, codebase_hash: str, cpg_path: str) -> Dict[str, 
             return {"success": True, "rows": rows}
 
         page = service._get_cached_or_execute(
-            "method_fingerprints", codebase_hash, {"offset": offset, "v": 1}, run,
+            "method_fingerprints", codebase_hash, {"offset": offset, "v": 2}, run,
         )
         if not page.get("success"):
             return page
