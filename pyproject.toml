@@ -11,7 +11,7 @@ requires-python = ">=3.10"  # PEP 604 union syntax (str | None) is used througho
 license = { file = "LICENSE" }
 # Runtime dependencies are pinned in requirements.txt (the install source for the
 # Docker images); declared here dynamically as the canonical list for tooling.
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "optional-dependencies"]
 
 [tool.setuptools]
 py-modules = ["main"]
@@ -21,6 +21,8 @@ include = ["src*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
+optional-dependencies.test = { file = ["requirements-test.txt"] }
+optional-dependencies.dev = { file = ["requirements-test.txt", "requirements-dev.txt"] }
 
 [tool.black]
 line-length = 88

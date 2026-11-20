@@ -1,0 +1,8 @@
+# Test dependencies. Installed into the MCP image by default (INSTALL_TEST_DEPS=1)
+# because the documented test command and CI run pytest inside that image.
+# Production images can skip them: docker build --build-arg INSTALL_TEST_DEPS=0.
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-mock==3.15.1
+# Imported directly by the contract tests; otherwise only transitive via mcp.
+jsonschema>=4.26,<5

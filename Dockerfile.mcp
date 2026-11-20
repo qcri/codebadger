@@ -26,8 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python deps first for layer caching.
-COPY requirements.txt ./
+COPY requirements.txt requirements-test.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Test tools stay in the default image: CI and the documented test command run
+# pytest inside it. Production builds can pass --build-arg INSTALL_TEST_DEPS=0.
+ARG INSTALL_TEST_DEPS=1
+RUN if [ "$INSTALL_TEST_DEPS" = "1" ]; then pip install --no-cache-dir -r requirements-test.txt; fi
 
 # Application code (playground/ is a mounted volume, excluded via .dockerignore).
 # Use the shipped example so clean clones do not depend on ignored local config.
