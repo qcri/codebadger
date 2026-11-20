@@ -155,7 +155,9 @@ class JoernServerManager:
         """Return the Docker container's current RSS in MB (0.0 on any error)."""
         try:
             container = self.docker_client.containers.get(self.container_name)
-            stats = container.stats(stream=False)
+            # one_shot skips the second sample Docker takes for CPU deltas (~1 s);
+            # memory usage is a point-in-time reading either way.
+            stats = container.stats(stream=False, one_shot=True)
             usage = stats.get("memory_stats", {}).get("usage", 0)
             return usage / (1024 * 1024)
         except Exception:
