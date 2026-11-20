@@ -1191,6 +1191,101 @@ class TestMCPTools:
         } == counts
 
     @pytest.mark.asyncio
+    async def test_ready_build_records_provenance_before_reclaiming_source(self, mock_services, tmp_path):
+        """The commit, Joern/frontend version, and build options outlive the checkout."""
+        import subprocess
+        from src.tools import core_tools
+
+        key = "553642871dd4251d"
+        checkout = tmp_path / key / "source"
+        checkout.mkdir(parents=True)
+        (checkout / "main.c").write_text("int main(void){return 0;}\n")
+        git = ["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run([*git, "add", "."], check=True)
+        subprocess.run([*git, "commit", "-qm", "fixture"], check=True)
+        commit = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+        manager = mock_services["joern_server_manager"]
+        manager.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=3)
+        manager.container_name = "codebadger-joern-server"
+        manager.docker_client.containers.get.return_value.attrs = {
+            "Config": {"Env": ["PATH=/usr/bin", "JOERN_VERSION=4.0.687"]},
+        }
+        core_tools._JOERN_VERSION_CACHE.clear()
+        docker_client = MagicMock()
+        docker_client.containers.get.return_value.exec_run.return_value = MagicMock(exit_code=0)
+        cpg_path = tmp_path / "cpg.bin"
+        cpg_path.write_bytes(b"fixture")
+
+        with patch.object(core_tools.docker, "from_env", return_value=docker_client), \
+             patch.object(core_tools, "_reclaim_source_snapshot") as reclaim:
+            built = await core_tools._generate_cpg_async(
+                key, str(tmp_path / key), str(cpg_path), "c", f"/playground/cpgs/{key}/cpg.bin",
+                mock_services, defines=["FOO=1"], include_globs=["src/**"],
+            )
+
+        assert built is True
+        ready = next(
+            c.kwargs["metadata"] for c in mock_services["codebase_tracker"].update_codebase.call_args_list
+            if c.kwargs.get("metadata", {}).get("status") == "ready"
+        )
+        provenance = ready["provenance"]
+        assert provenance["known"] is True and provenance["commit"] == commit
+        assert (provenance["joern_version"], provenance["frontend"]) == ("4.0.687", "c2cpg.sh")
+        assert provenance["build_options"]["defines"] == ["FOO=1"]
+        assert provenance["build_options"]["include_globs"] == ["src/**"]
+        reclaim.assert_called_once()  # the checkout goes; provenance stays
+
+
+    def test_status_provenance_summarizes_long_pattern_lists(self):
+        from src.tools.core_tools import _public_provenance
+
+        patterns = [f"p{i}" for i in range(100)]
+        stored = {"known": True, "build_options": {"defines": ["A"], "build_settings": {
+            "exclusion_patterns": patterns, "autodetect_compile_db": True}}}
+        public = _public_provenance(stored)
+
+        summary = public["build_options"]["build_settings"]["exclusion_patterns"]
+        assert summary["count"] == 100 and len(summary["sha256"]) == 16
+        assert public["build_options"]["defines"] == ["A"]
+        assert stored["build_options"]["build_settings"]["exclusion_patterns"] == patterns  # untouched
+
+    def test_checkout_commit_ignores_an_enclosing_repository(self, tmp_path):
+        import subprocess
+        from src.tools.core_tools import _checkout_commit
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        (tmp_path / "x").write_text("x")
+        subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@e",
+                        "commit", "-qm", "outer", "--allow-empty"], check=True)
+        nested = tmp_path / "codebases" / "h" / "source"
+        nested.mkdir(parents=True)
+
+        assert _checkout_commit(str(tmp_path / "codebases" / "h")) is None
+
+    @pytest.mark.asyncio
+    async def test_status_reports_unknown_provenance_for_older_graphs(self, mock_services):
+        from src.tools.core_tools import register_core_tools
+
+        mock_services["codebase_tracker"].get_codebase.return_value = CodebaseInfo(
+            codebase_hash="553642871dd4251d", source_type="github",
+            source_path="https://github.com/test/repo", language="c", cpg_path="/tmp/test.cpg",
+            metadata={"status": "sleeping"},
+        )
+        mock_services["joern_server_manager"].get_server_port.return_value = None
+        mcp = FastMCP("TestServer")
+        register_core_tools(mcp, mock_services)
+        with patch("src.tools.core_tools._schedule_restart_server_task", return_value=False):
+            async with Client(mcp) as client:
+                status = (await client.call_tool(
+                    "get_cpg_status", {"codebase_hash": "553642871dd4251d"}
+                )).structured_content
+
+        assert status["provenance"]["known"] is False
+        assert "regenerate" in status["provenance"]["reason"]
+
+    @pytest.mark.asyncio
     async def test_generate_cpg_async_fails_fast_when_cpg_exceeds_load_ceiling(self, mock_services, tmp_path):
         """A built CPG larger than max_load_mb is failed fast with CPG_TOO_LARGE guidance,
         instead of being handed to the loader to stall and emit an opaque error."""
