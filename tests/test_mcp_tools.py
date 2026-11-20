@@ -620,7 +620,7 @@ class TestMCPTools:
         queue.submit = AsyncMock(return_value="submitted")
         mock_services["cpg_queue"] = queue
 
-        async def clone(repo_url, target_path, branch, token):
+        async def clone(repo_url, target_path, branch, token, commit=None):
             os.makedirs(target_path, exist_ok=True)
             if clone_mock.await_count == 1:
                 raise GitOperationError("network down")

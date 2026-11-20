@@ -1982,6 +1982,10 @@ Sources:
   - github: an https://github.com/... or https://gitlab.com/... URL, or an ssh://
     URL on a host the operator allowlisted (GIT_CLONE_EXTRA_HOSTS). Credentials
     in the URL are rejected; pass github_token for private github/gitlab repos.
+    Revisions: by default a repeat request reuses the graph for that URL/branch,
+    which may be older than the branch tip. Pass refresh=true to build the
+    current tip, or commit=<full SHA> for an exact, reproducible revision.
+    get_cpg_status reports the built commit under provenance.
   - snippet: pass code wrapped in <code language="c"> ... </code> (the tag's
     language wins); several blocks must share one language.
 
@@ -2008,6 +2012,8 @@ Examples:
         github_token: Annotated[Optional[str], Field(description="Access token for private github.com/gitlab.com repositories (optional; sent as the clone URL username). Custom GIT_CLONE_EXTRA_HOSTS servers authenticate via the operator's ssh key instead — a token is not used there. Never embed the token in the URL.")] = None,
         branch: Annotated[Optional[str], Field(description="Specific git branch to checkout (optional, defaults to default branch)")] = None,
         force: Annotated[bool, Field(description="Skip the large-project size warning. Set to True only after the user has explicitly confirmed they want to analyze the full project.")] = False,
+        commit: Annotated[Optional[str], Field(description="github only: build exactly this commit (full 40- or 64-hex SHA). Reproducible: the same commit always maps to the same CPG.")] = None,
+        refresh: Annotated[bool, Field(description="github only: resolve the branch (or default branch) to its current tip first, so an advanced branch builds a new CPG instead of reusing an older one.")] = False,
         include_paths: Annotated[Optional[list], Field(description="C/C++ only: extra header include directories for c2cpg (--include). Relative paths resolve against the source root (e.g. 'include', '_build/include'); absolute paths pass through. Use when a project's generated headers (e.g. a configure/cmake-produced xmlversion.h or config.h) gate code behind feature macros — the source root, any include/ dir, and dirs containing config.h/*version*.h are auto-detected, so this is only needed for non-standard layouts.")] = None,
         defines: Annotated[Optional[list], Field(description="C/C++ only: preprocessor macros to define for c2cpg (--define), e.g. ['LIBXML_CATALOG_ENABLED', 'FOO=1']. Use to force-enable #ifdef-gated modules when the defining header can't be found.")] = None,
         include_globs: Annotated[Optional[list], Field(description="Scope a LARGE repo to a subset of it WITHOUT losing cross-directory header/macro resolution (all languages). Path globs relative to the repo root, e.g. ['libavcodec/**','libavutil/**'] or ['epan/dissectors/']. The repo root stays the parse base; only source translation units OUTSIDE these globs are skipped (headers stay includable). Prefer this over pointing source_path at a subdirectory, which silently drops cross-dir edges. Supports ** (any dirs), * (one path segment), ? (one char); a bare name or trailing-slob is a directory prefix. Caveat: a call into a function defined in an out-of-scope file resolves the name but not its body — scope widely enough to cover your call targets.")] = None,
@@ -2071,6 +2077,12 @@ Examples:
             validate_language(language, allowed_languages)
             # Validate every caller-supplied input up front (no-ops when unset).
             validate_git_branch(branch)
+            if (commit or refresh) and source_type != "github":
+                raise ValidationError("commit and refresh apply only to source_type='github'")
+            if commit:
+                commit = commit.strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+                    raise ValidationError("commit must be a full 40- or 64-character hex SHA")
             validate_github_token(github_token)
             if source_type == "snippet":
                 validate_code_snippet(code)
@@ -2110,8 +2122,14 @@ Examples:
                     }
 
             # Git commit hash, when available, becomes part of the cache key so a
-            # checkout of a different revision produces a distinct CPG.
-            commit_hash = None
+            # checkout of a different revision produces a distinct CPG. A pinned
+            # commit is used as-is; refresh resolves the moving ref to its tip now.
+            commit_hash = commit
+            if source_type == "github" and refresh and not commit_hash:
+                commit_hash = await services["git_manager"].resolve_remote_ref(
+                    source_path, branch=branch, token=github_token,
+                )
+                logger.info(f"Resolved {branch or 'HEAD'} to {commit_hash[:12]} for refresh")
             content_fp = code  # snippet body, when source_type == "snippet"
             if source_type == "local":
                 try:
@@ -2333,6 +2351,7 @@ Examples:
                             target_path=codebase_dir,
                             branch=branch,
                             token=github_token,
+                            commit=commit_hash,
                         )
                         logger.info(f"Cloned repository to {codebase_dir}")
                     else:
