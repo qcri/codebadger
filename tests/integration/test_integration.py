@@ -142,8 +142,13 @@ class TestCodeBadgerIntegration:
     @pytest.mark.asyncio
     @pytest.mark.timeout(10)
     async def test_server_connectivity(self, client):
-        """Test that the server is responding"""
-        await client.ping()
+        """Test that the server is responding.
+
+        MCP 2026 servers are sessionless and answer the legacy ping request with
+        "Method not found", so list the tools instead.
+        """
+        tools = {tool.name for tool in await client.list_tools()}
+        assert {"generate_cpg", "get_cpg_status", "list_methods"} <= tools
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(30)
