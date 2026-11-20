@@ -88,8 +88,8 @@ class TestPrepareContainerCompileDb:
         out = tmp_path / "compile_commands.container.json"
         result = prepare_container_compile_db(str(db), "/src/proj", "/pg/h", str(out))
         assert result is not None
-        out_path, count, rebased = result
-        assert count == 1 and rebased == 2
+        out_path, count, rebased, reachable = result
+        assert count == 1 and rebased == 2 and reachable == 1
         written = json.loads(out.read_text())
         assert written[0]["file"] == "/pg/h/a.c"
 
@@ -107,3 +107,25 @@ class TestPrepareContainerCompileDb:
         db = tmp_path / "compile_commands.json"
         db.write_text("[]")
         assert prepare_container_compile_db(str(db), "/x", "/pg/h", str(tmp_path / "o.json")) is None
+
+
+
+class TestReachableEntries:
+    def test_counts_files_inside_the_tree(self):
+        from src.utils.compile_db import reachable_entries
+
+        entries = [
+            {"directory": "/pg/h", "file": "/pg/h/a.c"},          # absolute, inside
+            {"directory": "/pg/h/src", "file": "b.c"},            # relative to an inside dir
+            {"file": "c.c"},                                      # relative, no directory
+            {"directory": "/build/root", "file": "/build/root/d.c"},  # another machine
+            {"directory": "/build/root", "file": "e.c"},          # relative to a foreign dir
+            {"directory": "/pg/h", "file": "../escape.c"},        # escapes the tree
+        ]
+        assert reachable_entries(entries, "/pg/h") == 3
+
+    def test_foreign_database_has_no_reachable_entries(self, tmp_path):
+        db = tmp_path / "compile_commands.json"
+        db.write_text(json.dumps([{"directory": "/build/root", "file": "/build/root/main.c"}]))
+        result = prepare_container_compile_db(str(db), "/host/src", "/pg/h", str(tmp_path / "o.json"))
+        assert result[1:] == (1, 0, 0)

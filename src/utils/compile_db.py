@@ -108,6 +108,29 @@ def rebase_entries(entries: List[dict], host_root: Optional[str],
     return out, rebased
 
 
+def reachable_entries(entries: List[dict], container_root: str) -> int:
+    """Entries whose source file lies inside the analyzed tree after rebasing.
+
+    A relative `file` resolves against the entry's `directory` (or the source root
+    when there is none). An entry pointing anywhere else names a file c2cpg can't
+    read, so a database with no reachable entries describes another tree.
+    """
+    root = os.path.normpath(container_root)
+    count = 0
+    for entry in entries:
+        path = entry.get("file")
+        if not isinstance(path, str) or not path:
+            continue
+        if not os.path.isabs(path):
+            base = entry.get("directory")
+            base = base if isinstance(base, str) and os.path.isabs(base) else root
+            path = os.path.join(base, path)
+        norm = os.path.normpath(path)
+        if norm == root or norm.startswith(root + os.sep):
+            count += 1
+    return count
+
+
 def prepare_container_compile_db(
     db_host_path: str,
     host_root: Optional[str],
@@ -117,8 +140,9 @@ def prepare_container_compile_db(
     """Load a compile_commands.json, rebase its paths, write a container-usable
     copy to out_host_path.
 
-    Returns (out_host_path, entry_count, rebased_count) on success, or None if
-    the DB is missing / unparseable / empty. Best-effort; never raises.
+    Returns (out_host_path, entry_count, rebased_count, reachable_count) on
+    success, or None if the DB is missing / unparseable / empty. Best-effort;
+    never raises. The caller decides what to do with an unreachable database.
     """
     try:
         with open(db_host_path, "r", encoding="utf-8") as f:
@@ -136,4 +160,4 @@ def prepare_container_compile_db(
     except OSError as e:
         logger.warning(f"compile_commands: could not write rebased DB to {out_host_path}: {e}")
         return None
-    return out_host_path, len(rewritten), rebased
+    return out_host_path, len(rewritten), rebased, reachable_entries(rewritten, container_root)
