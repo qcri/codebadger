@@ -450,6 +450,89 @@ class TestMCPTools:
             assert save_kwargs["source_type"] == "snippet"
 
     @pytest.mark.asyncio
+    async def test_submission_estimate_does_not_block_other_requests(self, mock_services, tmp_path):
+        """A slow estimate scan after queue submission must not stall an unrelated MCP call."""
+        import threading
+        from src.tools.core_tools import register_core_tools
+
+        codebase_hash = "abc1234567890123"
+        mock_services["cpg_queue"] = MagicMock()
+        mock_services["cpg_queue"].submit = AsyncMock(return_value="queued")
+        scan_started = threading.Event()
+        release_scan = threading.Event()
+        released_explicitly = []
+
+        def slow_scan(_path):
+            scan_started.set()
+            released_explicitly.append(release_scan.wait(timeout=5))
+            return (0, 0)
+
+        with patch("src.tools.core_tools.os.path.abspath", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.dirname", return_value=str(tmp_path)), \
+             patch("src.tools.core_tools.os.path.join", side_effect=os.path.join), \
+             patch("src.tools.core_tools.get_cpg_cache_key", return_value=codebase_hash), \
+             patch("src.tools.core_tools._scan_repo", side_effect=slow_scan):
+            mcp = FastMCP("TestServer")
+            register_core_tools(mcp, mock_services)
+            async with Client(mcp) as client:
+                mock_services["codebase_tracker"].get_codebase.return_value = None
+                generate = asyncio.create_task(client.call_tool(
+                    "generate_cpg",
+                    {"source_type": "snippet", "source_path": "", "language": "c",
+                     "code": "int main() { return 0; }"},
+                ))
+                while not scan_started.is_set():
+                    await asyncio.sleep(0.01)
+                status = await asyncio.wait_for(
+                    client.call_tool("get_cpg_status", {"codebase_hash": "553642871dd4251d"}),
+                    timeout=2,
+                )
+                release_scan.set()
+                result = json.loads((await generate).content[0].text)
+
+        assert released_explicitly == [True]
+        assert status.structured_content["codebase_hash"] == "553642871dd4251d"
+        assert result["status"] == "generating"
+        assert "estimated_time" in result
+
+    @pytest.mark.asyncio
+    async def test_cached_restart_estimate_reuses_guard_measurement(self, mock_services, temp_workspace):
+        """The restart estimate reuses the size the large-project guard already measured."""
+        from src.tools.core_tools import register_core_tools
+
+        codebase_hash = "553642871dd4251d"
+        mock_services["codebase_tracker"].get_codebase.return_value = CodebaseInfo(
+            codebase_hash=codebase_hash,
+            source_type="local",
+            source_path="/Users/private/test-repo",
+            language="c",
+            cpg_path=os.path.join(temp_workspace, "playground/cpgs/test/cpg.bin"),
+            metadata={"status": "sleeping"},
+        )
+        mock_services["joern_server_manager"].is_server_running.return_value = False
+
+        with patch("src.tools.core_tools.os.path.abspath", return_value=temp_workspace), \
+             patch("src.tools.core_tools.os.path.dirname", return_value=temp_workspace), \
+             patch("src.tools.core_tools.os.path.join", side_effect=os.path.join), \
+             patch("src.tools.core_tools.os.path.exists", return_value=True), \
+             patch("src.tools.core_tools.resolve_host_path", return_value=temp_workspace), \
+             patch("src.tools.core_tools.get_cpg_cache_key", return_value=codebase_hash), \
+             patch("src.tools.core_tools._schedule_restart_server_task", return_value=True), \
+             patch("src.tools.core_tools._scan_repo", return_value=(120, 1000)) as scan:
+            mcp = FastMCP("TestServer")
+            register_core_tools(mcp, mock_services)
+            async with Client(mcp) as client:
+                result = await client.call_tool(
+                    "generate_cpg",
+                    {"source_type": "local", "source_path": "/Users/private/test-repo", "language": "c"},
+                )
+        result_dict = json.loads(result.content[0].text)
+
+        assert result_dict["status"] == "loading"
+        assert result_dict["estimated_time"].startswith("~1-3 minutes")
+        assert scan.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_queue_full_marks_catalog_failed_and_retry_submits_once(
         self, mock_services, tmp_path
     ):
