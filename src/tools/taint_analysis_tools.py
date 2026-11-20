@@ -506,8 +506,8 @@ def register_taint_analysis_tools(mcp, services: dict):
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
                     "method": {"type": ["string", "null"]},
                 }, "additionalProperties": False}},
-                "total": {"type": "integer"}, "returned": {"type": "integer"}, "limit": {"type": "integer"},
-                "has_more": {"type": "boolean"}, "truncated": {"type": "boolean"}, "message": {"type": "string"},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "message": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
         },
@@ -522,7 +522,7 @@ Returns:
         "sources": [
             {"node_id": "...", "name": "getenv", "code": "getenv(...)", "filename": "...", "lineNumber": 42}
         ],
-        "total": 1
+        "total": 1, "returned": 1, "truncated": false
     }
 
 Notes:
@@ -561,7 +561,7 @@ Examples:
         # Priority: explicit caller patterns, then filtered config/defaults.
         patterns = _resolve_source_patterns(cfg, lang, source_patterns)
         if not patterns:
-            return {"success": True, "sources": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sources configured for language {lang}. Supported: {', '.join(DEFAULT_SOURCES.keys())}"}
+            return {"success": True, "sources": [], "total": 0, "returned": 0, "truncated": False, "message": f"No taint sources configured for language {lang}. Supported: {', '.join(DEFAULT_SOURCES.keys())}"}
 
         # Build Joern .name() regex from patterns, extracting short names
         # from qualified patterns (e.g., 'os.system' -> 'system')
@@ -600,8 +600,6 @@ Examples:
                 "sources": sources,
                 "total": len(sources),
                 "returned": len(sources),
-                "limit": limit,
-                "has_more": len(sources) >= limit,
                 "truncated": len(sources) >= limit,
             }
 
@@ -620,8 +618,8 @@ Examples:
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
                     "method": {"type": ["string", "null"]},
                 }, "additionalProperties": False}},
-                "total": {"type": "integer"}, "returned": {"type": "integer"}, "limit": {"type": "integer"},
-                "has_more": {"type": "boolean"}, "truncated": {"type": "boolean"}, "mode": {"type": "string"},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "mode": {"type": "string"},
                 "message": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
@@ -637,7 +635,7 @@ Returns:
         "sinks": [
             {"node_id": "...", "name": "system", "code": "system(...)", "filename": "...", "lineNumber": 100}
         ],
-        "total": 1
+        "total": 1, "returned": 1, "truncated": false
     }
 
 Notes:
@@ -672,7 +670,7 @@ Examples:
         cfg = services["config"]
         patterns = _resolve_sink_patterns(cfg, lang, sink_patterns, broad)
         if not patterns:
-            return {"success": True, "sinks": [], "total": 0, "returned": 0, "limit": limit, "has_more": False, "truncated": False, "message": f"No taint sinks configured for language {lang}. Supported: {', '.join(DEFAULT_SINKS.keys())}"}
+            return {"success": True, "sinks": [], "total": 0, "returned": 0, "truncated": False, "message": f"No taint sinks configured for language {lang}. Supported: {', '.join(DEFAULT_SINKS.keys())}"}
 
         # Build Joern .name() regex from patterns, extracting short names
         # from qualified patterns (e.g., 'os.system' -> 'system')
@@ -712,8 +710,6 @@ Examples:
                 "sinks": sinks,
                 "total": len(sinks),
                 "returned": len(sinks),
-                "limit": limit,
-                "has_more": len(sinks) >= limit,
                 "truncated": len(sinks) >= limit,
                 "mode": (
                     "explicit"

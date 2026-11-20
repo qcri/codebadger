@@ -18,9 +18,9 @@ actionable:
 5. For taint analysis, use `find_taint_sources` and `find_taint_sinks` first.
    `find_taint_sinks` is focused by default; use `broad=true` or explicit
    patterns when an exhaustive audit is intended.
-6. Treat every result as bounded. Follow `total_pages`, `available`,
-   `returned`, `has_more`, or `truncated` instead of assuming the first page is
-   complete.
+6. Treat every result as bounded. Every capped reply carries `total`,
+   `returned`, and `truncated` (paged ones add `page`, `page_size`, and
+   `total_pages`); follow them instead of assuming the first page is complete.
 7. Rendered analysis tools default to compact output. Request
    `detail="full"` only when the bounded summary is insufficient; otherwise
    keep `detail="compact"` to reduce context usage. Native tool failures expose

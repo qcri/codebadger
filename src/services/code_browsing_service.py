@@ -253,7 +253,6 @@ class CodeBrowsingService:
                 "success": True,
                 "methods": methods,
                 "total": total,
-                "result_cap": query_limit,
                 "truncated": total > query_limit,
             }
 
@@ -267,8 +266,7 @@ class CodeBrowsingService:
 
         methods = full_result.get("methods", [])
         total = full_result.get("total", len(methods))
-        result_cap = full_result.get("result_cap", max(0, min(limit, 10000)))
-        available = len(methods)
+        available = len(methods)  # matches kept for paging (at most `limit`)
 
         # Pagination
         start_idx = (page - 1) * page_size
@@ -279,10 +277,9 @@ class CodeBrowsingService:
             "success": True,
             "methods": paged_methods,
             "total": total,
-            "available": available,
             "returned": len(paged_methods),
-            "result_cap": result_cap,
-            "truncated": full_result.get("truncated", total > available),
+            # More matches exist beyond this reply: later pages or past `limit`.
+            "truncated": start_idx + len(paged_methods) < total,
             "page": page,
             "page_size": page_size,
             "total_pages": (
@@ -368,7 +365,6 @@ class CodeBrowsingService:
                 "success": True,
                 "calls": calls,
                 "total": total,
-                "result_cap": query_limit,
                 "truncated": total > query_limit,
             }
 
@@ -381,8 +377,7 @@ class CodeBrowsingService:
 
         calls = full_result.get("calls", [])
         total = full_result.get("total", len(calls))
-        result_cap = full_result.get("result_cap", max(0, min(limit, 10000)))
-        available = len(calls)
+        available = len(calls)  # matches kept for paging (at most `limit`)
 
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
@@ -392,10 +387,9 @@ class CodeBrowsingService:
             "success": True,
             "calls": paged_calls,
             "total": total,
-            "available": available,
             "returned": len(paged_calls),
-            "result_cap": result_cap,
-            "truncated": full_result.get("truncated", total > available),
+            # More matches exist beyond this reply: later pages or past `limit`.
+            "truncated": start_idx + len(paged_calls) < total,
             "page": page,
             "page_size": page_size,
             "total_pages": (

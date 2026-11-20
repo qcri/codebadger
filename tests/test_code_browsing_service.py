@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import MagicMock
 
 from src.models import CodebaseInfo, QueryResult
@@ -48,7 +49,7 @@ def _call_row(index):
     }
 
 
-def test_list_calls_reports_exact_total_and_explicit_result_cap():
+def test_list_calls_reports_exact_total_beyond_the_limit():
     service, executor = _service([])
     executor.execute_query.side_effect = [
         QueryResult(success=True, data='val res8: String = "42"', row_count=1),
@@ -58,9 +59,7 @@ def test_list_calls_reports_exact_total_and_explicit_result_cap():
     result = service.list_calls(CODEBASE_HASH, limit=10, page=3, page_size=4)
 
     assert result["total"] == 42
-    assert result["available"] == 10
     assert result["returned"] == 2
-    assert result["result_cap"] == 10
     assert result["truncated"] is True
     assert result["total_pages"] == 3
     assert [call["callee"] for call in result["calls"]] == [
@@ -83,7 +82,6 @@ def test_list_calls_reports_untruncated_results():
     result = service.list_calls(CODEBASE_HASH, limit=10)
 
     assert result["total"] == 3
-    assert result["available"] == 3
     assert result["returned"] == 3
     assert result["truncated"] is False
     assert result["total_pages"] == 1
@@ -111,7 +109,7 @@ def test_list_calls_versions_its_cache_key():
     )
 
 
-def test_list_methods_reports_exact_total_and_explicit_result_cap():
+def test_list_methods_reports_exact_total_beyond_the_limit():
     service, executor = _service([])
     executor.execute_query.side_effect = [
         QueryResult(success=True, data=25, row_count=1),
@@ -121,9 +119,7 @@ def test_list_methods_reports_exact_total_and_explicit_result_cap():
     result = service.list_methods(CODEBASE_HASH, limit=10, page=2, page_size=4)
 
     assert result["total"] == 25
-    assert result["available"] == 10
     assert result["returned"] == 4
-    assert result["result_cap"] == 10
     assert result["truncated"] is True
     assert result["total_pages"] == 3
     assert [method["name"] for method in result["methods"]] == [
@@ -148,7 +144,6 @@ def test_list_methods_reports_untruncated_results():
     result = service.list_methods(CODEBASE_HASH, limit=10)
 
     assert result["total"] == 3
-    assert result["available"] == 3
     assert result["returned"] == 3
     assert result["truncated"] is False
     assert result["total_pages"] == 1
@@ -260,3 +255,19 @@ def test_list_parameters_versions_its_cache_key():
         "list_parameters", CODEBASE_HASH, expected_params, cache_ttl=300
     )
     db_manager.cache_tool_output.assert_called_once()
+
+
+@pytest.mark.parametrize(("page", "returned", "truncated"), [(1, 2, True), (2, 2, True), (3, 1, False)])
+def test_truncated_means_more_results_beyond_this_page(page, returned, truncated):
+    """Within the limit, earlier pages are truncated; only the last page is complete."""
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=5, row_count=1),
+        QueryResult(success=True, data=[_call_row(i) for i in range(5)], row_count=5),
+    ]
+
+    result = service.list_calls(CODEBASE_HASH, limit=10, page=page, page_size=2)
+
+    assert (result["total"], result["returned"], result["truncated"]) == (5, returned, truncated)
+    assert result["total_pages"] == 3
+    assert not {"available", "result_cap", "has_more"} & set(result)
