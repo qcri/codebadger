@@ -95,3 +95,28 @@ async def test_descriptions_do_not_repeat_argument_docs():
         tools = await client.list_tools()
 
     assert [t.name for t in tools if "\nArgs:\n" in (t.description or "")] == []
+
+
+async def test_every_result_cap_is_named_limit_and_bounded():
+    """One name for result caps across tools, with declared bounds (no silent clamping)."""
+    mcp, _ = _server()
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+
+    props = {(t.name, name): schema for t in tools for name, schema in t.input_schema["properties"].items()}
+    assert [key for key in props if key[1] in ("max_results", "max_nodes")] == []
+    unbounded = [key for key, schema in props.items()
+                 if key[1] in ("limit", "page_size") and not ("minimum" in schema and "maximum" in schema)]
+    assert unbounded == []
+    assert [key for key, schema in props.items() if key[1] == "page" and schema.get("minimum") != 1] == []
+
+
+async def test_old_cap_names_are_rejected():
+    mcp, services = _server()
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "get_cfg", {"codebase_hash": "553642871dd4251d", "method_name": "main", "max_nodes": 5},
+            raise_on_error=False,
+        )
+    assert result.content[0].text.startswith("VALIDATION_ERROR: max_nodes: Unexpected keyword argument")
+    services["query_executor"].execute_query.assert_not_called()

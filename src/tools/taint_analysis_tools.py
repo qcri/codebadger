@@ -543,7 +543,7 @@ Examples:
         language: Annotated[Optional[str], Field(description="Programming language (c, cpp, java, python, javascript). If not provided, uses the CPG's language")] = None,
         source_patterns: Annotated[Optional[list], Field(description="Optional list of patterns to match source function names. If not provided, uses built-in defaults")] = None,
         filename: Annotated[Optional[str], Field(description="Optional filename to filter results (e.g., 'shell.c'). Uses regex matching")] = None,
-        limit: Annotated[int, Field(description="Maximum number of results to return")] = 200,
+        limit: Annotated[int, Field(description="Maximum number of results to return", ge=1, le=MAX_RESULT_ROWS)] = 200,
     ) -> Dict[str, Any]:
         """Find function calls that are entry points for external/untrusted data."""
         validate_codebase_hash(codebase_hash)
@@ -657,7 +657,7 @@ Examples:
         sink_patterns: Annotated[Optional[list], Field(description="Optional list of regex patterns to match sink function names (e.g., ['system', 'popen', 'sprintf']). If not provided, uses default patterns")] = None,
         broad: Annotated[bool, Field(description="Include low-signal C/C++ memory, metadata, setup, input, and generic-output sink categories")] = False,
         filename: Annotated[Optional[str], Field(description="Optional filename to filter results (e.g., 'shell.c', 'main.c'). Uses regex matching, so partial names work (e.g., 'shell' matches 'shell.c')")] = None,
-        limit: Annotated[int, Field(description="Maximum number of results to return")] = 200,
+        limit: Annotated[int, Field(description="Maximum number of results to return", ge=1, le=MAX_RESULT_ROWS)] = 200,
     ) -> Dict[str, Any]:
         """Find security-sensitive function calls where untrusted data could cause harm."""
         validate_codebase_hash(codebase_hash)
@@ -775,7 +775,7 @@ Examples:
         sink_location: Annotated[Optional[str], Field(description="(Manual mode) Sink at 'file:line' (e.g., 'parser.c:800')")] = None,
         source_node_id: Annotated[Optional[int], Field(description="(Manual mode) Node ID from find_taint_sources output")] = None,
         sink_node_id: Annotated[Optional[int], Field(description="(Manual mode) Node ID from find_taint_sinks output")] = None,
-        max_results: Annotated[int, Field(description="Maximum flows to return")] = 20,
+        limit: Annotated[int, Field(description="Maximum flows to return", ge=1, le=MAX_RESULT_ROWS)] = 20,
         timeout: Annotated[int, Field(description="Query timeout in seconds (default 120 for manual, 300 for auto)")] = 120,
         detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact bounds the rendered flow report")] = "compact",
         mode: Annotated[Optional[Literal["auto"]], Field(description="Set to 'auto' for batch analysis with all default sources/sinks. Omit for manual mode.")] = None,
@@ -806,7 +806,7 @@ Examples:
                     sink_patterns=sink_patterns,
                     sanitizer_patterns=sanitizer_patterns,
                     filename=filename,
-                    max_results=max_results,
+                    max_results=limit,
                     timeout=timeout if timeout != 120 else 300,  # default to 300s for auto mode (large codebases need more time)
                 ))
                 if detail == "compact" and len(summary) > 3000:
@@ -915,7 +915,7 @@ Examples:
                 "sink_location": sink_location,
                 "source_node_id": source_node_id if has_source_id else None,
                 "sink_node_id": sink_node_id if has_sink_id else None,
-                "max_results": max_results,
+                "max_results": limit,
             }
 
             def _execute():
@@ -927,7 +927,7 @@ Examples:
                     sink_line=sink_line,
                     source_node_id=source_node_id if has_source_id else -1,
                     sink_node_id=sink_node_id if has_sink_id else -1,
-                    max_results=max_results,
+                    max_results=limit,
                 )
 
                 result = query_executor.execute_query(
@@ -1185,7 +1185,7 @@ Notes:
     def find_use_after_free(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 300,
     ) -> Dict[str, Any]:
         """Detect potential Use-After-Free vulnerabilities in the codebase."""
@@ -1258,7 +1258,7 @@ Returns:
     def find_double_free(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 300,
     ) -> Dict[str, Any]:
         """Detect potential Double-Free vulnerabilities in the codebase."""
@@ -1339,7 +1339,7 @@ Notes:
     def find_null_pointer_deref(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 300,
     ) -> Dict[str, Any]:
         """Detect potential Null Pointer Dereference vulnerabilities in the codebase."""
@@ -1422,7 +1422,7 @@ Notes:
     def find_integer_overflow(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 300,
     ) -> Dict[str, Any]:
         """Detect potential Integer Overflow/Underflow vulnerabilities in the codebase."""
@@ -1494,7 +1494,7 @@ Examples:
     def find_format_string_vulns(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 120,
     ) -> Dict[str, Any]:
         """Detect potential format string vulnerabilities in the codebase."""
@@ -1561,7 +1561,7 @@ Examples:
     def find_heap_overflow(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
     ) -> Dict[str, Any]:
         """Detect potential heap overflow vulnerabilities in the codebase."""
@@ -1627,7 +1627,7 @@ Examples:
     def find_stack_overflow(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
     ) -> Dict[str, Any]:
         """Detect potential stack buffer overflow vulnerabilities in the codebase."""
@@ -1691,7 +1691,7 @@ Examples:
     def find_toctou(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
     ) -> Dict[str, Any]:
         """Detect TOCTOU race condition vulnerabilities (CWE-367) in the codebase."""
@@ -1758,7 +1758,7 @@ Examples:
     def find_uninitialized_reads(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         filename: Annotated[Optional[str], Field(description="Optional filename regex to filter results")] = None,
-        limit: Annotated[int, Field(description="Maximum results to return")] = 100,
+        limit: Annotated[int, Field(description="Maximum results to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
         timeout: Annotated[int, Field(description="Query timeout in seconds")] = 240,
     ) -> Dict[str, Any]:
         """Detect uninitialized variable reads (CWE-457) in the codebase."""
