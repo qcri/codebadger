@@ -1867,6 +1867,29 @@ def register_core_tools(mcp, services: dict):
 
     @mcp.tool(
         title="Generate Code Property Graph",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "codebase_hash": {"type": "string"},
+                "status": {"type": "string", "enum": [
+                    "generating", "loading", "ready", "failed", "queue_full",
+                    "large_project_warning",
+                ]},
+                "message": {"type": "string"},
+                "estimated_time": {"type": "string"},
+                "joern_port": {"type": ["integer", "null"]},
+                "error_code": {"type": "string"},
+                "size_mb": {"type": "number"},
+                "lines_of_code": {"type": "integer"},
+                "cpg_path": {"type": ["string", "null"]},
+                "source_type": {"type": "string"},
+                "source_path": {"type": ["string", "null"]},
+                "language": {"type": "string"},
+            },
+            "required": ["success", "status", "message"],
+            "additionalProperties": False,
+        },
         annotations={
             "readOnlyHint": False,
             "destructiveHint": False,
@@ -2907,6 +2930,20 @@ Notes:
 
     @mcp.tool(
         title="Remove or Evict CPG",
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "codebase_hash": {"type": "string"},
+                "status": {"type": "string", "enum": ["sleeping", "removed", "partial"]},
+                "message": {"type": "string"},
+                "freed_mb": {"type": "number"},
+                "remaining_artifacts": {"type": "array", "items": {"type": "string"}},
+                "error": {"type": "string"},
+            },
+            "required": ["success", "codebase_hash", "status"],
+            "additionalProperties": False,
+        },
         annotations={
             "readOnlyHint": False,
             "destructiveHint": True,
