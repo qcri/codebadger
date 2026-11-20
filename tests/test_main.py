@@ -58,6 +58,8 @@ class TestLifespan:
         ), patch(
             "main.CodeBrowsingService"
         ), patch(
+            "main.CacheCleanupScheduler"
+        ) as mock_sweeper_class, patch(
             "src.services.coordination.make_coordinator",
             return_value=MagicMock(backend="redis"),
         ):
@@ -77,6 +79,9 @@ class TestLifespan:
             mock_config.telemetry = MagicMock()
             mock_config.telemetry.enabled = False
 
+            from src.models import RetentionConfig
+            mock_config.retention = RetentionConfig()
+            mock_config.query.cache_ttl = 300
             mock_load_config.return_value = mock_config
 
             mock_codebase_tracker = MagicMock()
@@ -94,6 +99,37 @@ class TestLifespan:
                 mock_setup_logging.assert_called_once()
                 assert mock_setup_logging.call_args[0][0] == "INFO"
                 mock_makedirs.assert_called()
+                # Retention sweep: hourly, cache kept at least query.cache_ttl, 7-day jobs.
+                mock_sweeper_class.assert_called_once()
+                kwargs = mock_sweeper_class.call_args.kwargs
+                assert kwargs == {
+                    "cleanup_interval_seconds": 3600,
+                    "max_age_seconds": 3600,
+                    "job_max_age_seconds": 168 * 3600,
+                }
+                mock_sweeper_class.return_value.start.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            ({}, {"cleanup_interval": 3600, "max_age": 3600, "job_max_age": 168 * 3600}),
+            ({"job_max_age_hours": 0}, {"cleanup_interval": 3600, "max_age": 3600, "job_max_age": None}),
+            ({"cache_max_age_seconds": 10, "interval_seconds": 5},
+             {"cleanup_interval": 60, "max_age": 300, "job_max_age": 168 * 3600}),
+        ],
+    )
+    def test_retention_sweeper_settings(self, settings, expected):
+        from src.models import Config, RetentionConfig
+
+        config = Config(retention=RetentionConfig(**settings))
+        config.query.cache_ttl = 300
+        sweeper = main._retention_sweeper(config, MagicMock())
+        assert {k: getattr(sweeper, k) for k in expected} == expected
+
+    def test_retention_sweeper_disabled(self):
+        from src.models import Config, RetentionConfig
+
+        assert main._retention_sweeper(Config(retention=RetentionConfig(enabled=False)), MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_lifespan_initialization_failure(self):
@@ -142,6 +178,8 @@ class TestLifespan:
         ), patch(
             "main.CodeBrowsingService"
         ), patch(
+            "main.CacheCleanupScheduler"
+        ) as mock_sweeper_class, patch(
             "src.services.coordination.make_coordinator",
             return_value=MagicMock(backend="redis"),
         ), patch(
@@ -162,6 +200,9 @@ class TestLifespan:
             mock_config.telemetry = MagicMock()
             mock_config.telemetry.enabled = False
 
+            from src.models import RetentionConfig
+            mock_config.retention = RetentionConfig()
+            mock_config.query.cache_ttl = 300
             mock_load_config.return_value = mock_config
 
             async with main.app_lifespan(mock_mcp) as ctx:

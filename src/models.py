@@ -257,6 +257,16 @@ class QueryConfig:
 
 
 @dataclass
+class RetentionConfig:
+    """Periodic deletion of expired tool-cache rows and old finished build jobs."""
+
+    enabled: bool = True
+    interval_seconds: int = 3600
+    cache_max_age_seconds: int = 3600  # never below query.cache_ttl (rows stay readable)
+    job_max_age_hours: int = 168  # done/failed jobs (0 = keep forever); active jobs are kept
+
+
+@dataclass
 class StorageConfig:
     """Storage configuration"""
 
@@ -284,6 +294,7 @@ class Config:
     query: QueryConfig = field(default_factory=QueryConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
 
 
 @dataclass

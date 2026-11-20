@@ -16,7 +16,7 @@ plain `psycopg` install.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 import psycopg
@@ -210,6 +210,17 @@ class PostgresJobStore:
                 (status, json.dumps(result) if result is not None else None, error, _now(), job_id, attempt),
             )
             return bool(updated.rowcount)
+
+    def purge_finished_jobs(self, max_age_seconds: int) -> int:
+        """Delete done/failed jobs last updated before the cutoff; never active ones."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+        with self._connect() as conn:
+            deleted = conn.execute(
+                "DELETE FROM jobs WHERE status IN ('done', 'failed') AND updated_at < %s",
+                (cutoff,),
+            )
+            conn.commit()
+            return deleted.rowcount
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         try:

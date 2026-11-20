@@ -1,4 +1,4 @@
-"""Periodic cache cleanup scheduler for CodeBadger"""
+"""Periodic retention sweep: expired tool-cache rows and old finished jobs."""
 
 import logging
 import threading
@@ -26,7 +26,8 @@ class CacheCleanupScheduler:
         self,
         db_manager,
         cleanup_interval_seconds: int = 3600,
-        max_age_seconds: int = 3600
+        max_age_seconds: int = 3600,
+        job_max_age_seconds: Optional[int] = None,
     ):
         """Initialize the cache cleanup scheduler.
         
@@ -34,10 +35,13 @@ class CacheCleanupScheduler:
             db_manager: PostgresDBManager instance for database operations
             cleanup_interval_seconds: How often to run cleanup (default: 3600 = 1 hour)
             max_age_seconds: Maximum age of cache entries to keep (default: 3600 = 1 hour)
+            job_max_age_seconds: Age after which done/failed jobs are deleted
+                (None leaves job history alone)
         """
         self.db_manager = db_manager
         self.cleanup_interval = cleanup_interval_seconds
         self.max_age = max_age_seconds
+        self.job_max_age = job_max_age_seconds
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -73,15 +77,32 @@ class CacheCleanupScheduler:
     def _cleanup_loop(self):
         """Main cleanup loop - runs in background thread."""
         while not self._stop_event.is_set():
-            try:
-                deleted = self.db_manager.cleanup_expired_cache(self.max_age)
-                if deleted > 0:
-                    logger.info(f"Cache cleanup: removed {deleted} expired entries")
-            except Exception as e:
-                logger.error(f"Error during cache cleanup: {e}")
-            
+            self.sweep()
+
             # Wait for next interval or stop signal
             self._stop_event.wait(self.cleanup_interval)
+
+    def sweep(self) -> dict:
+        """Delete expired cache rows and, if configured, old finished jobs.
+
+        Each part is independent: a failure in one is logged and the other still runs.
+        """
+        removed = {"cache": 0, "jobs": 0}
+        try:
+            removed["cache"] = self.db_manager.cleanup_expired_cache(self.max_age)
+        except Exception as e:
+            logger.error(f"Error during cache cleanup: {e}")
+        if self.job_max_age is not None:
+            try:
+                removed["jobs"] = self.db_manager.purge_finished_jobs(self.job_max_age)
+            except Exception as e:
+                logger.error(f"Error during job history cleanup: {e}")
+        if removed["cache"] or removed["jobs"]:
+            logger.info(
+                f"Retention sweep: removed {removed['cache']} cache entries, "
+                f"{removed['jobs']} finished jobs"
+            )
+        return removed
 
     def run_cleanup_now(self) -> int:
         """Run cleanup immediately (for testing or manual trigger).
