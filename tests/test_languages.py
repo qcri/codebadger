@@ -35,7 +35,7 @@ def test_effective_languages(configured, expected):
 
 async def _surface(config):
     services = {name: MagicMock() for name in (
-        "git_manager", "cpg_generator", "codebase_tracker", "query_executor",
+        "git_manager", "codebase_tracker", "query_executor",
         "code_browsing_service", "joern_server_manager",
     )}
     services["config"] = config

@@ -92,3 +92,25 @@ async def test_load_ceiling_uses_the_pre_overlay_size_and_skips_the_pass(tmp_pat
     assert built is False and len(calls) == 1  # no overlay for a graph that can't load
     assert catalog[KEY].metadata["error_code"] == "CPG_TOO_LARGE"
     assert catalog[KEY].metadata["cpg_size_mb"] == 2.0
+
+
+async def test_invalid_exclusion_pattern_is_matched_literally(tmp_path):
+    """Migrated from the retired CPGGenerator tests: a bad regex must not break the build."""
+    services, _ = _services()
+    services["config"].cpg.languages_with_exclusions = ["c"]
+    services["config"].cpg.exclusion_patterns = ["(?:^|.*/)tests/.*", "broken[regex"]
+    src = tmp_path / "src"
+    src.mkdir()
+    container = MagicMock()
+    container.exec_run.return_value = MagicMock(exit_code=1, output=b"stop after the frontend")
+    docker_client = MagicMock()
+    docker_client.containers.get.return_value = container
+    with patch.object(core_tools.docker, "from_env", return_value=docker_client):
+        await core_tools._generate_cpg_async(
+            KEY, str(src), str(tmp_path / "cpg.bin"), "c", f"/playground/cpgs/{KEY}/cpg.bin", services,
+        )
+
+    cmd = container.exec_run.call_args_list[0].kwargs["cmd"]
+    exclude = cmd[cmd.index("--exclude-regex") + 1]
+    assert "((?:^|.*/)tests/.*)" in exclude
+    assert "broken\\[regex" in exclude  # escaped, so it matches the literal text

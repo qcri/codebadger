@@ -18,7 +18,7 @@ def _documented():
 
 async def test_tool_reference_matches_registered_tools():
     services = {name: MagicMock() for name in (
-        "git_manager", "cpg_generator", "codebase_tracker", "query_executor",
+        "git_manager", "codebase_tracker", "query_executor",
         "code_browsing_service", "joern_server_manager",
     )}
     services["config"] = Config()
