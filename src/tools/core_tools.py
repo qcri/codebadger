@@ -25,6 +25,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Literal,
 from pydantic import Field
 
 from ..defaults import (
+    LANGUAGES_WITH_EXCLUSIONS,
+    exclusion_patterns_for,
     LANGUAGE_COMMANDS,
     LANGUAGE_EXTENSIONS,
     SCOPE_SOURCE_EXTENSIONS,
@@ -540,6 +542,36 @@ _JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
 _COVERAGE_MAX_WARNINGS = 10
 
 
+_EXCLUDED_SAMPLE = 5
+
+
+def _count_excluded_files(codebase_dir: str, exclude_regex: str, language: str) -> dict:
+    """How many of the language's source files the frontend's exclude regex drops.
+
+    Mirrors the JVM frontends (full match against the path relative to the input
+    dir); astgen frontends search the absolute path, which the anchored rules
+    make equivalent. .git is skipped.
+    """
+    try:
+        rx = re.compile(exclude_regex)
+    except re.error:
+        return {"count": None, "of": None, "sample": []}
+    exts = set(SCOPE_SOURCE_EXTENSIONS.get(language, [LANGUAGE_EXTENSIONS.get(language, language)]))
+    if language in ("c", "cpp"):
+        exts |= {"h", "hh", "hpp", "hxx"}
+    total, excluded = 0, []
+    for dirpath, dirnames, filenames in os.walk(codebase_dir):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        for name in sorted(filenames):
+            if name.rsplit(".", 1)[-1] not in exts or "." not in name:
+                continue
+            total += 1
+            rel = os.path.relpath(os.path.join(dirpath, name), codebase_dir)
+            if rx.fullmatch(rel):
+                excluded.append(rel)
+    return {"count": len(excluded), "of": total, "sample": excluded[:_EXCLUDED_SAMPLE]}
+
+
 def _repo_root_prefix(codebase_dir: str) -> str:
     """Prefix from the frontend's input dir to the repository root.
 
@@ -661,14 +693,21 @@ def _sanitize_build_opt_list(items, kind: str) -> list:
     return out
 
 
+def _exclusion_patterns(cpg, language: str) -> list:
+    """Operator override (cpg.exclusion_patterns) or the language's default rules."""
+    enabled = getattr(cpg, "languages_with_exclusions", None)
+    if enabled is None:
+        enabled = LANGUAGES_WITH_EXCLUSIONS
+    if language not in enabled:
+        return []
+    override = getattr(cpg, "exclusion_patterns", None)
+    return list(override) if override else exclusion_patterns_for(language)
+
+
 def _cpg_build_settings(config, language: str, compile_commands: Optional[str]) -> dict:
     cpg = config.cpg if config else None
     return {
-        "exclusion_patterns": (
-            list(cpg.exclusion_patterns or [])
-            if cpg and language in (cpg.languages_with_exclusions or ())
-            else []
-        ),
+        "exclusion_patterns": _exclusion_patterns(cpg, language),
         "autodetect_compile_db": (
             not compile_commands
             and frontend_supports(language, "compilation_database")
@@ -1443,6 +1482,9 @@ async def _generate_cpg_async(
         combined_exclude = combine_exclude_regexes(exclude_parts)
         if combined_exclude:
             cmd.extend(["--exclude-regex", combined_exclude])
+            coverage["excluded_files"] = await asyncio.to_thread(
+                _count_excluded_files, codebase_dir, combined_exclude, language
+            )
 
         # Header include paths + preprocessor defines. Without them, angle-includes
         # of generated headers (e.g. <libxml/xmlversion.h>) don't resolve and

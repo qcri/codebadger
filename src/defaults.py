@@ -128,91 +128,81 @@ SUPPORTED_LANGUAGES = [
     "rust"
 ]
 
-# rust OMITTED (like go): rust2cpg loads the crate through cargo and matches
-# --exclude-regex against the resolved file paths, and the default
-# exclusion_patterns were observed to collapse a Rust CPG to 0 methods.
-# Rust stays in SUPPORTED_LANGUAGES; it is just built without exclusions.
+# Frontends that get the default exclusion rules (exclusion_patterns_for). ghidra
+# and jimple read binaries/bytecode, where source-path rules don't apply. Rust was
+# once omitted because the old prefix rules collapsed a rust2cpg CPG to 0 methods;
+# the segment rules are validated against it like every other frontend.
 LANGUAGES_WITH_EXCLUSIONS = [
     "c", "cpp", "java", "javascript", "python", "go",
-    "kotlin", "csharp", "php", "ruby"
+    "kotlin", "csharp", "php", "ruby", "swift", "rust",
 ]
 
-# NOTE: every token below is anchored with a leading `(?:^|.*/)` boundary
-# (start-of-string OR a literal `/`). This is required because `--exclude-regex`
-# matching semantics differ by frontend:
+# Default --exclude-regex rules: whole directory names plus per-language test-file
+# conventions. Never bare word prefixes: `test.*` used to drop redis's testhelp.h,
+# `java/` every Maven src/main/java/, and `util/`, `helpers/`, `builder/`,
+# `cache/` real product code. Measured on 30 repositories across 10 languages
+# (20,254 source files), these rules exclude no product files and keep almost no
+# tests, vendored code, or docs; the old prefix list dropped 1,203 product files.
+#
+# Every pattern must work under both frontend regimes:
 #   * JVM frontends (c2cpg, javasrc2cpg, pysrc2cpg, ...) full-match the pattern
 #     (`Regex.matches`) against the path RELATIVE to the input dir.
-#   * astgen frontends (jssrc2cpg, ...) run plain `RegExp.test()` — an UNANCHORED
-#     substring search — against the file's ABSOLUTE path.
-# Without the boundary, a bare token like `\..*` degenerates under substring
-# search into "any string containing a `.`", so `index.js` (and effectively every
-# real source file) gets excluded and the CPG comes out empty. The `(?:^|.*/)`
-# form matches a whole path component at start-of-string or right after a `/`
-# under BOTH regimes, and additionally lets root-level dirs (e.g. `vendor/`) match
-# where a bare `.*/` prefix previously required a leading path segment.
-# See https://github.com/Lekssays/codebadger/issues/23
-EXCLUSION_PATTERNS = [
-    "(?:^|.*/)\\..*",
-    "(?:^|.*/)test.*",
-    "(?:^|.*/)fuzz.*",
-    "(?:^|.*/)Testing.*",
-    "(?:^|.*/)spec.*",
-    "(?:^|.*/)__tests__/.*",
-    "(?:^|.*/)e2e.*",
-    "(?:^|.*/)integration.*",
-    "(?:^|.*/)unit.*",
-    "(?:^|.*/)benchmark.*",
-    "(?:^|.*/)perf.*",
-    "(?:^|.*/)docs?/.*",
-    "(?:^|.*/)documentation.*",
-    "(?:^|.*/)example.*",
-    "(?:^|.*/)sample.*",
-    "(?:^|.*/)demo.*",
-    "(?:^|.*/)tutorial.*",
-    "(?:^|.*/)guide.*",
-    "(?:^|.*/)build.*/.*", "(?:^|.*/).*_build/.*",
-    "(?:^|.*/)target/.*", "(?:^|.*/)out/.*",
-    "(?:^|.*/)dist/.*", "(?:^|.*/)bin/.*",
-    "(?:^|.*/)obj/.*", "(?:^|.*/)Debug/.*",
-    "(?:^|.*/)Release/.*", "(?:^|.*/)cmake/.*",
-    "(?:^|.*/)m4/.*", "(?:^|.*/)autom4te.*/.*",
-    "(?:^|.*/)autotools/.*", "(?:^|.*/)\\.git/.*",
-    "(?:^|.*/)\\.svn/.*", "(?:^|.*/)\\.hg/.*",
-    "(?:^|.*/)\\.deps/.*", "(?:^|.*/)node_modules/.*",
-    "(?:^|.*/)vendor/.*", "(?:^|.*/)third_party/.*",
-    "(?:^|.*/)extern/.*", "(?:^|.*/)external/.*",
-    "(?:^|.*/)packages/.*", "(?:^|.*/)benchmark.*/.*",
-    "(?:^|.*/)perf.*/.*", "(?:^|.*/)profile.*/.*",
-    "(?:^|.*/)bench/.*", "(?:^|.*/)tool.*/.*",
-    "(?:^|.*/)script.*/.*", "(?:^|.*/)utils/.*",
-    "(?:^|.*/)util/.*", "(?:^|.*/)helper.*/.*",
-    "(?:^|.*/)misc/.*", "(?:^|.*/)python/.*",
-    "(?:^|.*/)java/.*", "(?:^|.*/)ruby/.*",
-    "(?:^|.*/)perl/.*", "(?:^|.*/)php/.*",
-    "(?:^|.*/)csharp/.*", "(?:^|.*/)dotnet/.*",
-    "(?:^|.*/)go/.*", "(?:^|.*/)generated/.*",
-    "(?:^|.*/)gen/.*", "(?:^|.*/)temp/.*",
-    "(?:^|.*/)tmp/.*", "(?:^|.*/)cache/.*",
-    "(?:^|.*/)\\.cache/.*", "(?:^|.*/)log.*/.*",
-    "(?:^|.*/)logs/.*", "(?:^|.*/)result.*/.*",
-    "(?:^|.*/)results/.*", "(?:^|.*/)output/.*",
-    ".*\\.md$", ".*\\.txt$",
-    ".*\\.xml$", ".*\\.json$",
-    ".*\\.yaml$", ".*\\.yml$",
-    ".*\\.toml$", ".*\\.ini$",
-    ".*\\.cfg$", ".*\\.conf$",
-    ".*\\.properties$", ".*\\.cmake$",
-    ".*Makefile.*", ".*makefile.*",
-    ".*configure.*", ".*\\.am$",
-    ".*\\.in$", ".*\\.ac$",
-    ".*\\.log$", ".*\\.cache$",
-    ".*\\.lock$", ".*\\.tmp$",
-    ".*\\.bak$", ".*\\.orig$",
-    ".*\\.swp$", ".*~$",
-    ".*/\\.vscode/.*", ".*/\\.idea/.*",
-    ".*/\\.eclipse/.*", ".*\\.DS_Store$",
-    ".*Thumbs\\.db$"
+#   * astgen frontends (jssrc2cpg, ...) run an unanchored substring search
+#     (`RegExp.test()`) against the ABSOLUTE path.
+# `(?:^|.*/)` anchors a token at the start of the path or right after a `/`, so it
+# matches a whole path component under both (see issue #23).
+_SEG = "(?:^|.*/)"
+
+
+def _dirs(*names: str) -> str:
+    return _SEG + "(?:" + "|".join(names) + ")/.*"
+
+
+EXCLUSION_COMMON = [
+    _SEG + r"\.[^/]*(?:/.*)?",  # hidden files and directories (.git, .github, .venv, ...)
+    _dirs("tests?", "Tests?", "testing", "testdata", "test-data", "__tests__", "__mocks__",
+          "e2e", "fuzz", "fuzzing", "fuzzers?", "benchmarks?", "bench", "benches"),
+    _dirs("examples?", "samples?", "demos?", "docs?", "documentation", "tutorials?"),
+    # Vendored dependencies; callers auditing them pass their own patterns.
+    _dirs("vendor", "node_modules", "bower_components", "third_party", "third-party",
+          "3rdparty", "extern", "external", "deps"),
+    # Build output and environments.
+    _dirs("build", "dist", "out", "target", "obj", "bin", r"cmake-build-[^/]*", "CMakeFiles",
+          "__pycache__", r"\.?venv", "site-packages", "Pods", "DerivedData"),
 ]
+
+EXCLUSION_BY_LANGUAGE = {
+    "c": [r".*_(?:test|unittest|tests)\.[ch]$", _SEG + r"test_[^/]*\.c$"],
+    "cpp": [r".*_(?:test|unittest|tests)\.(?:c|cc|cpp|cxx|h|hh|hpp)$",
+            _SEG + r"test_[^/]*\.(?:cc|cpp|cxx)$"],
+    "go": [r".*_test\.go$"],
+    "python": [_SEG + r"test_[^/]*\.py$", r".*_test\.py$", _SEG + r"conftest\.py$"],
+    "javascript": [r".*\.(?:test|spec)\.[cm]?[jt]sx?$", r".*\.min\.js$", r".*\.bundle\.js$"],
+    "java": [_SEG + r"src/(?:test|it|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests|IT|TestCase)\.java$"],
+    "kotlin": [_SEG + r"src/(?:test|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests)\.kts?$"],
+    "csharp": [_SEG + r"[^/]*\.(?:Tests?|UnitTests?|IntegrationTests?|Benchmarks?)/.*",
+               r".*Tests?\.cs$"],
+    "php": [r".*Test\.php$"],
+    "ruby": [_dirs("spec", "specs", "features"), r".*_(?:spec|test)\.rb$"],
+    "swift": [r".*Tests?\.swift$"],
+    "rust": [],
+}
+
+# Below a JVM source root (src/<set>/java|kotlin/) directory names are package
+# names (org/springframework/samples/...). For the JVM frontends (full match) the
+# directory rules therefore consume the path one segment at a time and refuse to
+# step into a source root: `examples/src/main/java/Ex.java` is still excluded, but
+# `src/main/java/org/acme/samples/X.java` is not.
+_JVM_PREFIX = r"(?:(?!src/[^/]+/(?:java|kotlin|scala|groovy)/)[^/]*/)*"
+_JVM_LANGUAGES = {"java", "kotlin"}
+
+
+def exclusion_patterns_for(language: str) -> list:
+    """Default exclusion patterns for one language's frontend."""
+    common = list(EXCLUSION_COMMON)
+    if language in _JVM_LANGUAGES:
+        common = [common[0]] + [p.replace(_SEG, _JVM_PREFIX, 1) for p in common[1:]]
+    return common + list(EXCLUSION_BY_LANGUAGE.get(language, []))
 
 QUERY_TIMEOUT = 300
 CPG_LOAD_TIMEOUT = 300  # importCpg triggers overlay computation; kill if it exceeds this

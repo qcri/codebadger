@@ -202,6 +202,8 @@ class CPGConfig:
     generation_deadline_grace: int = 600  # 10 minutes
     max_repo_size_mb: int = 500
     supported_languages: Optional[List[str]] = None
+    # None = per-language defaults (defaults.exclusion_patterns_for); a list
+    # overrides them for every language.
     exclusion_patterns: Optional[List[str]] = None
     languages_with_exclusions: Optional[List[str]] = None
     taint_sources: Optional[Dict[str, List[str]]] = None
