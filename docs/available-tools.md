@@ -35,6 +35,7 @@ These manage the analysis artifact itself — the CPG is generated once and reus
 |------|--------------|
 | `generate_cpg` | Build a CPG for a codebase. Accepts a **GitHub URL** (cloned first), a **local path**, or a pasted **code snippet** (`source_type="snippet"` with the code in `code`); a sub-path keeps large repos small. Returns immediately with a `codebase_hash` and builds in the background. The source is staged only for the build and then **discarded** (the CPG is the persisted artifact); a later regenerate re-fetches it. CPGs are cached on disk by content hash, so re-runs are instant. |
 | `get_cpg_status` | Check whether a CPG is `generating`, `ready`, `sleeping`, or `failed`, and get the Joern server port if running. **Poll this** after `generate_cpg` until `ready`. |
+| `get_backend_status` | Read-only capacity and catalog view: build queue depth, live Joern servers, memory budget, and a paged list of tracked CPGs with their full `codebase_hash`, filterable by `language` or `project`. Use it to resume work on an existing CPG and to pace concurrent builds. |
 | `remove_cpg` | Free resources for a codebase. By default it terminates the Joern process and releases the port but **keeps the CPG `.bin`** on disk (status → `sleeping`) for fast re-activation. Pass `delete_files=True` to delete the cached artifacts entirely. |
 
 ---
@@ -49,7 +50,7 @@ to pull node `.code` from the graph.)
 |------|--------------|
 | `list_methods` | List methods/functions, with optional regex filters on name and file. |
 | `list_calls` | List call relationships, filterable by caller and callee pattern. |
-| `get_call_graph` | Outgoing (callees) or incoming (callers) call graph for a method, to a given depth. |
+| `get_call_graph` | Outgoing (callees) or incoming (callers) call graph for a method, to a given depth. Select the root by `method_name` or by the exact `method_id` (`node_id` from `list_methods`); an ambiguous name lists candidate IDs. |
 | `list_parameters` | Names, types, and order of a method's parameters. |
 
 ---
@@ -61,7 +62,7 @@ a raw CPGQL escape hatch.
 
 | Tool | What it does |
 |------|--------------|
-| `get_cfg` | Human-readable **control-flow graph** for a method (node-capped). |
+| `get_cfg` | Human-readable **control-flow graph** for a method (node-capped). Select it by `method_name` or exact `method_id`. |
 | `get_type_definition` | Inspect a struct/class memory layout and its members. |
 | `find_bounds_checks` | Check whether a buffer access has a corresponding bounds check on the index variable. |
 | `run_cpgql_query` | Execute an **arbitrary CPGQL query** — the escape hatch for anything the tools above don't cover. Returns structured results. |
