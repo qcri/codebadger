@@ -53,6 +53,23 @@ def _get_playground_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "playground"))
 
 
+
+def _resolve_method_selector(method_name: Optional[str], method_id) -> tuple[str, int]:
+    """Validate the (method_name, method_id) pair for CFG/call-graph templates.
+
+    method_id is the graph node ID that list_methods returns as `node_id`; it wins
+    over method_name. Returns (name_pattern, node_id or -1).
+    """
+    if method_id is not None and str(method_id).strip() != "":
+        text = str(method_id).strip()
+        if not text.isdigit():
+            raise ValidationError("method_id must be the numeric node_id returned by list_methods")
+        return (method_name or "").strip(), int(text)
+    if not method_name or not method_name.strip():
+        raise ValidationError("Provide method_name or method_id")
+    return method_name.strip(), -1
+
+
 def register_code_browsing_tools(mcp, services: dict):
     """Register code browsing MCP tools with the FastMCP server"""
 
@@ -268,7 +285,8 @@ call it (incoming).
 
 Args:
     codebase_hash: The codebase hash.
-    method_name: Name of the method to analyze.
+    method_name: Name of the method to analyze (must match one method).
+    method_id: Exact node_id from list_methods; overrides method_name.
     depth: Traversal depth (default 5).
     direction: 'outgoing' (callees) or 'incoming' (callers).
 
@@ -294,17 +312,21 @@ Notes:
     - Returns plain text.
     - Includes file and line number for each call target.
     - Line numbers refer to where the caller function starts, not the specific call site.
+    - If method_name matches several methods (overloads, file-static helpers), the
+      summary lists up to 10 candidates with their method_id; re-run with one.
 
 Examples:
     get_call_graph(codebase_hash="abc", method_name="main", direction="outgoing")
+    get_call_graph(codebase_hash="abc", method_id="12345", direction="incoming")
     get_call_graph(codebase_hash="abc", method_name="vuln_func", direction="incoming")""",
     )
     def get_call_graph(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
-        method_name: Annotated[str, Field(description="Name of the method to analyze (can be regex)")],
+        method_name: Annotated[Optional[str], Field(description="Name of the method to analyze (regex; must match one method)")] = None,
         depth: Annotated[int, Field(description="How many levels deep to traverse (max recommended: 10)")] = 5,
         direction: Annotated[str, Field(description="Either 'outgoing' (callees) or 'incoming' (callers)")] = "outgoing",
         detail: Annotated[Literal["compact", "full"], Field(description="Output detail; compact returns a bounded summary")] = "compact",
+        method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
         """Build the call graph showing callers or callees for a method."""
         try:
@@ -316,6 +338,8 @@ Examples:
             if direction not in ["outgoing", "incoming"]:
                 raise ValidationError("Direction must be 'outgoing' or 'incoming'")
 
+            method_name, node_id = _resolve_method_selector(method_name, method_id)
+
             query_executor = services["query_executor"]
 
             codebase_info = require_cpg(services, codebase_hash)
@@ -323,6 +347,7 @@ Examples:
             query = QueryLoader.load(
                 "call_graph",
                 method_name=method_name,
+                method_id=node_id,
                 depth=depth,
                 direction=direction
             )
@@ -344,7 +369,7 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: check direction and keep depth between 1 and 15.") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: pass method_name or a numeric method_id, check direction, and keep depth between 1 and 15.") from e
         except ToolError:
             raise
         except Exception as e:
@@ -778,7 +803,8 @@ Understand the control flow of a method with a human-readable graph.
 
 Args:
     codebase_hash: The codebase hash.
-    method_name: Name of the method.
+    method_name: Name of the method (must match one method).
+    method_id: Exact node_id from list_methods; overrides method_name.
     max_nodes: Limit nodes returned (default 100).
 
 Returns:
@@ -796,18 +822,23 @@ Returns:
 Notes:
     - Essential for understanding loops, conditions, and execution paths.
     - Returns plain text.
+    - If method_name matches several methods, the summary lists up to 10
+      candidates with their method_id; re-run with one.
 
 Examples:
-    get_cfg(codebase_hash="abc", method_name="main")""",
+    get_cfg(codebase_hash="abc", method_name="main")
+    get_cfg(codebase_hash="abc", method_id="12345")""",
     )
     def get_cfg(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
-        method_name: Annotated[str, Field(description="Name of the method (can be regex pattern)")],
+        method_name: Annotated[Optional[str], Field(description="Name of the method (regex; must match one method)")] = None,
         max_nodes: Annotated[int, Field(description="Maximum CFG nodes to return (for large methods)")] = 100,
+        method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
         """Get nodes and edges representing control flow in a method."""
         try:
             validate_codebase_hash(codebase_hash)
+            method_name, node_id = _resolve_method_selector(method_name, method_id)
             query_executor = services["query_executor"]
 
             codebase_info = require_cpg(services, codebase_hash)
@@ -815,6 +846,7 @@ Examples:
             query = QueryLoader.load(
                 "cfg",
                 method_name=method_name,
+                method_id=node_id,
                 max_nodes=max_nodes
             )
 
@@ -832,7 +864,7 @@ Examples:
 
         except ValidationError as e:
             logger.error(f"Error getting CFG: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid codebase hash and method name.") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid codebase hash and a method_name or numeric method_id.") from e
         except ToolError:
             raise
         except Exception as e:
