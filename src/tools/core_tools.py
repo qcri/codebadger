@@ -534,6 +534,7 @@ def _checkout_commit(codebase_dir: str) -> Optional[str]:
 
 
 _JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
+_COVERAGE_MAX_WARNINGS = 10
 
 
 def _joern_version(services: dict) -> Optional[str]:
@@ -1327,6 +1328,24 @@ async def _generate_cpg_async(
         if build_settings is None:
             build_settings = _cpg_build_settings(config, language, compile_commands)
 
+        # What the build actually applied, reported by get_cpg_status after the
+        # source snapshot is gone (a missing compilation database otherwise only
+        # shows up in the server log).
+        coverage = {
+            "compilation_database": {"source": "caller" if compile_commands else None, "applied": False},
+            "scope": {"include_globs": list(include_globs or []), "applied": False},
+            "exclusion_patterns": 0,
+            "include_dirs": {"auto": 0, "explicit": 0},
+            "defines_applied": 0,
+            "auto_system_headers": False,
+            "warnings": [],
+        }
+
+        def coverage_warning(message: str) -> None:
+            logger.warning(message)
+            if len(coverage["warnings"]) < _COVERAGE_MAX_WARNINGS:
+                coverage["warnings"].append(sanitize_error_text(message, max_len=300))
+
         # Build a single --exclude-regex from: (1) the default junk patterns
         # (tests/docs/build dirs) and (2) include_globs scoping (drop out-of-scope
         # SOURCE TUs while keeping headers includable). A file is excluded if it
@@ -1343,6 +1362,7 @@ async def _generate_cpg_async(
                     logger.warning(f"Invalid regex pattern '{pattern}': {e}. Using literal match.")
                     escaped_patterns.append(re.escape(pattern))
             exclude_parts.append("|".join(f"({p})" for p in escaped_patterns))
+            coverage["exclusion_patterns"] = len(escaped_patterns)
             logger.info(f"Applied {len(escaped_patterns)} exclusion patterns")
 
         if include_globs and frontend_supports(language, "exclude_regex"):
@@ -1352,12 +1372,13 @@ async def _generate_cpg_async(
             scope_rx = scope_exclude_regex(list(include_globs), src_exts)
             if scope_rx:
                 exclude_parts.append(scope_rx)
+                coverage["scope"]["applied"] = True
                 logger.info(
                     f"Scoping build to {len(include_globs)} include_glob(s); "
                     f"out-of-scope {language} sources will be skipped (headers kept)"
                 )
             else:
-                logger.warning(f"include_globs={include_globs!r} produced no usable scope filter; ignoring")
+                coverage_warning(f"include_globs={include_globs!r} produced no usable scope filter; ignoring")
 
         combined_exclude = combine_exclude_regexes(exclude_parts)
         if combined_exclude:
@@ -1387,6 +1408,7 @@ async def _generate_cpg_async(
                     inc_dirs.append(p)
             for d in inc_dirs:
                 cmd += ["--include", d]
+            coverage["include_dirs"] = {"auto": len(auto_rel), "explicit": len(include_paths or [])}
             if inc_dirs:
                 logger.info(
                     f"c2cpg include dirs={len(inc_dirs)} "
@@ -1396,9 +1418,10 @@ async def _generate_cpg_async(
             # standard includes don't fail and drop whole files / gated bodies.
             if auto_system_headers and frontend_supports(language, "auto_include_discovery"):
                 cmd.append("--with-include-auto-discovery")
+                coverage["auto_system_headers"] = True
                 logger.info("Enabled c2cpg --with-include-auto-discovery (system headers)")
         elif include_paths:
-            logger.warning(
+            coverage_warning(
                 f"include_paths ignored: the {language} frontend does not support --include"
             )
 
@@ -1410,10 +1433,11 @@ async def _generate_cpg_async(
                 if macro:
                     cmd += ["--define", macro]
                     added += 1
+            coverage["defines_applied"] = added
             if added:
                 logger.info(f"Applied {added} --define macro(s) for {language}")
         elif defines:
-            logger.warning(
+            coverage_warning(
                 f"defines ignored: the {language} frontend does not support --define"
             )
 
@@ -1430,6 +1454,7 @@ async def _generate_cpg_async(
             auto_db = await asyncio.to_thread(find_compile_db, codebase_dir)
             if auto_db:
                 compile_commands = auto_db
+                coverage["compilation_database"]["source"] = "autodetected"
                 logger.info(f"Auto-detected compilation database at {auto_db} for {codebase_hash}")
 
         if compile_commands and frontend_supports(language, "compilation_database"):
@@ -1438,7 +1463,7 @@ async def _generate_cpg_async(
             cdir_real = os.path.realpath(codebase_dir)
             container_root = f"/playground/codebases/{codebase_hash}"
             if not (db_host == cdir_real or db_host.startswith(cdir_real + os.sep)):
-                logger.warning(
+                coverage_warning(
                     f"compile_commands path {compile_commands!r} escapes the source root; ignoring"
                 )
             else:
@@ -1453,17 +1478,20 @@ async def _generate_cpg_async(
                     _out, n_entries, n_rebased = prepared
                     container_db = f"{container_root}/{db_name}"
                     cmd += ["--compilation-database", container_db]
+                    coverage["compilation_database"].update(
+                        applied=True, path=rel, entries=n_entries, rebased=n_rebased,
+                    )
                     logger.info(
                         f"Using compilation database ({n_entries} entries, "
                         f"{n_rebased} paths rebased) for {codebase_hash}"
                     )
                 else:
-                    logger.warning(
+                    coverage_warning(
                         f"compile_commands {compile_commands!r} could not be applied "
                         f"(missing/unparseable); building without it"
                     )
         elif compile_commands:
-            logger.warning(
+            coverage_warning(
                 f"compile_commands ignored: the {language} frontend does not support "
                 f"--compilation-database"
             )
@@ -1602,6 +1630,7 @@ async def _generate_cpg_async(
             "container_codebase_path": f"/playground/codebases/{codebase_hash}",
             "container_cpg_path": container_cpg_path,
             "user_method_count": load_result.user_method_count,
+            "coverage": coverage,
             # Recorded before the source snapshot (and any clone) is reclaimed below.
             "provenance": _build_provenance(services, codebase_dir, language, {
                 "include_paths": include_paths or [],
@@ -2581,7 +2610,9 @@ Returns:
      "provenance": {"known": true, "commit": "<sha>", "joern_version": "4.0.687",
                     "frontend": "c2cpg.sh", "build_options": {...}}}
     Fields appear when relevant; filesystem paths are redacted. provenance.known is
-    false for graphs built before provenance was recorded.
+    false for graphs built before provenance was recorded. coverage reports what
+    the build applied: compilation_database {source, applied, entries, rebased},
+    scope, include_dirs, defines_applied, and up to 10 build warnings.
 
 Example:
     get_cpg_status(codebase_hash="abc1234567890def")""",
@@ -2729,6 +2760,10 @@ Example:
             # that claims ready usually means most code was gated/preprocessed out.
             if meta.get("user_method_count") is not None:
                 response["user_method_count"] = meta["user_method_count"]
+            # What the build applied (compilation database, scope, include dirs,
+            # defines) and its bounded warnings — readable after the source is gone.
+            if meta.get("coverage"):
+                response["coverage"] = meta["coverage"]
             # What produced the graph: commit, Joern/frontend version, build options.
             # Graphs built before provenance was recorded say so explicitly.
             if meta.get("provenance") or codebase_info.cpg_path:
