@@ -537,6 +537,16 @@ _JOERN_VERSION_CACHE: Dict[str, Optional[str]] = {}
 _COVERAGE_MAX_WARNINGS = 10
 
 
+def _compile_db_example_root(db_host: str) -> str:
+    """The directory of the database's first entry, for a skip warning."""
+    try:
+        with open(db_host, encoding="utf-8") as f:
+            first = json.load(f)[0]
+        return str(first.get("directory") or os.path.dirname(first.get("file", "")) or "?")
+    except Exception:
+        return "?"
+
+
 def _joern_version(services: dict) -> Optional[str]:
     """Joern release of the build container (its JOERN_VERSION env), cached per process."""
     manager = services.get("joern_server_manager")
@@ -1474,12 +1484,27 @@ async def _generate_cpg_async(
                 prepared = await asyncio.to_thread(
                     prepare_container_compile_db, db_host, source_root_host, container_root, out_host
                 )
-                if prepared:
-                    _out, n_entries, n_rebased = prepared
+                if prepared and prepared[3] == 0:
+                    # Every entry names a file outside this tree (a database from
+                    # another machine that can't be rebased): c2cpg would parse only
+                    # those unreachable files and the graph would shrink. Build
+                    # without it instead.
+                    _out, n_entries, n_rebased, _ = prepared
+                    coverage["compilation_database"].update(
+                        path=rel, entries=n_entries, rebased=n_rebased, reachable=0,
+                    )
+                    coverage_warning(
+                        f"compile_commands {rel!r} skipped: none of its {n_entries} entries "
+                        f"point inside this source tree (e.g. "
+                        f"{_compile_db_example_root(db_host)}); building without it"
+                    )
+                elif prepared:
+                    _out, n_entries, n_rebased, n_reachable = prepared
                     container_db = f"{container_root}/{db_name}"
                     cmd += ["--compilation-database", container_db]
                     coverage["compilation_database"].update(
                         applied=True, path=rel, entries=n_entries, rebased=n_rebased,
+                        reachable=n_reachable,
                     )
                     logger.info(
                         f"Using compilation database ({n_entries} entries, "

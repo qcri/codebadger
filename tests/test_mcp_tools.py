@@ -968,7 +968,8 @@ class TestMCPTools:
 
     @pytest.mark.parametrize(
         ("db_file", "applied"),
-        [("compile_commands.json", True), ("missing_commands.json", False)],
+        [("compile_commands.json", True), ("missing_commands.json", False),
+         ("foreign_commands.json", False)],
     )
     @pytest.mark.asyncio
     async def test_status_shows_whether_the_compilation_database_was_applied(
@@ -984,6 +985,10 @@ class TestMCPTools:
         (codebase_dir / "a.c").write_text("int main(void){return 0;}\n")
         (codebase_dir / "compile_commands.json").write_text(json.dumps([
             {"directory": "/orig/root", "file": "/orig/root/a.c", "command": "cc -c a.c"},
+        ]))
+        # A database written on another machine whose paths can't be rebased here.
+        (codebase_dir / "foreign_commands.json").write_text(json.dumps([
+            {"directory": "/build/root", "file": "/build/root/a.c", "command": "cc -c a.c"},
         ]))
         cpg_path = tmp_path / "cpg.bin"
         cpg_path.write_bytes(b"fixture")
@@ -1026,9 +1031,15 @@ class TestMCPTools:
 
         database = status["coverage"]["compilation_database"]
         assert database["applied"] is applied and database["source"] == "caller"
+        frontend_cmd = docker_client.containers.get.return_value.exec_run.call_args_list[0].kwargs["cmd"]
+        assert ("--compilation-database" in frontend_cmd) is applied
         if applied:
-            assert (database["entries"], database["rebased"]) == (1, 2)  # directory + file
+            assert (database["entries"], database["rebased"], database["reachable"]) == (1, 2, 1)
             assert status["coverage"]["warnings"] == []
+        elif db_file == "foreign_commands.json":
+            assert (database["entries"], database["reachable"]) == (1, 0)
+            assert "skipped" in status["coverage"]["warnings"][0]
+            assert "<path>/root" in status["coverage"]["warnings"][0]  # names the root, redacted
         else:
             assert "could not be applied" in status["coverage"]["warnings"][0]
         assert status["user_method_count"] == 1
