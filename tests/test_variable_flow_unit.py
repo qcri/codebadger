@@ -3,6 +3,9 @@ import sys
 import unittest
 from unittest.mock import MagicMock, ANY
 
+import pytest
+from fastmcp.exceptions import ToolError
+
 class TestVariableFlow(unittest.TestCase):
     def test_logic(self):
         # Mock services
@@ -176,6 +179,37 @@ Dependencies:
         self.assertIn("list->field = val", result["summary"])
         
         # Check that query loading logic worked (implicitly verified by execute_query being called)
+
+
+def _tool_returning(text):
+    services = {"codebase_tracker": MagicMock(), "query_executor": MagicMock(), "config": MagicMock()}
+    info = MagicMock(cpg_path="/path/to/cpg", language="c")
+    services["codebase_tracker"].get_codebase.return_value = info
+    services["query_executor"].execute_query.return_value = MagicMock(success=True, data=[text])
+    registered = {}
+    mcp = MagicMock()
+    mcp.tool = lambda description=None, **kw: (lambda f: registered.setdefault(f.__name__, f))
+    from src.tools.taint_analysis_tools import register_taint_analysis_tools
+    register_taint_analysis_tools(mcp, services)
+    return registered["get_variable_flow"], services
+
+
+@pytest.mark.parametrize("text", [
+    "VARIABLE_NOT_FOUND: no local or parameter 'nope' in method report\nVariables in report: flag, x\n",
+    "ANCHOR_NOT_FOUND: no method contains line 80 in 'audit.c'\n",
+])
+def test_unresolved_variable_or_line_is_a_validation_error(text):
+    tool, _ = _tool_returning(text)
+    with pytest.raises(ToolError) as exc:
+        tool(codebase_hash="1234567890abcdef", location="audit.c:6", variable="nope")
+    assert str(exc.value).startswith("VALIDATION_ERROR: ")
+    assert "NOT_FOUND:" not in str(exc.value)
+
+
+def test_unresolved_results_are_not_cached():
+    from src.tools._common import is_error_output
+    assert is_error_output("VARIABLE_NOT_FOUND: no local 'x'")
+
 
 if __name__ == '__main__':
     unittest.main()
