@@ -81,7 +81,19 @@ def _decode_parameter_method(raw: Any) -> Optional[Dict[str, Any]]:
     method_name: Any
     raw_parameters: Any
 
-    if isinstance(raw, dict) and "_1" in raw and "_2" in raw:
+    identity: Dict[str, Any] = {}
+    if isinstance(raw, dict) and "_7" in raw:
+        # (name, id, fullName, owner, filename, line, parameters)
+        method_name = raw.get("_1", "")
+        raw_parameters = raw.get("_7", [])
+        identity = {
+            "node_id": str(raw.get("_2", "")),
+            "fullName": raw.get("_3", ""),
+            "owner": raw.get("_4", ""),
+            "filename": raw.get("_5", ""),
+            "lineNumber": raw.get("_6", -1),
+        }
+    elif isinstance(raw, dict) and "_1" in raw and "_2" in raw:
         method_name = raw.get("_1", "")
         raw_parameters = raw.get("_2", [])
     elif isinstance(raw, dict) and "method" in raw:
@@ -103,7 +115,7 @@ def _decode_parameter_method(raw: Any) -> Optional[Dict[str, Any]]:
         parameter = _decode_parameter(raw_parameter)
         if parameter is not None:
             parameters.append(parameter)
-    return {"method": method_name, "parameters": parameters}
+    return {"method": method_name, **identity, "parameters": parameters}
 
 
 def _paging_hint(total: int, available: int, limit: int, page: int, page_size: int, total_pages: int) -> Optional[str]:
@@ -438,12 +450,14 @@ class CodeBrowsingService:
         codebase_hash: str,
         method_name: Optional[str] = None,
         limit: int = 1000,
+        method_id: int = -1,
     ) -> Dict[str, Any]:
 
         validate_codebase_hash(codebase_hash)
         # Bump this when the decoded response contract changes so successful
         # empty results cached by an older decoder are not served indefinitely.
-        cache_params = {"method_name": method_name, "result_schema_version": 2}
+        cache_params = {"method_name": method_name, "method_id": method_id, "limit": limit,
+                        "result_schema_version": 3}
 
         def execute_query():
             codebase_info = self.codebase_tracker.get_codebase(codebase_hash)
@@ -451,21 +465,30 @@ class CodeBrowsingService:
                 raise ValidationError(f"CPG not found for codebase {codebase_hash}")
 
             query_parts = ["cpg.method"]
-            if method_name:
+            if method_id >= 0:
+                query_parts.append(f".filter(_.id == {int(method_id)}L)")
+            elif method_name:
                 query_parts.append(f'.name("{escape_scala_string(method_name)}")')
 
+            # The owner is the defining type (a Python/Java class); a C function's
+            # file-level <global> type is not an owner.
             query_parts.append(
-                ".map(m => (m.name, m.parameter.map(p => (p.name, p.typeFullName, p.index)).l))"
+                ".map(m => (m.name, m.id, m.fullName,"
+                " m.definingTypeDecl.filterNot(_.name == \"<global>\").map(_.fullName).getOrElse(\"\"),"
+                " m.filename, m.lineNumber.getOrElse(-1),"
+                " m.parameter.l.sortBy(_.index).map(p => (p.name, p.typeFullName, p.index))))"
             )
 
-            query = "".join(query_parts) + f".take({limit}).l"
+            query_limit = max(1, min(int(limit), MAX_RESULT_ROWS))
+            # One extra row tells a complete list from a capped one.
+            query = "".join(query_parts) + f".take({query_limit + 1}).l"
 
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
                 query=query,
                 timeout=30,
-                limit=limit,
+                limit=query_limit + 1,
             )
 
             if not result.success:
@@ -476,7 +499,14 @@ class CodeBrowsingService:
                 method = _decode_parameter_method(item)
                 if method is not None:
                     methods.append(method)
-            return {"success": True, "methods": methods, "total": len(methods)}
+            truncated = len(methods) > query_limit
+            methods = methods[:query_limit]
+            response = {"success": True, "methods": methods, "total": len(methods),
+                        "returned": len(methods), "truncated": truncated}
+            if truncated:
+                response["hint"] = (f"More than {query_limit} methods match; narrow method_name "
+                                    "or pass method_id from list_methods.")
+            return response
 
         return self._get_cached_or_execute(
             "list_parameters", codebase_hash, cache_params, execute_query

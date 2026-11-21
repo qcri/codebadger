@@ -390,50 +390,63 @@ Examples:
             "properties": {
                 "success": {"type": "boolean"},
                 "methods": {"type": "array", "items": {"type": "object", "properties": {
-                    "method": {"type": "string"},
+                    "method": {"type": "string"}, "node_id": {"type": "string"},
+                    "fullName": {"type": "string"}, "owner": {"type": "string"},
+                    "filename": {"type": "string"}, "lineNumber": {"type": "integer"},
                     "parameters": {"type": "array", "items": {"type": "object", "properties": {
                         "name": {"type": "string"}, "type": {"type": "string"}, "index": {"type": "integer"},
                     }, "additionalProperties": False}},
                 }, "required": ["method", "parameters"], "additionalProperties": False}},
-                "total": {"type": "integer"},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "hint": {"type": "string"},
             },
             "required": ["success"], "additionalProperties": False,
         },
-        description="""List parameters of a specific method.
-
-Get detailed information about method parameters including their names,
-types, and order.
+        description="""List the parameters of a method: names, types and order.
 
 Returns:
     {
         "success": true,
         "methods": [
             {
-                "method": "authenticate",
+                "method": "size", "node_id": "107374182402",
+                "fullName": "model.py:<module>.A.size", "owner": "model.py:<module>.A",
+                "filename": "model.py", "lineNumber": 2,
                 "parameters": [
-                    {"name": "username", "type": "string", "index": 1},
-                    {"name": "password", "type": "string", "index": 2}
+                    {"name": "self", "type": "ANY", "index": 0},
+                    {"name": "width", "type": "ANY", "index": 1}
                 ]
             }
-        ]
+        ],
+        "total": 1, "returned": 1, "truncated": false
     }
 
 Notes:
-    - Useful for understanding function signatures.
+    - method_id (the node_id from list_methods) selects exactly one method and
+      overrides method_name; a name regex may match several methods, each
+      identified by node_id, fullName and owner (the defining class; empty for
+      a free function).
+    - No match is an empty list.
 
 Examples:
-    list_parameters(codebase_hash="abc", method_name="login")""",
+    list_parameters(codebase_hash="abc", method_name="login")
+    list_parameters(codebase_hash="abc", method_id="107374182402")""",
     )
-    @tool_errors("pass an existing method name (see list_methods).")
+    @tool_errors("pass an existing method name or the node_id from list_methods as method_id.")
     def list_parameters(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
-        method_name: Annotated[str, Field(description="Name of the method (can be regex pattern)")],
+        method_name: Annotated[Optional[str], Field(description="Name of the method (regex)")] = None,
+        method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
+        limit: Annotated[int, Field(description="Maximum methods to return", ge=1, le=MAX_RESULT_ROWS)] = 100,
     ) -> Dict[str, Any]:
         """Get parameter names, types, and order for a method."""
+        name, node_id = _resolve_method_selector(method_name, method_id)
         code_browsing_service = services["code_browsing_service"]
         return code_browsing_service.list_parameters(
             codebase_hash=codebase_hash,
-            method_name=method_name,
+            method_name=name,
+            method_id=node_id,
+            limit=limit,
         )
 
 
