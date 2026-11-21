@@ -20,7 +20,7 @@ from ..utils.validators import (
     validate_cpgql_query,
 )
 from .queries import QueryLoader
-from ._common import require_cpg, tool_error, tool_errors, unwrap_result
+from ._common import parse_json_result as _parse_json_result, require_cpg, tool_error, tool_errors, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +43,6 @@ def _resolve_method_selector(method_name: Optional[str], method_id) -> tuple[str
     if not method_name or not method_name.strip():
         raise ValidationError("Provide method_name or method_id")
     return method_name.strip(), -1
-
-
-def _parse_json_result(text: str) -> dict:
-    """Decode a template that returns `List(map).toJson` inside result markers."""
-    data = json.loads(text)
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    if not isinstance(data, dict):
-        raise ValueError("unexpected query result shape")
-    return data
 
 
 def _cfg_response(graph: dict) -> Dict[str, Any]:

@@ -16,7 +16,7 @@ from ..utils.query_rendering import escape_scala_string
 from ..utils.validators import clamp_int, validate_codebase_hash
 from ..defaults import MAX_RESULT_ROWS
 from .queries import QueryLoader
-from ._common import cache_policy, is_error_output, require_cpg, tool_errors, unwrap_result
+from ._common import cache_policy, is_error_output, parse_json_result, require_cpg, tool_errors, unwrap_result
 
 logger = logging.getLogger(__name__)
 
@@ -273,12 +273,11 @@ def _build_joern_name_pattern(patterns: list) -> str:
 def _build_taint_location_query(
     name_pattern: str, filename: Optional[str], limit: int
 ) -> str:
-    """Build a JSON-safe call-location query.
+    """Build a call-location query that returns the exact match count and capped rows.
 
-    Joern's json4s serializer cannot encode Scala ``Tuple6`` values on the
-    current runtime. Project into a named map instead so ``toJsonPretty``
-    produces records rather than a MappingException in otherwise-successful
-    query output.
+    Rows are projected into named maps (json4s cannot encode Tuple6 on the current
+    runtime) and wrapped with the total in one JSON envelope, so `truncated` means
+    another match exists rather than "the page is full".
     """
     calls = f'cpg.call.name("{escape_scala_string(name_pattern)}")'
     if filename:
@@ -288,15 +287,39 @@ def _build_taint_location_query(
         )
 
     projection = (
-        '.map(c => Map('
+        'Map('
         '"node_id" -> c.id, '
         '"name" -> c.name, '
         '"code" -> c.code, '
         '"filename" -> c.file.name.headOption.getOrElse("unknown"), '
         '"lineNumber" -> c.lineNumber.getOrElse(-1), '
-        '"method" -> c.method.fullName))'
+        '"columnNumber" -> c.columnNumber.getOrElse(-1), '
+        '"method" -> c.method.fullName)'
     )
-    return f"{calls}{projection}.take({clamp_int(limit, MAX_RESULT_ROWS)})"
+    take = clamp_int(limit, MAX_RESULT_ROWS)
+    return (
+        "{\n"
+        f"  val matches = {calls}.dedup.l\n"
+        f"  val rows = matches.take({take}).map(c => {projection})\n"
+        '  "<codebadger_result>\\n" + List(Map("total" -> matches.size, "rows" -> rows)).toJson'
+        ' + "\\n</codebadger_result>"\n'
+        "}"
+    )
+
+
+def _run_taint_location_query(query_executor, codebase_info, codebase_hash, query) -> Dict[str, Any]:
+    """Execute a location query; return {"total", "rows"} or a failure dict."""
+    result = query_executor.execute_query(
+        codebase_hash=codebase_hash,
+        cpg_path=codebase_info.cpg_path,
+        query=query,
+        timeout=30,
+    )
+    if not result.success:
+        return {"success": False, "error": result.error, "error_code": result.error_code or "QUERY_ERROR"}
+    data = parse_json_result(unwrap_result(result))
+    rows = [r for r in (_decode_taint_location(item) for item in data.get("rows") or []) if r is not None]
+    return {"success": True, "total": int(data.get("total", len(rows))), "rows": rows}
 
 
 def _decode_taint_location(item: Any) -> Optional[Dict[str, Any]]:
@@ -309,6 +332,7 @@ def _decode_taint_location(item: Any) -> Optional[Dict[str, Any]]:
         "code": item.get("code", item.get("_3")),
         "filename": item.get("filename", item.get("_4")),
         "lineNumber": item.get("lineNumber", item.get("_5")),
+        "columnNumber": item.get("columnNumber", -1),
         "method": item.get("method", item.get("_6")),
     }
 
@@ -508,7 +532,7 @@ def register_taint_analysis_tools(mcp, services: dict):
                 "sources": {"type": "array", "items": {"type": "object", "properties": {
                     "node_id": {}, "name": {"type": ["string", "null"]}, "code": {"type": ["string", "null"]},
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
-                    "method": {"type": ["string", "null"]},
+                    "columnNumber": {"type": ["integer", "null"]}, "method": {"type": ["string", "null"]},
                 }, "additionalProperties": False}},
                 "total": {"type": "integer"}, "returned": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "message": {"type": "string"},
@@ -576,35 +600,22 @@ Examples:
             "patterns": sorted(set(patterns)),
             "filename": filename,
             "limit": limit,
-            "result_shape": "named-map-v1",
+            "result_shape": "total-rows-v2",
         }
 
         def _execute():
-            query = _build_taint_location_query(joined, filename, limit)
-
-            result = query_executor.execute_query(
-                codebase_hash=codebase_hash,
-                cpg_path=codebase_info.cpg_path,
-                query=query,
-                timeout=30,
-                limit=limit,
-            )
-
-            if not result.success:
-                return {"success": False, "error": result.error, "error_code": result.error_code or "QUERY_ERROR"}
-
-            sources = []
-            for item in result.data:
-                source = _decode_taint_location(item)
-                if source is not None:
-                    sources.append(source)
-
+            found = _run_taint_location_query(
+                query_executor, codebase_info, codebase_hash,
+                _build_taint_location_query(joined, filename, limit))
+            if not found["success"]:
+                return found
+            sources = found["rows"]
             return {
                 "success": True,
                 "sources": sources,
-                "total": len(sources),
+                "total": found["total"],
                 "returned": len(sources),
-                "truncated": len(sources) >= limit,
+                "truncated": len(sources) < found["total"],
             }
 
         return _cached_taint_query(services, "find_taint_sources", codebase_hash, cache_params, _execute)
@@ -620,7 +631,7 @@ Examples:
                 "sinks": {"type": "array", "items": {"type": "object", "properties": {
                     "node_id": {}, "name": {"type": ["string", "null"]}, "code": {"type": ["string", "null"]},
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
-                    "method": {"type": ["string", "null"]},
+                    "columnNumber": {"type": ["integer", "null"]}, "method": {"type": ["string", "null"]},
                 }, "additionalProperties": False}},
                 "total": {"type": "integer"}, "returned": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "mode": {"type": "string"},
@@ -686,35 +697,22 @@ Examples:
             "broad": broad,
             "filename": filename,
             "limit": limit,
-            "result_shape": "named-map-v1",
+            "result_shape": "total-rows-v2",
         }
 
         def _execute():
-            query = _build_taint_location_query(joined, filename, limit)
-
-            result = query_executor.execute_query(
-                codebase_hash=codebase_hash,
-                cpg_path=codebase_info.cpg_path,
-                query=query,
-                timeout=30,
-                limit=limit,
-            )
-
-            if not result.success:
-                return {"success": False, "error": result.error, "error_code": result.error_code or "QUERY_ERROR"}
-
-            sinks = []
-            for item in result.data:
-                sink = _decode_taint_location(item)
-                if sink is not None:
-                    sinks.append(sink)
-
+            found = _run_taint_location_query(
+                query_executor, codebase_info, codebase_hash,
+                _build_taint_location_query(joined, filename, limit))
+            if not found["success"]:
+                return found
+            sinks = found["rows"]
             return {
                 "success": True,
                 "sinks": sinks,
-                "total": len(sinks),
+                "total": found["total"],
                 "returned": len(sinks),
-                "truncated": len(sinks) >= limit,
+                "truncated": len(sinks) < found["total"],
                 "mode": (
                     "explicit"
                     if sink_patterns
