@@ -414,7 +414,7 @@ class QueryExecutor:
 
         # A short JSON value prints on one line as a quoted REPL string
         # (`val res8: String = "[]"`); decode the string literal, then the JSON.
-        single = re.search(r'^val \w+: String = (".*")\s*$', output.strip(), re.DOTALL)
+        single = re.search(r'(?:^|\n)val \w+: String = ("[^\n]*")\s*$', output.strip())
         if single:
             try:
                 data = json.loads(json.loads(single.group(1)))
