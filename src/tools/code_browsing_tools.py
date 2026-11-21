@@ -675,7 +675,7 @@ Examples:
                         "solution": "Ensure lambda uses underscore: _ (not $, @, or other symbols)",
                         "examples": [
                             "cpg.method.filter(_.name.nonEmpty).l",
-                            "cpg.call.where(_.method.name != \"\").l",
+                            "cpg.call.filter(_.method.name.nonEmpty).l",
                         ]
                     },
                     {
@@ -720,9 +720,9 @@ Examples:
                     "json_pretty": '.toJsonPretty  # Pretty-printed JSON',
                     "json_compact": '.toJson  # Compact JSON',
                     "list": '.l  # Scala list (automatically formatted)',
-                    "count": '.size  # Get count as number',
-                    "single_item": '.head  # Get first result',
-                    "optional": '.headOption  # Get optional first result',
+                    "count": '.size  # Count: data is a number (e.g. 2)',
+                    "single_item": '.head  # First result as a value (e.g. a node ID); errors when empty',
+                    "optional": '.headOption  # First result as a list of 0 or 1 items; safe when empty',
                 }
             }
         }
