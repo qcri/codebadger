@@ -634,6 +634,91 @@ Examples:
         return response
 
     @mcp.tool(
+        title="Find References",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "declaration": {"type": "object"},
+                "references": {"type": "array", "items": {"type": "object", "properties": {
+                    "node_id": {"type": "string"}, "access": {"type": "string"}, "code": {"type": "string"},
+                    "filename": {"type": "string"}, "line": {"type": "integer"}, "column": {"type": "integer"},
+                    "method": {"type": "string"}, "method_id": {"type": "string"},
+                }, "additionalProperties": False}},
+                "counts": {"type": "object"},
+                "total": {"type": "integer"}, "returned": {"type": "integer"}, "truncated": {"type": "boolean"},
+            },
+            "required": ["success", "declaration", "references", "total", "truncated"],
+            "additionalProperties": False,
+        },
+        description="""List every read and write of one variable, found by its declaration.
+
+The variable is resolved in the method containing `location` (a local, then a
+parameter), else as a global of that file. Only identifiers bound to that
+declaration are returned: `x` never matches `x_count`, a pointer `copy`, or a
+same-named variable in another function.
+
+Returns:
+    {"success": true,
+     "declaration": {"node_id", "name": "x", "scope": "local", "type": "int", "line": 10,
+                     "method": "scratch", "method_id": "107374182403"},
+     "references": [{"node_id", "access": "write", "code": "x = 2", "filename", "line": 10,
+                     "column": 9, "method", "method_id"}],
+     "counts": {"write": 1, "read": 2}, "total": 3, "returned": 3, "truncated": false}
+
+Notes:
+    - access: read, write (`x = ...`), read_write (`x += ...`, `x++`) or
+      address_taken (`&x`, after which writes may happen through a pointer).
+    - For where a value flows, use get_variable_flow or get_program_slice.
+    - An unknown variable is a VALIDATION_ERROR listing the method's variables.
+
+Examples:
+    find_references(codebase_hash="abc", location="control.c:12", variable="x")""",
+    )
+    @tool_errors("pass a 'file:line' inside the function and the variable's exact name.")
+    def find_references(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        location: Annotated[str, Field(description="'file:line' inside the function that declares or uses the variable")],
+        variable: Annotated[str, Field(description="Exact variable name", min_length=1)],
+        limit: Annotated[int, Field(description="Maximum references to return", ge=1, le=MAX_RESULT_ROWS)] = 200,
+    ) -> Dict[str, Any]:
+        """Declaration-scoped reads and writes of a variable."""
+        validate_codebase_hash(codebase_hash)
+        parts = location.rsplit(":", 1)
+        if len(parts) != 2 or not parts[1].isdigit() or not parts[0]:
+            raise ValidationError(f"location must be 'file:line', got '{location}'")
+        filename, line = parts[0], int(parts[1])
+
+        codebase_info = require_cpg(services, codebase_hash)
+        query = QueryLoader.load("find_references", filename=filename, line_num=line,
+                                 variable=variable, max_results=limit)
+        result = services["query_executor"].execute_query(
+            codebase_hash=codebase_hash, cpg_path=codebase_info.cpg_path, query=query, timeout=60,
+        )
+        data = _parse_json_result(unwrap_result(result))
+        status = data.get("status")
+        if status == "no_method":
+            raise ValidationError(f"no function contains {location} and '{filename}' has no global '{variable}'")
+        if status == "not_found":
+            known = ", ".join(data.get("variables") or []) or "none"
+            raise ValidationError(
+                f"no local, parameter or file global '{variable}' in {data.get('method') or filename}; "
+                f"variables there: {known}"
+            )
+        references = data.get("references") or []
+        total = int(data.get("total", len(references)))
+        return {
+            "success": True,
+            "declaration": data.get("declaration") or {},
+            "references": references,
+            "counts": data.get("counts") or {},
+            "total": total,
+            "returned": len(references),
+            "truncated": len(references) < total,
+        }
+
+    @mcp.tool(
         title="Find Literals",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         output_schema={

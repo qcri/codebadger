@@ -23,7 +23,7 @@ TOOL_GROUPS = {
     "admin": {"remove_cpg"},
     "browse": {
         "list_methods", "list_calls", "list_parameters", "get_call_graph", "get_cfg",
-        "get_type_definition", "get_cpgql_syntax_help", "diff_cpgs", "find_literals", "resolve_location",
+        "get_type_definition", "get_cpgql_syntax_help", "diff_cpgs", "find_literals", "resolve_location", "find_references",
     },
     "raw": {"run_cpgql_query"},
     "taint": {
