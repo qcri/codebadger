@@ -520,6 +520,53 @@ def _find_taint_flows_auto(
     return _cached_taint_query(services, "find_taint_flows_auto", codebase_hash, cache_params, _execute)
 
 
+DETECTOR_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "success": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "findings": {"type": "array", "items": {"type": "object"}},
+        "total": {"type": "integer"}, "returned": {"type": "integer"},
+        "truncated": {"type": "boolean"},
+    },
+    "required": ["success"],
+    "additionalProperties": False,
+}
+
+_SITE = re.compile(r"([\w./+-]+\.[A-Za-z0-9]+):(\d+)")
+_SHOWING = re.compile(r"\(Showing (\d+) of (\d+) issues")
+
+
+def _detector_response(summary: str) -> Dict[str, Any]:
+    """A detector's text report plus its issues as structured findings.
+
+    Each "--- Issue N ---" block becomes a finding with the fingerprint that
+    diff_findings matches across builds, its title, confidence, location and the
+    file:line sites it cites.
+    """
+    from ..services.finding_diff import parse_findings
+
+    parsed = parse_findings(summary)
+    findings = []
+    for f in parsed["findings"]:
+        sites = []
+        for file, line in _SITE.findall(f["text"]):
+            site = {"filename": file, "line": int(line)}
+            if site not in sites:
+                sites.append(site)
+        findings.append({**f, "sites": sites[:20]})
+    showing = _SHOWING.search(summary or "")
+    total = int(showing.group(2)) if showing else len(findings)
+    return {
+        "success": True,
+        "summary": summary,
+        "findings": findings,
+        "total": max(total, len(findings)),
+        "returned": len(findings),
+        "truncated": not parsed["complete"],
+    }
+
+
 def register_taint_analysis_tools(mcp, services: dict):
     """Register taint analysis MCP tools with the FastMCP server"""
 
@@ -1259,7 +1306,7 @@ Examples:
     @mcp.tool(
         title="Find Use-After-Free Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Use-After-Free vulnerabilities by finding free(ptr) calls where ptr is used afterward.
 
 Analyzes the codebase for potential UAF issues using three-phase detection:
@@ -1327,7 +1374,7 @@ Notes:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_use_after_free", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_use_after_free", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting use-after-free: {e}")
@@ -1341,7 +1388,7 @@ Notes:
     @mcp.tool(
         title="Find Double-Free Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Double-Free vulnerabilities by finding multiple free() calls on the same pointer.
 
 Analyzes the codebase for potential double-free issues using:
@@ -1399,7 +1446,7 @@ Returns:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_double_free", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_double_free", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting double-free: {e}")
@@ -1413,7 +1460,7 @@ Returns:
     @mcp.tool(
         title="Find Null Pointer Dereferences",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Null Pointer Dereference vulnerabilities (CWE-476) by finding unchecked return values from allocation functions.
 
 Analyzes the codebase for cases where:
@@ -1482,7 +1529,7 @@ Notes:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_null_pointer_deref", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_null_pointer_deref", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting null pointer dereference: {e}")
@@ -1496,7 +1543,7 @@ Notes:
     @mcp.tool(
         title="Find Integer Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Integer Overflow/Underflow vulnerabilities (CWE-190) before allocation or array indexing.
 
 Analyzes the codebase for cases where arithmetic operations (multiplication, left-shift,
@@ -1567,7 +1614,7 @@ Notes:
 
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_integer_overflow", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_integer_overflow", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting integer overflow: {e}")
@@ -1581,7 +1628,7 @@ Notes:
     @mcp.tool(
         title="Find Format String Vulnerabilities",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Format String vulnerabilities (CWE-134) where a non-literal value is used as a printf-family format argument.
 
 Analyzes the codebase for calls to format-string functions (printf, fprintf, sprintf,
@@ -1635,7 +1682,7 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_format_string_vulns", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_format_string_vulns", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting format string vulnerabilities: {e}")
@@ -1649,7 +1696,7 @@ Examples:
     @mcp.tool(
         title="Find Heap Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Heap Overflow vulnerabilities (CWE-122) where a write to a heap buffer exceeds its allocated size.
 
 Analyzes the codebase for pairs of (allocation, write) where the write may exceed
@@ -1704,7 +1751,7 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_heap_overflow", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_heap_overflow", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting heap overflow: {e}")
@@ -1718,7 +1765,7 @@ Examples:
     @mcp.tool(
         title="Find Stack Overflows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect Stack Buffer Overflow vulnerabilities (CWE-121) where a write to a fixed-size stack array may exceed its declared dimension.
 
 Analyzes the codebase for local fixed-size array declarations (e.g. char buf[64]) combined
@@ -1772,7 +1819,7 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_stack_overflow", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_stack_overflow", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting stack overflow: {e}")
@@ -1786,7 +1833,7 @@ Examples:
     @mcp.tool(
         title="Find TOCTOU Issues",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect TOCTOU (Time-of-Check-Time-of-Use) race condition vulnerabilities (CWE-367) where a file is checked with access()/stat()/lstat() and then opened or operated on in a separate step.
 
 Analyzes the codebase for the classic TOCTOU pattern:
@@ -1838,7 +1885,7 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_toctou", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_toctou", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting TOCTOU: {e}")
@@ -1852,7 +1899,7 @@ Examples:
     @mcp.tool(
         title="Find Uninitialized Reads",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema=DETECTOR_OUTPUT_SCHEMA,
         description="""Detect uninitialized variable reads (CWE-457) — variables used before assignment.
 
 Analyzes the codebase for local variables that are read before they have been
@@ -1911,7 +1958,7 @@ Examples:
                 )
                 return unwrap_result(result)
 
-            return {"success": True, "summary": str(_cached_taint_query(services, "find_uninitialized_reads", codebase_hash, cache_params, _execute))}
+            return _detector_response(str(_cached_taint_query(services, "find_uninitialized_reads", codebase_hash, cache_params, _execute)))
 
         except ValidationError as e:
             logger.error(f"Error detecting uninitialized reads: {e}")
