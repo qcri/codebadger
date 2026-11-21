@@ -7,6 +7,7 @@ in the file; those are left out of its fingerprint, so adding, removing, or edit
 a function does not mark <global> modified.
 """
 
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,13 +37,13 @@ def fetch_fingerprints(service, codebase_hash: str, cpg_path: str) -> Dict[str, 
             rows = [
                 {"filename": r.get("_1"), "name": r.get("_2"), "signature": r.get("_3"),
                  "full_name": r.get("_4"), "line": r.get("_5"), "line_end": r.get("_6"),
-                 "fingerprint": r.get("_7")}
+                 "fingerprint": r.get("_7"), "method_id": r.get("_8")}
                 for r in (result.data or []) if isinstance(r, dict)
             ]
             return {"success": True, "rows": rows}
 
         page = service._get_cached_or_execute(
-            "method_fingerprints", codebase_hash, {"offset": offset, "v": 2}, run,
+            "method_fingerprints", codebase_hash, {"offset": offset, "v": 3}, run,
         )
         if not page.get("success"):
             return page
@@ -56,9 +57,32 @@ def fetch_fingerprints(service, codebase_hash: str, cpg_path: str) -> Dict[str, 
                              "narrow the builds (include_globs) before diffing"}
 
 
+def _qualified(m: dict) -> str:
+    """Owner-qualified identity; drops c2cpg's build-order <duplicate>N suffix."""
+    return re.sub(r"<duplicate>\d+", "", m.get("full_name") or m["name"])
+
+
+def _pair_by_owner(base: List[dict], head: List[dict]):
+    """Pair methods whose owner-qualified name and signature are unique on both sides."""
+    def unique(methods):
+        keys = defaultdict(list)
+        for m in methods:
+            keys[(_qualified(m), m["signature"])].append(m)
+        return {k: v[0] for k, v in keys.items() if len(v) == 1}
+
+    b, h = unique(base), unique(head)
+    matched = [k for k in b if k in h]
+    pairs = [(b[k], h[k]) for k in matched]
+    used_b = {id(b[k]) for k in matched}
+    used_h = {id(h[k]) for k in matched}
+    return (pairs, [m for m in base if id(m) not in used_b], [m for m in head if id(m) not in used_h])
+
+
 def _pair(base: List[dict], head: List[dict]) -> Tuple[List[Tuple[dict, dict]], List[dict], List[dict]]:
-    """Pair methods sharing a file and name: by signature, then by line order."""
-    pairs, base_left, head_left = [], [], []
+    """Pair methods sharing a file and name: by owner-qualified identity first, then
+    by signature and line order for what remains."""
+    owner_pairs, base, head = _pair_by_owner(base, head)
+    pairs, base_left, head_left = list(owner_pairs), [], []
     by_sig_head = defaultdict(list)
     for m in head:
         by_sig_head[m["signature"]].append(m)
@@ -98,13 +122,17 @@ def diff_methods(base: List[dict], head: List[dict]) -> Dict[str, Any]:
                 "signature": new["signature"], "base_signature": old["signature"],
                 "signature_changed": old["signature"] != new["signature"],
                 "base_line": old["line"], "head_line": new["line"],
+                "base_full_name": old.get("full_name"), "head_full_name": new.get("full_name"),
+                "base_method_id": old.get("method_id"), "head_method_id": new.get("method_id"),
             })
         for old in removed:
             changes.append({"change": "removed", "filename": filename, "name": name,
-                            "signature": old["signature"], "base_line": old["line"]})
+                            "signature": old["signature"], "base_line": old["line"],
+                            "base_full_name": old.get("full_name"), "base_method_id": old.get("method_id")})
         for new in added:
             changes.append({"change": "added", "filename": filename, "name": name,
-                            "signature": new["signature"], "head_line": new["line"]})
+                            "signature": new["signature"], "head_line": new["line"],
+                            "head_full_name": new.get("full_name"), "head_method_id": new.get("method_id")})
     changes.sort(key=lambda c: (c["filename"] or "", c["name"] or "", c["change"]))
     summary = {kind: sum(1 for c in changes if c["change"] == kind)
                for kind in ("added", "removed", "modified")}

@@ -159,3 +159,37 @@ def test_global_fingerprint_ignores_function_definitions():
     from src.tools.queries import QueryLoader
     query = QueryLoader.load("method_fingerprints", offset=0, limit=10)
     assert 'm.name == "<global>" && n.isInstanceOf[io.shiftleft.codepropertygraph.generated.nodes.MethodRef]' in query
+
+
+def q(name, owner, fp, line, signature="ANY", filename="shapes.py", method_id=None):
+    row = m(name, fp, line=line, filename=filename, signature=signature)
+    row.update(full_name=f"{filename}:<module>.{owner}.{name}" if owner else name, method_id=method_id)
+    return row
+
+
+def test_swapping_two_classes_does_not_modify_their_methods():
+    """Roadmap case diff_py: A.size and B.size swap places with unchanged bodies."""
+    base = [q("size", "A", 1, 3, method_id=11), q("size", "B", 2, 9, method_id=12)]
+    head = [q("size", "B", 2, 3, method_id=21), q("size", "A", 1, 9, method_id=22)]
+    result = diff_methods(base, head)
+    assert result["changes"] == [] and result["summary"]["unchanged"] == 2
+
+
+def test_owner_pairing_still_reports_a_real_edit_and_keeps_overloads_apart():
+    base = [q("size", "A", 1, 3), q("size", "B", 2, 9),
+            q("area", "B", 5, 12, signature="int(int)"), q("area", "B", 6, 15, signature="int(double)")]
+    head = [q("size", "B", 2, 3, method_id=31), q("size", "A", 99, 9, method_id=32),   # A.size edited
+            q("area", "B", 5, 12, signature="int(int)"), q("area", "B", 6, 15, signature="int(double)")]
+    [change] = diff_methods(base, head)["changes"]
+
+    assert (change["change"], change["head_full_name"], change["head_method_id"]) == (
+        "modified", "shapes.py:<module>.A.size", 32)
+    assert change["base_full_name"] == "shapes.py:<module>.A.size"
+
+
+def test_c_duplicate_suffixes_do_not_break_owner_pairing():
+    base = [q("init", None, 1, 2, filename="b.c"), q("init", None, 2, 9, filename="b.c")]
+    base[0]["full_name"], base[1]["full_name"] = "init", "init<duplicate>0"
+    head = [dict(r) for r in base]
+    head[0]["full_name"], head[1]["full_name"] = "init<duplicate>3", "init<duplicate>4"
+    assert diff_methods(base, head)["summary"]["unchanged"] == 2
