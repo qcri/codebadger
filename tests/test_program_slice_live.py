@@ -12,7 +12,10 @@ import uuid
 
 import pytest
 
+from src.tools._common import parse_json_result
 from src.tools.queries import QueryLoader
+
+LAST_EVIDENCE: dict = {}
 from tests.test_detectors_live import _dexec, _q, pytestmark, server  # noqa: F401 (fixture)
 
 AUDIT_C = r"""int read_value(void);
@@ -55,8 +58,12 @@ def _slice(project, line, call="", direction="backward"):
     res = _q(f'workspace.setActiveProject("{project}")\n' + query)
     assert res.get("success"), res.get("stderr", "")[:800]
     out = res.get("stdout", "")
-    return out.split("<codebadger_result>", 1)[1].split("</codebadger_result>", 1)[0] \
-              .encode().decode("unicode_escape").strip()
+    body = out.split("<codebadger_result>", 1)[1].split("</codebadger_result>", 1)[0].strip()
+    if not body.startswith("["):  # plain-text failure: undo REPL string escapes
+        return body.encode().decode("unicode_escape").strip()
+    global LAST_EVIDENCE
+    LAST_EVIDENCE = parse_json_result(body)
+    return LAST_EVIDENCE["summary"].strip()
 
 
 def _deps(text):
@@ -90,3 +97,16 @@ def test_an_early_return_is_a_real_control_dependence(project):
 
 def test_a_named_call_is_authoritative(project):
     assert _slice(project, 6, "missing_call").startswith("ANCHOR_NOT_FOUND: no call to 'missing_call' on line 6")
+
+
+def test_slice_evidence_matches_the_summary(project):
+    _slice(project, 8, "show_value")
+    ev = LAST_EVIDENCE
+    assert ev["anchor"]["code"] == "show_value(x)" and ev["anchor"]["line"] == 8 and not ev["anchor"]["moved"]
+    assert [(d["line"], d["variable"], d["kind"]) for d in ev["backward"]] == [(7, "x", "definition")]
+    assert ev["control"] == [] and ev["truncated"] is False
+    _slice(project, 4, "read_value", direction="forward")
+    fwd = LAST_EVIDENCE
+    assert fwd["stored_in"] == ["x"]
+    # the read value reaches show_value(x) on line 6 and its parameter (declared line 2), not line 8
+    assert sorted((p["line"], p["kind"]) for p in fwd["forward"]) == [(2, "passed_to_func"), (6, "usage")]
