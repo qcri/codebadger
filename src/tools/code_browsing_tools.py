@@ -145,6 +145,7 @@ def register_code_browsing_tools(mcp, services: dict):
                 "total": {"type": "integer"}, "returned": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "page": {"type": "integer"},
                 "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
+                "hint": {"type": "string"},
             },
             "required": ["success"],
             "additionalProperties": False,
@@ -168,6 +169,12 @@ Returns:
 Notes:
     - Use name_pattern to find specific methods.
     - Use callee_pattern to find usages (e.g., who calls 'malloc').
+    - total counts every match; pages cover the first `limit` matches. When
+      matches are hidden, `hint` says whether to request the next page or raise
+      limit.
+    - cyclomaticComplexity is McCabe's number over the method CFG: 1 + the extra
+      exits of every branching node. Each if, loop, ?:, &&, || and switch arm
+      adds a path (a three-arm switch with default is 3; `n ? a : b` is 2).
 
 Examples:
     list_methods(codebase_hash="abc", name_pattern=".*auth.*")
