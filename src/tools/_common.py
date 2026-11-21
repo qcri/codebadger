@@ -86,15 +86,33 @@ def require_cpg(services: dict, codebase_hash: str):
     return info
 
 
-def unwrap_result(result) -> str:
-    """Turn a QueryExecutor result into the tool's string output.
+QUERY_FAILURE_HINT = (
+    "verify the CPG is ready (get_cpg_status); retry on SERVER_BUSY, and narrow the "
+    "query or raise its timeout on TIMEOUT."
+)
 
-    Returns an ``Error: ...`` string on failure (the taint/browsing tools'
-    existing string-error contract) and otherwise extracts the text payload from
-    ``result.data`` (which may be a str, a single-element list, or other).
+
+def query_failure(result) -> ToolError:
+    """The coded MCP error for a failed QueryExecutor result.
+
+    Raised before any rendering or caching, so a timeout or busy server can never
+    surface as a successful analysis whose text happens to describe an error.
+    """
+    return tool_error(
+        result.error_code or "QUERY_ERROR",
+        sanitize_error_text(result.error or "Query failed", max_len=2000),
+        QUERY_FAILURE_HINT,
+    )
+
+
+def unwrap_result(result) -> str:
+    """Turn a successful QueryExecutor result into the tool's string output.
+
+    A failed result raises its coded error (query_failure); success extracts the
+    text payload from ``result.data`` (a str, a single-element list, or other).
     """
     if not result.success:
-        return f"Error: {result.error}"
+        raise query_failure(result)
     data = result.data
     if isinstance(data, str):
         return data.strip()
@@ -116,9 +134,8 @@ def run_query(
 ) -> str:
     """Execute a rendered CPGQL query (with optional DB caching) and return text.
 
-    Returns the extracted <codebadger_result> text. Raises RuntimeError on query
-    failure — callers that want a string-returning tool catch (ValidationError,
-    RuntimeError). Used by the custom tools; the taint tools use their own
+    Returns the extracted <codebadger_result> text. A failed query raises its
+    coded ToolError (query_failure), which callers must let propagate. Used by the custom tools; the taint tools use their own
     cache wrapper (_cached_taint_query) instead.
     """
     db = services.get("db_manager")
@@ -144,7 +161,7 @@ def run_query(
     )
 
     if not result.success:
-        raise RuntimeError(result.error or "Query failed")
+        raise query_failure(result)
 
     if isinstance(result.data, str):
         output = result.data.strip()

@@ -13,6 +13,11 @@ from src.tools.mcp_tools import register_tools
 from fastmcp import FastMCP, Client
 
 
+
+def _call_err(client, *args, **kwargs):
+    """Call a tool expecting an MCP error result instead of an exception."""
+    return client.call_tool(*args, raise_on_error=False, **kwargs)
+
 @pytest.fixture
 def iof_services():
     """Create mock services for integer overflow testing."""
@@ -311,13 +316,14 @@ async def test_find_integer_overflow_query_error(iof_services):
     register_tools(mcp, services)
 
     async with Client(mcp) as client:
-        res = await client.call_tool(
+        res = await _call_err(client,
             "find_integer_overflow",
             {"codebase_hash": services["codebase_hash"]}
         )
+        assert res.is_error  # a failed query is an MCP error, never a successful report
         result = res.content[0].text
 
-        assert "Error" in result
+        assert result.startswith("QUERY_ERROR: ")
         assert "timeout" in result.lower()
 
 

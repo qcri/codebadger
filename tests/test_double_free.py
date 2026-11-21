@@ -14,6 +14,11 @@ from src.tools.mcp_tools import register_tools
 from fastmcp import FastMCP, Client
 
 
+
+def _call_err(client, *args, **kwargs):
+    """Call a tool expecting an MCP error result instead of an exception."""
+    return client.call_tool(*args, raise_on_error=False, **kwargs)
+
 @pytest.fixture
 def double_free_services():
     """Create mock services for double-free testing."""
@@ -274,13 +279,14 @@ async def test_find_double_free_query_error(double_free_services):
     register_tools(mcp, services)
 
     async with Client(mcp) as client:
-        res = await client.call_tool(
+        res = await _call_err(client,
             "find_double_free",
             {"codebase_hash": services["codebase_hash"]}
         )
+        assert res.is_error  # a failed query is an MCP error, never a successful report
         result = res.content[0].text
 
-        assert "Error" in result
+        assert result.startswith("QUERY_ERROR: ")
         assert "timeout" in result.lower()
 
 

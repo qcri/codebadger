@@ -91,3 +91,52 @@ async def test_diff_findings_tool_runs_the_detector_on_both_cpgs():
     assert (result["base"]["complete"], result["head"]["findings"]) == (True, 2)
     assert [f["title"] for f in only_new["findings"]] == ["Free Site: free(ctx)"] and only_new["total"] == 1
     assert same.is_error and same.content[0].text.startswith("VALIDATION_ERROR: base and head are the same CPG")
+
+
+def _timeout_server(reports):
+    """Taint tools whose executor times out for any hash missing from `reports`."""
+    tracker = MagicMock()
+    tracker.get_codebase.side_effect = lambda h: CodebaseInfo(
+        codebase_hash=h, source_type="local", source_path="/x", language="c", cpg_path=f"/cpg/{h}")
+    executor = MagicMock()
+
+    def run(codebase_hash, cpg_path, query, timeout, **kwargs):
+        if codebase_hash in reports:
+            return QueryResult(success=True, data=[f"<codebadger_result>\n{reports[codebase_hash]}</codebadger_result>"])
+        return QueryResult(success=False, error="Query timed out after 300s", error_code="TIMEOUT")
+
+    executor.execute_query.side_effect = run
+    from src.tools.taint_analysis_tools import register_taint_analysis_tools
+
+    mcp = FastMCP("TestServer")
+    register_taint_analysis_tools(mcp, {"codebase_tracker": tracker, "query_executor": executor,
+                                        "config": Config()})
+    return mcp
+
+
+import pytest
+
+
+@pytest.mark.parametrize("timed_out", ["head", "base"])
+async def test_a_timed_out_side_fails_the_diff_instead_of_reporting_fixed_or_new(timed_out):
+    """Roadmap regression: one base finding + a timed-out head used to report one fixed finding."""
+    base_hash, head_hash = "a" * 16, "b" * 16
+    ok = base_hash if timed_out == "head" else head_hash
+    mcp = _timeout_server({ok: report(issue(1, "buf", "a.c", 10, "parse"))})
+    async with Client(mcp) as client:
+        result = await client.call_tool("diff_findings", {
+            "base_codebase_hash": base_hash, "head_codebase_hash": head_hash,
+            "detector": "use_after_free"}, raise_on_error=False)
+
+    assert result.is_error
+    assert result.content[0].text.startswith("TIMEOUT: Query timed out after 300s")
+
+
+async def test_a_timed_out_slice_is_an_error_not_a_successful_analysis():
+    mcp = _timeout_server({})
+    async with Client(mcp) as client:
+        result = await client.call_tool("get_program_slice", {
+            "codebase_hash": "c" * 16, "location": "a.c:10"}, raise_on_error=False)
+
+    assert result.is_error
+    assert result.content[0].text.startswith("TIMEOUT: ")
