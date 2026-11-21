@@ -540,6 +540,64 @@ Examples:
 
 
     @mcp.tool(
+        title="Find Literals",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "literals": {"type": "array", "items": {"type": "object", "properties": {
+                    "value": {"type": "string"}, "type": {"type": "string"},
+                    "filename": {"type": "string"}, "lineNumber": {"type": "integer"},
+                    "columnNumber": {"type": "integer"}, "node_id": {"type": "string"},
+                    "method": {"type": "string"}, "method_id": {"type": "string"},
+                    "method_full_name": {"type": "string"},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "hint": {"type": "string"},
+            },
+            "required": ["success"], "additionalProperties": False,
+        },
+        description="""Find string and numeric literals, e.g. to locate where an error message is produced.
+
+match="contains" (default) finds `text` anywhere in the literal and "exact" the
+whole literal (ignoring a string's quotes); both treat punctuation literally, so
+`[retry]` means the brackets. match="regex" uses `text` as a Java regex over the
+literal's code (quotes included for strings).
+
+Returns:
+    {"success": true,
+     "literals": [{"value": "\"[retry] giving up\"", "type": "char[18]",
+                   "filename": "net.c", "lineNumber": 42, "columnNumber": 12,
+                   "node_id": "90194313221", "method": "reconnect",
+                   "method_id": "107374182410", "method_full_name": "reconnect"}],
+     "total": 1, "returned": 1, "truncated": false}
+
+Notes:
+    - Follow up with get_call_graph(method_id=...) or get_cfg(method_id=...).
+    - literal_type filters by type name (e.g. "char", "int"); file_pattern is a
+      regex over file paths.
+
+Examples:
+    find_literals(codebase_hash="abc", text="[retry]")
+    find_literals(codebase_hash="abc", text="0xdeadbeef", match="exact")""",
+    )
+    @tool_errors("check text, match ('contains', 'exact' or 'regex') and the regex filters.")
+    def find_literals(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        text: Annotated[str, Field(description="Text to look for in literals (punctuation is literal unless match='regex')", min_length=1)],
+        match: Annotated[Literal["contains", "exact", "regex"], Field(description="How text is matched")] = "contains",
+        literal_type: Annotated[Optional[str], Field(description="Optional type name filter, e.g. 'char' or 'int'")] = None,
+        file_pattern: Annotated[Optional[str], Field(description="Optional regex to filter by file path")] = None,
+        limit: Annotated[int, Field(description="Maximum literals to return", ge=1, le=MAX_RESULT_ROWS)] = 50,
+    ) -> Dict[str, Any]:
+        """Locate literals with their enclosing method IDs."""
+        return services["code_browsing_service"].find_literals(
+            codebase_hash=codebase_hash, text=text, match=match,
+            literal_type=literal_type, file_pattern=file_pattern, limit=limit,
+        )
+
+    @mcp.tool(
         title="Run CPGQL Query",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         output_schema={

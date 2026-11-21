@@ -37,10 +37,10 @@ def _joern(project):
     def run(query, **_):
         tail = ".size" if query.endswith(".size") else ".toJson"
         expr = query[:-len(".size")] + ".size.toString" if tail == ".size" else query + ".toJson"
-        res = _q(f'workspace.setActiveProject("{project}")\n"<R>" + ({expr}) + "</R>"')
+        # A multi-line string prints raw (triple-quoted), so JSON escapes survive.
+        res = _q(f'workspace.setActiveProject("{project}")\n"<R>\\n" + ({expr}) + "\\n</R>"')
         assert res.get("success"), res.get("stderr", "")[:800]
-        body = re.search(r"<R>(.*?)</R>", res["stdout"], re.DOTALL).group(1)
-        body = body.encode().decode("unicode_escape")
+        body = re.search(r"<R>\s*(.*?)\s*</R>", res["stdout"], re.DOTALL).group(1)
         data = int(body) if tail == ".size" else json.loads(body)
         return QueryResult(success=True, data=data, row_count=1)
     executor = MagicMock()

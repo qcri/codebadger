@@ -354,3 +354,46 @@ def test_list_parameters_reports_a_capped_list():
     result = service.list_parameters(CODEBASE_HASH, "size", limit=2)
     assert executor.execute_query.call_args.kwargs["query"].endswith(".take(3).l")
     assert (result["returned"], result["truncated"]) == (2, True) and "method_id" in result["hint"]
+
+
+def _literal_row(i):
+    return {"_1": '"[retry] giving up"', "_2": "char[18]", "_3": f"f{i}.c", "_4": 10 + i, "_5": 12,
+            "_6": 90194313221 + i, "_7": "reconnect", "_8": 107374182410 + i, "_9": "reconnect"}
+
+
+def test_find_literals_matches_punctuation_literally_and_reports_ids():
+    # Roadmap acceptance: "[retry]" finds the bracketed text, one distinct location each.
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=3, row_count=1),
+        QueryResult(success=True, data=[_literal_row(0), _literal_row(1)], row_count=2),
+    ]
+    result = service.find_literals(CODEBASE_HASH, text="[retry]", limit=2)
+    count_q, rows_q = (c.kwargs["query"] for c in executor.execute_query.call_args_list)
+    assert count_q == 'cpg.literal.code("(?s).*\\\\[retry\\\\].*").size'
+    assert rows_q.endswith(".take(2).l")
+    assert (result["total"], result["returned"], result["truncated"]) == (3, 2, True)
+    first = result["literals"][0]
+    assert (first["node_id"], first["method_id"], first["columnNumber"]) == ("90194313221", "107374182410", 12)
+    assert "raise limit" in result["hint"]
+
+
+def test_find_literals_cache_key_includes_limit_and_filters():
+    db_manager = MagicMock()
+    db_manager.get_cached_tool_output.return_value = None
+    service, executor = _service([], db_manager=db_manager)
+    executor.execute_query.side_effect = [QueryResult(success=True, data=0, row_count=1),
+                                          QueryResult(success=True, data=[], row_count=0)]
+    service.find_literals(CODEBASE_HASH, text="x", limit=7)
+    params = db_manager.get_cached_tool_output.call_args.args[2]
+    assert params["limit"] == 7 and params["match"] == "contains" and "file_pattern" in params
+
+
+@pytest.mark.parametrize("text, match, expected", [
+    ("a.b", "exact", '"?a\\.b"?'),
+    ("x|y", "regex", "x|y"),
+    ("100%", "contains", "(?s).*100\\%.*"),
+])
+def test_literal_regex_modes(text, match, expected):
+    from src.services.code_browsing_service import _literal_regex
+    assert _literal_regex(text, match) == expected
