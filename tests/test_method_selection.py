@@ -1,5 +1,6 @@
 """get_cfg / get_call_graph select an exact method by node ID and refuse to guess on ambiguity."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,6 +13,11 @@ from src.tools.code_browsing_tools import _resolve_method_selector, register_cod
 from src.tools.queries import QueryLoader
 
 CODEBASE_HASH = "553642871dd4251d"
+CFG_JSON = json.dumps([{
+    "status": "ok", "total_nodes": 1, "total_edges": 0, "edges": [],
+    "method": {"node_id": "4242", "name": "init", "full_name": "init", "filename": "a.c", "line": 1},
+    "nodes": [{"node_id": "4242", "kind": "METHOD", "code": "void init()", "line": 1, "out_degree": 0}],
+}])
 
 
 def test_method_id_overrides_name():
@@ -62,9 +68,9 @@ def _server(executor):
 @pytest.mark.parametrize("tool", ["get_cfg", "get_call_graph"])
 async def test_tools_send_method_id_to_joern(tool):
     executor = MagicMock()
-    executor.execute_query.return_value = QueryResult(
-        success=True, data=["<codebadger_result>\nok\n</codebadger_result>"], row_count=1
-    )
+    # The executor strips the <codebadger_result> envelope before tools see it.
+    body = CFG_JSON if tool == "get_cfg" else "ok"
+    executor.execute_query.return_value = QueryResult(success=True, data=[body], row_count=1)
     async with Client(_server(executor)) as client:
         result = await client.call_tool(tool, {"codebase_hash": CODEBASE_HASH, "method_id": "4242"})
 
@@ -81,3 +87,22 @@ async def test_tools_require_a_method_selector(tool):
     assert result.is_error
     assert result.content[0].text.startswith("VALIDATION_ERROR: ")
     executor.execute_query.assert_not_called()
+
+
+@pytest.mark.parametrize("payload, needle", [
+    ({"status": "not_found", "suggestions": ["init_ctx"]}, "Similar names: init_ctx"),
+    ({"status": "ambiguous", "count": 2, "candidates": [
+        {"node_id": "1", "full_name": "a.init", "filename": "a.c", "line": 3},
+        {"node_id": "2", "full_name": "b.init", "filename": "b.c", "line": 9}]}, "method_id=2 b.init (b.c:9)"),
+])
+async def test_cfg_selection_failures_are_validation_errors(payload, needle):
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(
+        success=True, data=[json.dumps([payload])], row_count=1
+    )
+    async with Client(_server(executor)) as client:
+        result = await client.call_tool("get_cfg", {"codebase_hash": CODEBASE_HASH, "method_name": "init"},
+                                        raise_on_error=False)
+    assert result.is_error
+    assert result.content[0].text.startswith("VALIDATION_ERROR: ")
+    assert needle in result.content[0].text

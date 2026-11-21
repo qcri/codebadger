@@ -1964,23 +1964,22 @@ class TestMCPTools:
 
     @pytest.mark.asyncio
     async def test_get_cfg_success(self, mock_services):
-        """Test getting CFG for a method successfully"""
+        """get_cfg returns structured nodes/edges, totals and a text summary"""
+        import json
         from src.tools.code_browsing_tools import register_code_browsing_tools
-        
-        # Mock query result with CFG as text
-        expected_output = """Control Flow Graph for test_func
-============================================================
-Nodes:
-  [1001] ControlStructure: if (x > 0)
-  [1002] Return: return x
 
-Edges:
-  [1001] -> [1002] [Label: TRUE]
-"""
-        
+        payload = [{
+            "status": "ok", "total_nodes": 3, "total_edges": 3,
+            "method": {"node_id": "1000", "name": "test_func", "full_name": "test_func", "filename": "t.c", "line": 1},
+            "nodes": [
+                {"node_id": "1000", "kind": "METHOD", "code": "int test_func(int x)", "line": 1, "out_degree": 1},
+                {"node_id": "1001", "kind": "CALL", "code": "x > 0", "line": 2, "out_degree": 2},
+            ],
+            "edges": [{"from": "1000", "to": "1001", "branch": False}],
+        }]
         mock_services["query_executor"].execute_query.return_value = QueryResult(
             success=True,
-            data=[expected_output],
+            data=[json.dumps(payload)],
             row_count=1
         )
 
@@ -1992,15 +1991,13 @@ Edges:
                 "codebase_hash": "553642871dd4251d",
                 "method_name": "test_func"
             })
-            
-            # Result is now a plain text string
-            text_result = result.content[0].text
-            
-            assert "Control Flow Graph for test_func" in text_result
-            assert "Nodes:" in text_result
-            assert "[1001] ControlStructure: if (x > 0)" in text_result
-            assert "Edges:" in text_result
-            assert "[1001] -> [1002] [Label: TRUE]" in text_result
+
+        data = result.structured_content
+        assert data["method"]["name"] == "test_func"
+        assert (data["total"], data["returned"], data["truncated"]) == (3, 2, True)
+        assert (data["total_edges"], data["returned_edges"]) == (3, 1)
+        assert "[1001] CALL line 2: x > 0" in data["summary"]
+        assert "TRUNCATED: showing 2 of 3 nodes" in data["summary"]
 
     @pytest.mark.asyncio
     async def test_get_type_definition_success(self, mock_services):
