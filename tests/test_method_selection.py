@@ -125,3 +125,29 @@ async def test_bounds_check_on_an_unsupported_line_is_a_validation_error():
     assert result.is_error
     assert result.content[0].text.startswith("VALIDATION_ERROR: no buffer access (buf[i]) or sized call at audit.c:8.")
     assert "leaf(n)" in result.content[0].text
+
+
+@pytest.mark.parametrize("location, line, column", [("audit.c:23", 23, -1), ("src/a.c:23:35", 23, 35)])
+async def test_resolve_location_parses_line_and_optional_column(location, line, column):
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(success=True, data=[json.dumps([{
+        "files": ["audit.c"], "total": 0, "candidates": []}])], row_count=1)
+    async with Client(_server(executor)) as client:
+        result = await client.call_tool("resolve_location", {"codebase_hash": CODEBASE_HASH, "location": location})
+    query = executor.execute_query.call_args.kwargs["query"]
+    assert f"val lineNum = {line}" in query and f"val column = {column}" in query
+    assert result.structured_content["total"] == 0 and "hint" in result.structured_content
+
+
+@pytest.mark.parametrize("payload, location, needle", [
+    ({"files": [], "total": 0, "candidates": []}, "nope.c:3", "no file in this CPG matches 'nope.c'"),
+    (None, "audit.c", "location must be 'file:line' or 'file:line:column'"),
+])
+async def test_resolve_location_rejects_bad_input(payload, location, needle):
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(success=True, data=[json.dumps([payload or {}])], row_count=1)
+    async with Client(_server(executor)) as client:
+        result = await client.call_tool("resolve_location", {"codebase_hash": CODEBASE_HASH, "location": location},
+                                        raise_on_error=False)
+    assert result.is_error and result.content[0].text.startswith("VALIDATION_ERROR: ")
+    assert needle in result.content[0].text
