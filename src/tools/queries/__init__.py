@@ -27,6 +27,7 @@ class QueryLoader:
         "limit": MAX_RESULT_ROWS,
         "max_results": MAX_RESULT_ROWS,
         "max_nodes": MAX_RESULT_ROWS,
+        "member_limit": MAX_RESULT_ROWS,
         "depth": MAX_TRAVERSAL_DEPTH,
         "max_depth": MAX_TRAVERSAL_DEPTH,
     }

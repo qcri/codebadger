@@ -24,33 +24,6 @@ from ._common import require_cpg, tool_error, tool_errors, unwrap_result
 
 logger = logging.getLogger(__name__)
 
-_DUPLICATE_TYPE_SUFFIX = re.compile(r"<duplicate>[0-9]+$")
-
-
-def _deduplicate_type_definitions(types):
-    """Normalize Joern duplicate suffixes and prefer canonical definitions."""
-    unique = {}
-    for item in types:
-        if not isinstance(item, dict):
-            continue
-
-        full_name = str(item.get("fullName") or "")
-        canonical_full_name = _DUPLICATE_TYPE_SUFFIX.sub("", full_name)
-        normalized = {**item, "fullName": canonical_full_name}
-        key = canonical_full_name or str(item.get("name") or "")
-        existing = unique.get(key)
-        if existing is None:
-            unique[key] = (normalized, full_name != canonical_full_name)
-            continue
-
-        _, existing_is_duplicate = existing
-        candidate_is_duplicate = full_name != canonical_full_name
-        if existing_is_duplicate and not candidate_is_duplicate:
-            unique[key] = (normalized, False)
-
-    return [definition for definition, _ in unique.values()]
-
-
 def _get_playground_path() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "playground"))
 
@@ -969,40 +942,55 @@ Example:
                 "types": {"type": "array", "items": {"type": "object", "properties": {
                     "name": {"type": ["string", "null"]}, "fullName": {"type": ["string", "null"]},
                     "filename": {"type": ["string", "null"]}, "lineNumber": {"type": ["integer", "null"]},
+                    "aliasOf": {"type": ["string", "null"]},
+                    "forward_declaration": {"type": "boolean"},
+                    "member_total": {"type": "integer"},
+                    "members_truncated": {"type": "boolean"},
                     "members": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
                 }, "additionalProperties": False}},
-                "total": {"type": "integer"},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"},
             },
             "required": ["success"], "additionalProperties": False,
         },
-        description="""Get type/struct definition with members.
-
-Inspect struct or class memory layouts.
+        description="""Get type/struct/class definitions with their members.
 
 Returns:
     {
         "success": true,
         "types": [
             {
-                "name": "UserStruct",
+                "name": "UserStruct", "fullName": "UserStruct",
+                "filename": "user.h", "lineNumber": 12, "aliasOf": null,
+                "forward_declaration": false,
+                "member_total": 2, "members_truncated": false,
                 "members": [{"name": "id", "type": "int"}, {"name": "buf", "type": "char*"}]
             }
-        ]
+        ],
+        "total": 1, "returned": 1, "truncated": false
     }
 
 Notes:
-    - Essential for understanding buffer sizes and memory layouts.
-    - Does not read header files; uses CPG type info.
-    - Joern's internal `<duplicate>N` variants are collapsed into the canonical type.
+    - Members are in declaration order. member_total counts all of them;
+      members_truncated=true means raise member_limit to see the rest.
+    - Declarations without members are listed (member_total=0): an empty
+      struct, or forward_declaration=true for `struct X;` with no definition in
+      the CPG. A type that is not declared at all returns no rows.
+    - aliasOf names the target of a typedef. Joern's `<duplicate>N` variants are
+      collapsed into the canonical type, and a definition wins over a forward
+      declaration of the same name.
+    - Uses CPG type info only; types from headers outside the CPG are absent.
 
 Examples:
-    get_type_definition(codebase_hash="abc", type_name=".*request_t.*")""",
+    get_type_definition(codebase_hash="abc", type_name=".*request_t.*")
+    get_type_definition(codebase_hash="abc", type_name="Wide", member_limit=500)""",
     )
     @tool_errors("verify the CPG is ready and check the type_name regex.")
     def get_type_definition(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
         type_name: Annotated[str, Field(description="Type name pattern (regex, e.g., '.*Buffer.*')")],
         limit: Annotated[int, Field(description="Maximum types to return", ge=1, le=MAX_RESULT_ROWS)] = 10,
+        member_limit: Annotated[int, Field(description="Maximum members to return per type", ge=1, le=MAX_RESULT_ROWS)] = 100,
     ) -> Dict[str, Any]:
         """Get struct/class definition with member names and types."""
         validate_codebase_hash(codebase_hash)
@@ -1013,7 +1001,8 @@ Examples:
         query = QueryLoader.load(
             "type_definition",
             type_name=type_name,
-            limit=limit
+            limit=limit,
+            member_limit=member_limit,
         )
 
         result = query_executor.execute_query(
@@ -1021,32 +1010,29 @@ Examples:
             cpg_path=codebase_info.cpg_path,
             query=query,
             timeout=30,
-            limit=limit,
         )
-
-        if not result.success:
-            return {
-                "success": False,
-                "error": result.error,
-                "error_code": result.error_code or "QUERY_ERROR",
-            }
+        data = _parse_json_result(unwrap_result(result))
 
         types = []
-        if result.data:
-            for item in result.data:
-                if isinstance(item, dict):
-                    types.append({
-                        "name": item.get("_1"),
-                        "fullName": item.get("_2"),
-                        "filename": item.get("_3"),
-                        "lineNumber": item.get("_4"),
-                        "members": item.get("_5", []),
-                    })
-
-        types = _deduplicate_type_definitions(types)
-
+        for item in data.get("types") or []:
+            members = item.get("members") or []
+            member_total = int(item.get("member_total", len(members)))
+            types.append({
+                "name": item.get("name"),
+                "fullName": item.get("fullName"),
+                "filename": item.get("filename"),
+                "lineNumber": item.get("lineNumber"),
+                "aliasOf": item.get("aliasOf") or None,
+                "forward_declaration": bool(item.get("forward_declaration", False)),
+                "member_total": member_total,
+                "members_truncated": len(members) < member_total,
+                "members": members,
+            })
+        total = int(data.get("total", len(types)))
         return {
             "success": True,
             "types": types,
-            "total": len(types),
+            "total": total,
+            "returned": len(types),
+            "truncated": len(types) < total,
         }
