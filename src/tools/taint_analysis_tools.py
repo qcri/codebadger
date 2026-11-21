@@ -1113,17 +1113,27 @@ Examples:
     @mcp.tool(
         title="Get Variable Flow",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {
+            "success": {"type": "boolean"}, "summary": {"type": "string"},
+            "variable": {"type": "string"}, "direction": {"type": "string"}, "method": {"type": "object"},
+            "declarations": {"type": "array", "items": {"type": "object"}},
+            "aliases": {"type": "array", "items": {"type": "string"}},
+            "rows": {"type": "array", "items": {"type": "object"}},
+            "total": {"type": "integer"}, "returned": {"type": "integer"}, "truncated": {"type": "boolean"},
+        }, "required": ["success"], "additionalProperties": False},
         description="""Analyze data dependencies for a variable at a specific location.
 
 Finds code locations that influence (backward) or are influenced by (forward)
 a variable, with support for pointer aliasing.
 
 Returns:
-    Human-readable text showing:
-    - Target variable and method
-    - Aliases detected
-    - List of dependencies
+    {"success": true, "summary": "<the flow as text>", "variable": "x", "direction": "backward",
+     "method": {"node_id", "name", "full_name"}, "declarations": [{"kind", "line"}],
+     "aliases": [], "rows": [{"filename", "line", "code", "kind", "note"}],
+     "total": 5, "returned": 5, "truncated": false}
+    kind: declaration, parameter, assignment, modification, use, use_in_call,
+    alias_use, call_site_arg. note: "reaches line N" (backward), "value from
+    line N" or "name only: a later value" (forward), else empty.
 
 Notes:
     - The variable is resolved by its declaration (local or parameter) in the
@@ -1177,8 +1187,8 @@ Examples:
                 "location": location,
                 "variable": variable,
                 "direction": direction,
-                # v3: declaration-resolved variable, reaching definitions.
-                "analysis_version": 3,
+                # v4: structured rows alongside the summary.
+                "analysis_version": 4,
             }
 
             def _execute():
@@ -1200,13 +1210,20 @@ Examples:
 
                 return unwrap_result(result)
 
-            summary = str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))
+            raw = str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))
             for prefix in ("ANCHOR_NOT_FOUND:", "VARIABLE_NOT_FOUND:"):
-                if summary.startswith(prefix):
-                    raise ValidationError(summary.split(prefix, 1)[1].strip())
+                if raw.startswith(prefix):
+                    raise ValidationError(raw.split(prefix, 1)[1].strip())
+            evidence = parse_json_result(raw)
+            summary = str(evidence.get("summary", ""))
             if detail == "compact" and len(summary) > 2500:
                 summary = summary[:2500].rstrip() + "\n...[truncated; use detail='full']"
-            return {"success": True, "summary": summary}
+            response = {"success": True, "summary": summary}
+            for key in ("variable", "direction", "method", "declarations", "aliases", "rows",
+                        "total", "returned", "truncated"):
+                if key in evidence:
+                    response[key] = evidence[key]
+            return response
 
         except ValidationError as e:
             logger.error(f"Error getting data dependencies: {e}")
