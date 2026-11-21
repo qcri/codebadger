@@ -45,37 +45,32 @@
     "(^|.*/)" + escaped + "$"
   }
 
-  // Build source nodes - by node ID or by location
-  val sources: List[CfgNode] = {
-    if (sourceNodeId > 0) {
-      cpg.call.filter(_.id == sourceNodeId).l ++
-      cpg.identifier.filter(_.id == sourceNodeId).l ++
-      cpg.literal.filter(_.id == sourceNodeId).l
-    } else if (sourceFile.nonEmpty && sourceLine > 0) {
-      val srcPattern = pathBoundaryRegex(sourceFile)
-      cpg.call.where(_.file.name(srcPattern)).lineNumber(sourceLine).l ++
-      cpg.identifier.where(_.file.name(srcPattern)).lineNumber(sourceLine).l ++
-      cpg.literal.where(_.file.name(srcPattern)).lineNumber(sourceLine).l
-    } else {
-      List()
-    }
+  // Resolve an endpoint by exact node ID, or by location. At a location, the
+  // non-operator calls on the line are the endpoint (read_value(), show_value(0));
+  // operator calls (`flag != 0`, `x = ...`) only when the line has no real call,
+  // then identifiers/literals.
+  def resolve(nodeId: Long, file: String, line: Int): List[CfgNode] = {
+    if (nodeId > 0) {
+      cpg.call.filter(_.id == nodeId).l ++
+      cpg.identifier.filter(_.id == nodeId).l ++
+      cpg.literal.filter(_.id == nodeId).l
+    } else if (file.nonEmpty && line > 0) {
+      val pattern = pathBoundaryRegex(file)
+      val calls = cpg.call.where(_.file.name(pattern)).lineNumber(line).l
+      val (operators, real) = calls.partition(_.name.startsWith("<operator>"))
+      if (real.nonEmpty) real
+      else if (operators.nonEmpty) operators
+      else cpg.identifier.where(_.file.name(pattern)).lineNumber(line).l ++
+           cpg.literal.where(_.file.name(pattern)).lineNumber(line).l
+    } else List()
   }
+  val sources: List[CfgNode] = resolve(sourceNodeId, sourceFile, sourceLine).sortBy(_.id)
+  val sinks: List[CfgNode] = resolve(sinkNodeId, sinkFile, sinkLine).sortBy(_.id)
 
-  // Build sink nodes - by node ID or by location
-  val sinks: List[CfgNode] = {
-    if (sinkNodeId > 0) {
-      cpg.call.filter(_.id == sinkNodeId).l ++
-      cpg.identifier.filter(_.id == sinkNodeId).l ++
-      cpg.literal.filter(_.id == sinkNodeId).l
-    } else if (sinkFile.nonEmpty && sinkLine > 0) {
-      val snkPattern = pathBoundaryRegex(sinkFile)
-      cpg.call.where(_.file.name(snkPattern)).lineNumber(sinkLine).l ++
-      cpg.identifier.where(_.file.name(snkPattern)).lineNumber(sinkLine).l ++
-      cpg.literal.where(_.file.name(snkPattern)).lineNumber(sinkLine).l
-    } else {
-      List()
-    }
-  }
+  def endpointInfo(n: CfgNode) = Map(
+    "node_id" -> n.id.toString, "kind" -> n.label, "name" -> getName(n), "code" -> n.code.take(120),
+    "filename" -> n.file.name.headOption.getOrElse("?"), "lineNumber" -> n.lineNumber.getOrElse(-1),
+    "columnNumber" -> n.columnNumber.getOrElse(-1), "method" -> getMethodName(n))
 
   // Expand sinks: If a sink is a function call, we usually mean "flow to any argument of this call"
   // e.g. sink = memcpy(...) -> we want to catch taint flowing into 'src' argument.
@@ -84,50 +79,40 @@
     case other => List(other)
   }
   
+  def describe(what: String, nodeId: Long, file: String, line: Int): String =
+    if (nodeId > 0) s"no $what node with ID $nodeId (use find_taint_${what}s for valid node_id values)"
+    else s"no $what node at $file:$line (no call, identifier or literal on that line)"
+
+  if (sources.isEmpty || sinks.isEmpty) {
+    val missing = List(
+      if (sources.isEmpty) Some(describe("source", sourceNodeId, sourceFile, sourceLine)) else None,
+      if (sinks.isEmpty) Some(describe("sink", sinkNodeId, sinkFile, sinkLine)) else None).flatten
+    "<codebadger_result>\nENDPOINT_NOT_FOUND: " + missing.mkString("; ") + "\n</codebadger_result>"
+  } else {
   // Header
   output.append("Taint Flow Analysis\n")
   output.append("=" * 60 + "\n")
-  
-  if (sources.nonEmpty) {
-    val src = sources.head
-    val srcFile = src.file.name.headOption.getOrElse("?")
-    val srcLine = src.lineNumber.getOrElse(-1)
-    output.append(s"Source: ${src.code.take(60)}\n")
-    output.append(s"  Location: $srcFile:$srcLine\n")
-    if (sourceNodeId > 0) output.append(s"  Node ID: $sourceNodeId\n")
+  def listEndpoints(label: String, nodes: List[CfgNode]): Unit = {
+    output.append(s"$label (${nodes.size} node${if (nodes.size == 1) "" else "s"} searched):\n")
+    nodes.foreach { n =>
+      output.append(s"  [${n.id}] ${n.code.take(60)} at ${n.file.name.headOption.getOrElse("?")}:${n.lineNumber.getOrElse(-1)}:${n.columnNumber.getOrElse(-1)}\n")
+    }
   }
-  
-  if (sinks.nonEmpty) {
-    val snk = sinks.head
-    val snkFile = snk.file.name.headOption.getOrElse("?")
-    val snkLine = snk.lineNumber.getOrElse(-1)
-    output.append(s"Sink: ${snk.code.take(60)}\n")
-    output.append(s"  Location: $snkFile:$snkLine\n")
-    if (sinkNodeId > 0) output.append(s"  Node ID: $sinkNodeId\n")
-  }
-  
+  listEndpoints("Source", sources)
+  listEndpoints("Sink", sinks)
   output.append("\n")
-  
-  if (sources.isEmpty) {
-    output.append("ERROR: No source found matching the criteria.\n")
-    if (sourceFile.nonEmpty) {
-      output.append(s"  Searched for calls at $sourceFile:$sourceLine\n")
-    } else if (sourceNodeId > 0) {
-      output.append(s"  Searched for node ID $sourceNodeId\n")
-    }
-  } else if (sinks.isEmpty) {
-    output.append("ERROR: No sink found matching the criteria.\n")
-    if (sinkFile.nonEmpty) {
-      output.append(s"  Searched for calls at $sinkFile:$sinkLine\n")
-    } else if (sinkNodeId > 0) {
-      output.append(s"  Searched for node ID $sinkNodeId\n")
-    }
-  } else {
-    // Use Joern's native reachableByFlows for taint tracking
-    val flows = effectiveSinks.reachableByFlows(sources).l.take(maxResults)
-    
+
+  val rawFlows = {
+    // Use Joern's native reachableByFlows for taint tracking; one extra flow
+    // tells a complete result from a capped one.
+    effectiveSinks.reachableByFlows(sources).l.take(maxResults + 1)
+  }
+  val flows = rawFlows.take(maxResults)
+  val seen = mutable.Set[String]()
+  locally {
+
     if (flows.isEmpty) {
-      output.append("No taint flow found between source and sink.\n\n")
+      output.append("No taint flow found: the search completed between the resolved endpoints.\n")
       
       // Diagnostic: Check if they're in the same file at least
       val srcFile = sources.head.file.name.headOption.getOrElse("")
@@ -138,17 +123,6 @@
         output.append("  Inter-procedural taint tracking requires call graph connection.\n")
       }
       
-      // Show what we checked
-      output.append("\nSource node:\n")
-      val src = sources.head
-      output.append(s"  ${getName(src)}: ${src.code}\n")
-      output.append(s"  Method: ${getMethodName(src)}\n")
-      
-      output.append("\nSink node:\n")
-      val snk = sinks.head
-      output.append(s"  ${getName(snk)}: ${snk.code}\n")
-      output.append(s"  Method: ${getMethodName(snk)}\n")
-
       // --- Fallback: Check for Call Graph Connection ---
       // If data flow is missing, maybe they are connected via function calls?
       val sourceMethods = sources.flatMap(_.method).dedup.l
@@ -174,7 +148,6 @@
       }
     } else {
       // Deduplicate: track seen (source_file:line -> sink_file:line) pairs
-      val seen = mutable.Set[String]()
 
       flows.foreach { flow =>
         val elements = flow.elements.l
@@ -227,6 +200,15 @@
       output.append(s"Summary: ${seen.size} unique flow(s)\n")
     }
   }
-  
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  if (rawFlows.size > maxResults)
+    output.append(s"TRUNCATED: stopped after $maxResults flows; raise limit for more.\n")
+
+  val result = Map(
+    "source_nodes" -> sources.map(endpointInfo),
+    "sink_nodes" -> sinks.map(endpointInfo),
+    "flows" -> seen.size,
+    "truncated" -> (rawFlows.size > maxResults),
+    "summary" -> output.toString)
+  "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"
+  }
 }

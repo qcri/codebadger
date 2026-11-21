@@ -726,7 +726,12 @@ Examples:
     @mcp.tool(
         title="Find Taint Flows",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {
+            "success": {"type": "boolean"}, "summary": {"type": "string"},
+            "source_nodes": {"type": "array", "items": {"type": "object"}},
+            "sink_nodes": {"type": "array", "items": {"type": "object"}},
+            "flows": {"type": "integer"}, "truncated": {"type": "boolean"},
+        }, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
 Detects data flow from a specific source node to a specific sink node.
@@ -747,13 +752,20 @@ MODE 2 - Auto (mode="auto"): Batch-test ALL default sources against ALL default 
   - Optionally filter by language, filename, or custom source/sink patterns.
 
 Returns:
-    Human-readable text showing:
-    - Source and sink matched
-    - Detailed flow path showing each intermediate step
-    - Path length
+    Manual mode: {"success": true, "source_nodes": [...], "sink_nodes": [...],
+    "flows": 1, "truncated": false, "summary": "<paths as text>"}. Each endpoint
+    node carries node_id, kind, name, code, filename, lineNumber, columnNumber
+    and method: exactly the nodes that were searched.
+    Auto mode: {"success": true, "summary": "<counts and paths as text>"}.
 
 Notes:
-    - Manual mode: BOTH source AND sink are required.
+    - Manual mode: BOTH source AND sink are required. A location resolves to the
+      non-operator calls on that line (read_value(), show_value(0)); operator
+      calls such as `flag != 0` are used only when the line has no real call.
+      Use node IDs to pick one of several calls on a line.
+    - flows=0 means the search completed between resolved endpoints. An
+      endpoint that resolves to nothing is a VALIDATION_ERROR, not an empty
+      result.
     - Auto mode: No source/sink needed — uses language-specific default patterns.
     - Inter-procedural flows are tracked automatically.
 
@@ -914,6 +926,8 @@ Examples:
                 "source_node_id": source_node_id if has_source_id else None,
                 "sink_node_id": sink_node_id if has_sink_id else None,
                 "max_results": limit,
+                # v2: endpoints resolved to real calls first, JSON envelope.
+                "result_shape": "endpoints-v2",
             }
 
             def _execute():
@@ -937,10 +951,21 @@ Examples:
 
                 return unwrap_result(result)
 
-            summary = str(_cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute))
+            raw = str(_cached_taint_query(services, "find_taint_flows", codebase_hash, cache_params, _execute))
+            if raw.startswith("ENDPOINT_NOT_FOUND:"):
+                raise ValidationError(raw.split("ENDPOINT_NOT_FOUND:", 1)[1].strip())
+            data = parse_json_result(raw)
+            summary = str(data.get("summary", ""))
             if detail == "compact" and len(summary) > 3000:
                 summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
-            return {"success": True, "summary": summary}
+            return {
+                "success": True,
+                "source_nodes": data.get("source_nodes", []),
+                "sink_nodes": data.get("sink_nodes", []),
+                "flows": int(data.get("flows", 0)),
+                "truncated": bool(data.get("truncated", False)),
+                "summary": summary,
+            }
 
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")

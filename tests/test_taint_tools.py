@@ -365,34 +365,28 @@ async def test_find_taint_sinks_with_filename_filter(fake_services):
         assert "main" in query_executor.last_query
 
 
+def _flow_envelope(source_id=30064771934, sink_id=30064780656, flows=1):
+    """What the manual taint_flows template returns once the executor strips markers."""
+    import json
+    node = lambda nid, name, code, line: {"node_id": str(nid), "kind": "CALL", "name": name, "code": code,
+                                          "filename": "core.c", "lineNumber": line, "columnNumber": 5, "method": "main"}
+    summary = ("Taint Flow Analysis\n" + "=" * 60 + "\n"
+               f"Source (1 node searched):\n  [{source_id}] getenv(\"FOO\") at core.c:10:5\n"
+               f"Sink (1 node searched):\n  [{sink_id}] system(cmd) at core.c:42:5\n\n"
+               "--- Flow 1 ---\nSource: getenv(\"FOO\")\n  Location: core.c:10 in main()\n\n"
+               "Sink: system(cmd)\n  Location: core.c:42 in main()\n\nSummary: 1 unique flow(s)\n")
+    return json.dumps([{"source_nodes": [node(source_id, "getenv", 'getenv("FOO")', 10)],
+                        "sink_nodes": [node(sink_id, "system", "system(cmd)", 42)],
+                        "flows": flows, "truncated": False, "summary": summary}])
+
+
 @pytest.mark.asyncio
 async def test_find_taint_flows_success(fake_services):
     # Setup mock for flow query with text output
     services = fake_services
 
     # The refactored API returns human-readable text
-    flow_result = QueryResult(
-        success=True,
-        data=[
-            """Taint Flow Analysis
-============================================================
-Sources: pattern 'getenv' (1 found)
-Sinks: pattern 'system' (1 found)
-
-Found 1 taint flow(s):
-
---- Flow 1 ---
-Source: getenv("FOO")
-  Location: core.c:10 in main()
-
-Sink: system(cmd)
-  Location: core.c:42 in main()
-
-Path length: 2 nodes
-"""
-        ],
-        row_count=1,
-    )
+    flow_result = QueryResult(success=True, data=[_flow_envelope()], row_count=1)
 
     services["query_executor"].execute_query = MagicMock(return_value=flow_result)
     services["codebase_tracker"].get_codebase.return_value = CodebaseInfo(
@@ -433,32 +427,7 @@ async def test_find_taint_flows_with_node_ids(fake_services):
     services = fake_services
 
     # The refactored API returns human-readable text
-    flow_result = QueryResult(
-        success=True,
-        data=[
-            """Taint Flow Analysis
-============================================================
-Source: getenv("FOO")
-  Location: core.c:10
-  Node ID: 30064771934
-Sink: system(cmd)
-  Location: core.c:42
-  Node ID: 30064780656
-
-Found 1 taint flow(s):
-
---- Flow 1 ---
-Source: getenv("FOO")
-  Location: core.c:10 in main()
-
-Sink: system(cmd)
-  Location: core.c:42 in main()
-
-Path length: 2 nodes
-"""
-        ],
-        row_count=1,
-    )
+    flow_result = QueryResult(success=True, data=[_flow_envelope()], row_count=1)
 
     services["query_executor"].execute_query = MagicMock(return_value=flow_result)
     services["codebase_tracker"].get_codebase.return_value = CodebaseInfo(
@@ -563,3 +532,34 @@ async def test_sinks_report_the_full_match_count_beyond_the_limit(fake_services)
     assert res["sinks"][0]["columnNumber"] == 20
     query = services["query_executor"].execute_query.call_args.kwargs["query"]
     assert ".dedup.l" in query and "matches.take(1)" in query and '"total" -> matches.size' in query
+
+
+@pytest.mark.asyncio
+async def test_find_taint_flows_reports_resolved_endpoints(fake_services):
+    fake_services["query_executor"].execute_query = MagicMock(
+        return_value=QueryResult(success=True, data=[_flow_envelope(flows=0)], row_count=1))
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+    async with Client(mcp) as client:
+        res = (await client.call_tool("find_taint_flows", {
+            "codebase_hash": fake_services["codebase_hash"],
+            "source_node_id": 30064771934, "sink_node_id": 30064780656})).structured_content
+    assert res["flows"] == 0 and res["truncated"] is False
+    assert [n["node_id"] for n in res["source_nodes"]] == ["30064771934"]
+    assert res["sink_nodes"][0]["code"] == "system(cmd)"
+
+
+@pytest.mark.asyncio
+async def test_find_taint_flows_missing_endpoint_is_a_validation_error(fake_services):
+    # Audit manual80: nothing on audit.c:80 must not read as "no flow".
+    fake_services["query_executor"].execute_query = MagicMock(return_value=QueryResult(
+        success=True, data=["ENDPOINT_NOT_FOUND: no sink node at audit.c:80 (no call, identifier or literal on that line)"],
+        row_count=1))
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+    async with Client(mcp) as client:
+        res = await client.call_tool("find_taint_flows", {
+            "codebase_hash": fake_services["codebase_hash"],
+            "source_location": "audit.c:12", "sink_location": "audit.c:80"}, raise_on_error=False)
+    assert res.is_error
+    assert res.content[0].text.startswith("VALIDATION_ERROR: no sink node at audit.c:80")
