@@ -382,6 +382,8 @@ def _cached_taint_query(
             if cached is not None:
                 logger.debug(f"Cache hit for {tool_name}")
                 return cached
+        except ToolError:
+            raise
         except Exception as e:
             logger.debug(f"Cache lookup failed for {tool_name} (non-fatal): {e}")
 
@@ -399,6 +401,8 @@ def _cached_taint_query(
 
             if should_cache:
                 db_manager.cache_tool_output(tool_name, codebase_hash, cache_params, result)
+        except ToolError:
+            raise
         except Exception as e:
             logger.debug(f"Cache write failed for {tool_name} (non-fatal): {e}")
 
@@ -943,6 +947,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error finding taint flows: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide both source and sink endpoints, or use mode='auto'.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error finding taint flows: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status and narrowing the analysis.") from e
@@ -1047,6 +1053,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid relative filename:line location.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error getting program slice: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status and narrowing the slice.") from e
@@ -1142,6 +1150,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error getting data dependencies: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)}") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)}") from e
@@ -1222,6 +1232,8 @@ Notes:
         except ValidationError as e:
             logger.error(f"Error detecting use-after-free: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting use-after-free: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1292,6 +1304,8 @@ Returns:
         except ValidationError as e:
             logger.error(f"Error detecting double-free: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting double-free: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1373,6 +1387,8 @@ Notes:
         except ValidationError as e:
             logger.error(f"Error detecting null pointer dereference: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting null pointer dereference: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1456,6 +1472,8 @@ Notes:
         except ValidationError as e:
             logger.error(f"Error detecting integer overflow: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting integer overflow: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1522,6 +1540,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error detecting format string vulnerabilities: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting format string vulnerabilities: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1589,6 +1609,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error detecting heap overflow: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting heap overflow: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1655,6 +1677,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error detecting stack overflow: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting stack overflow: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1719,6 +1743,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error detecting TOCTOU: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting TOCTOU: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e
@@ -1790,6 +1816,8 @@ Examples:
         except ValidationError as e:
             logger.error(f"Error detecting uninitialized reads: {e}")
             raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: verify the codebase hash, filename filter, and result limit.") from e
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error detecting uninitialized reads: {e}", exc_info=True)
             raise ToolError(f"INTERNAL_ERROR: {str(e)} Hint: retry after checking CPG/backend status.") from e

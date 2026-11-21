@@ -34,12 +34,18 @@ def test_require_cpg_rejects_bad_hash():
 
 
 class _Result:
-    def __init__(self, success, data=None, error=None):
-        self.success, self.data, self.error = success, data, error
+    def __init__(self, success, data=None, error=None, error_code=None):
+        self.success, self.data, self.error, self.error_code = success, data, error, error_code
 
 
-def test_unwrap_result_failure_returns_error_string():
-    assert unwrap_result(_Result(False, error="boom")) == "Error: boom"
+def test_unwrap_result_failure_raises_the_executor_code():
+    import pytest
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError, match=r"^TIMEOUT: Query timed out"):
+        unwrap_result(_Result(False, error="Query timed out after 30s", error_code="TIMEOUT"))
+    with pytest.raises(ToolError, match=r"^QUERY_ERROR: boom in <path>/cpg.bin"):
+        unwrap_result(_Result(False, error="boom in /srv/private/cpg.bin"))
 
 
 def test_unwrap_result_string_data_stripped():
@@ -66,7 +72,11 @@ def test_is_error_output_false_for_normal_output():
     assert not is_error_output(None)
 
 
-def test_unwrap_failure_is_recognized_as_error_output():
-    # The cache layer must treat a unwrap_result failure as non-cacheable.
-    failed = unwrap_result(_Result(False, error="boom"))
-    assert is_error_output(failed)
+def test_failures_never_reach_the_cache_as_text():
+    # A failed query raises before rendering, so no error text can be cached.
+    import pytest
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError):
+        unwrap_result(_Result(False, error="boom"))
+    assert is_error_output("Error: legacy text") is True
