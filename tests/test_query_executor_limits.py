@@ -27,11 +27,11 @@ def test_normalize_query_clamps_huge_explicit_limit():
     assert f".take({MAX_RESULT_ROWS + 1})" in out
 
 
-def test_normalize_query_leaves_size_queries_alone():
+def test_normalize_query_never_caps_a_size_result():
     qe = _make_executor()
     out = qe._normalize_query("cpg.method.size", None)
-    assert ".take(" not in out
-    assert out.endswith(".toString")
+    assert "(cpg.method.size).take(" not in out
+    assert "<codebadger_scalar>" in out
 
 
 def test_execute_via_client_truncates_rows():
