@@ -138,6 +138,22 @@ def _paging_hint(total: int, available: int, limit: int, page: int, page_size: i
     return None
 
 
+def _regex_literal(text: str) -> str:
+    """Escape every non-alphanumeric character so Java regex matches it literally."""
+    return "".join(ch if ch.isalnum() or ch == " " else "\\" + ch for ch in text)
+
+
+def _literal_regex(text: str, match: str) -> str:
+    """The full-match regex Joern's .code(...) needs for a literal search."""
+    if match == "regex":
+        return text
+    escaped = _regex_literal(text)
+    if match == "exact":
+        # String literals keep their quotes in `code`; numbers do not.
+        return f'"?{escaped}"?'
+    return f"(?s).*{escaped}.*"
+
+
 class CodeBrowsingService:
     """Service for code browsing operations with caching support"""
 
@@ -515,15 +531,29 @@ class CodeBrowsingService:
     def find_literals(
         self,
         codebase_hash: str,
-        pattern: Optional[str] = None,
+        text: Optional[str] = None,
+        match: str = "contains",
         literal_type: Optional[str] = None,
+        file_pattern: Optional[str] = None,
         limit: int = 50,
     ) -> Dict[str, Any]:
+        """Literal nodes (strings, numbers) matching `text`, with exact locations.
 
+        match="contains" (default) and "exact" treat `text` literally, so `[retry]`
+        means the brackets; "exact" ignores a string literal's surrounding quotes.
+        match="regex" passes `text` through as a Java regex over the literal code.
+        """
         validate_codebase_hash(codebase_hash)
+        if match not in ("contains", "exact", "regex"):
+            raise ValidationError("match must be 'contains', 'exact' or 'regex'")
+        limit = max(1, min(int(limit), MAX_RESULT_ROWS))
         cache_params = {
-            "pattern": pattern,
+            "text": text,
+            "match": match,
             "literal_type": literal_type,
+            "file_pattern": file_pattern,
+            "limit": limit,
+            "result_schema_version": 2,
         }
 
         def execute_query():
@@ -532,43 +562,69 @@ class CodeBrowsingService:
                 raise ValidationError(f"CPG not found for codebase {codebase_hash}")
 
             query_parts = ["cpg.literal"]
-            if pattern:
-                query_parts.append(f'.code("{escape_scala_string(pattern)}")')
+            if text:
+                query_parts.append(f'.code("{escape_scala_string(_literal_regex(text, match))}")')
             if literal_type:
                 query_parts.append(
-                    f'.typeFullName(".*{escape_scala_string(literal_type)}.*")'
+                    f'.typeFullName(".*{escape_scala_string(_regex_literal(literal_type))}.*")'
                 )
+            if file_pattern:
+                query_parts.append(f'.where(_.file.name("{escape_scala_string(file_pattern)}"))')
+            nodes_query = "".join(query_parts)
 
-            query_parts.append(
-                ".map(lit => (lit.code, lit.typeFullName, lit.filename, lit.lineNumber.getOrElse(-1), lit.method.name))"
+            count_result = self.query_executor.execute_query(
+                codebase_hash=codebase_hash,
+                cpg_path=codebase_info.cpg_path,
+                query=f"{nodes_query}.size",
+                timeout=30,
             )
+            if not count_result.success:
+                return _query_failure(count_result.error, count_result.error_code)
+            total = _decode_count(count_result.data)
+            if total is None:
+                return _query_failure("Joern returned an invalid literal count", None)
 
-            query = "".join(query_parts) + f".take({limit}).l"
-
+            projection = (
+                ".map(lit => (lit.code, lit.typeFullName, lit.method.filename, lit.lineNumber.getOrElse(-1),"
+                " lit.columnNumber.getOrElse(-1), lit.id, lit.method.name, lit.method.id, lit.method.fullName))"
+            )
             result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
-                query=query,
+                query=f"{nodes_query}{projection}.take({limit}).l",
                 timeout=30,
                 limit=limit,
             )
-
             if not result.success:
                 return _query_failure(result.error, result.error_code)
 
             literals = []
             for item in result.data:
                 if isinstance(item, dict):
-                    literals.append(
-                        {
-                            "value": item.get("_1", ""),
-                            "type": item.get("_2", ""),
-                            "filename": item.get("_3", ""),
-                            "lineNumber": item.get("_4", -1),
-                            "method": item.get("_5", ""),
-                        }
-                    )
-            return {"success": True, "literals": literals, "total": len(literals)}
+                    literals.append({
+                        "value": item.get("_1", ""),
+                        "type": item.get("_2", ""),
+                        "filename": item.get("_3", ""),
+                        "lineNumber": item.get("_4", -1),
+                        "columnNumber": item.get("_5", -1),
+                        "node_id": str(item.get("_6", "")),
+                        "method": item.get("_7", ""),
+                        "method_id": str(item.get("_8", "")),
+                        "method_full_name": item.get("_9", ""),
+                    })
+            response = {
+                "success": True,
+                "literals": literals,
+                "total": total,
+                "returned": len(literals),
+                "truncated": len(literals) < total,
+            }
+            if len(literals) < total:
+                response["hint"] = (
+                    f"limit={limit} returned {len(literals)} of {total} literals; raise limit "
+                    "(up to {MAX_RESULT_ROWS}) or narrow text, literal_type or file_pattern."
+                ).replace("{MAX_RESULT_ROWS}", str(MAX_RESULT_ROWS))
+            return response
 
         return self._get_cached_or_execute(
             "find_literals", codebase_hash, cache_params, execute_query
@@ -586,7 +642,7 @@ class CodeBrowsingService:
         logger.info(f"Warming up cache for codebase {codebase_hash}")
         # Only queries whose cache key matches a default MCP call: list_methods and
         # list_calls with their tool defaults. (list_parameters needs a method name
-        # the warm-up can't know, and find_literals has no MCP tool.)
+        # the warm-up can't know, and find_literals always needs search text.)
         tasks = [
             self.list_methods,
             self.list_calls,
