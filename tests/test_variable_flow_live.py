@@ -11,7 +11,10 @@ import uuid
 
 import pytest
 
+from src.tools._common import parse_json_result
 from src.tools.queries import QueryLoader
+
+LAST_EVIDENCE: dict = {}
 from tests.test_detectors_live import _dexec, _q, pytestmark, server  # noqa: F401 (fixture)
 
 AUDIT_C = r"""int read_value(void);
@@ -58,8 +61,12 @@ def _flow(project, filename, line, variable, direction):
     assert res.get("success"), res.get("stderr", "")[:800]
     out = res.get("stdout", "")
     assert "<codebadger_result>" in out, out[-3000:]
-    return out.split("<codebadger_result>", 1)[1].split("</codebadger_result>", 1)[0] \
-              .encode().decode("unicode_escape").strip()
+    body = out.split("<codebadger_result>", 1)[1].split("</codebadger_result>", 1)[0].strip()
+    if not body.startswith("["):  # plain-text failure: undo REPL string escapes
+        return body.encode().decode("unicode_escape").strip()
+    global LAST_EVIDENCE
+    LAST_EVIDENCE = parse_json_result(body)
+    return LAST_EVIDENCE["summary"].strip()
 
 
 def _rows(text, filename):
@@ -104,3 +111,13 @@ def test_unknown_variable_is_distinguished(project):
 
 def test_line_outside_any_method_is_anchor_not_found(project):
     assert _flow(project, "audit.c", 80, "x", "backward").startswith("ANCHOR_NOT_FOUND:")
+
+
+def test_flow_rows_carry_kind_and_note(project):
+    _flow(project, "audit.c", 4, "x", "forward")
+    ev = LAST_EVIDENCE
+    assert ev["variable"] == "x" and ev["method"]["name"] == "report" and ev["aliases"] == []
+    rows = {(r["line"], r["kind"]): r["note"] for r in ev["rows"]}
+    assert rows[(6, "use_in_call")] == "value from line 4"
+    assert rows[(8, "use_in_call")] == "name only: a later value"
+    assert ev["total"] == ev["returned"] == len(ev["rows"]) and ev["truncated"] is False

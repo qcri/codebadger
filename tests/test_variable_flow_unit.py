@@ -3,8 +3,15 @@ import sys
 import unittest
 from unittest.mock import MagicMock, ANY
 
+import json
+
 import pytest
 from fastmcp.exceptions import ToolError
+
+
+def _envelope(summary, **fields):
+    """The variable_flow template's success reply once the executor strips markers."""
+    return json.dumps([{"summary": summary, "rows": [], "total": 0, "returned": 0, "truncated": False, **fields}])
 
 class TestVariableFlow(unittest.TestCase):
     def test_logic(self):
@@ -28,11 +35,11 @@ class TestVariableFlow(unittest.TestCase):
         # Mock QueryExecutor result
         query_result = MagicMock()
         query_result.success = True
-        query_result.data = ["""Variable Flow Analysis
+        query_result.data = [_envelope("""Variable Flow Analysis
 ======================
 Target: variable 'x'
 Aliases: p
-Dependencies: ..."""]
+Dependencies: ...""")]
         services["query_executor"].execute_query.return_value = query_result
         
         # Mock MCP
@@ -83,7 +90,7 @@ Dependencies: ..."""]
         # Mock result with parameters
         query_result = MagicMock()
         query_result.success = True
-        query_result.data = ["""Variable Flow Analysis
+        query_result.data = [_envelope("""Variable Flow Analysis
 ======================
 Target: variable 'item'
 Method: foo
@@ -91,7 +98,7 @@ Direction: backward
 
 Dependencies:
 [Line  400] void * item (parameter)
-"""]
+""")]
         services["query_executor"].execute_query.return_value = query_result
         
         # Mock MCP
@@ -142,7 +149,7 @@ Dependencies:
         # This confirms that our tool correctly passes through and formats what the query finds
         query_result = MagicMock()
         query_result.success = True
-        query_result.data = ["""Variable Flow Analysis
+        query_result.data = [_envelope("""Variable Flow Analysis
 ======================
 Target: variable 'list'
 Method: test_func
@@ -151,7 +158,7 @@ Direction: backward
 Dependencies:
 [Line   10] list = (Type) ptr; (assignment)
 [Line   20] list->field = val; (modification)
-"""]
+""")]
         services["query_executor"].execute_query.return_value = query_result
         
         # Mock MCP

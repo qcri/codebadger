@@ -8,6 +8,7 @@
   val maxResults = {{max_results}}
 
   val output = new StringBuilder
+  var evidence: Option[Map[String, Any]] = None
 
   def pathBoundaryRegex(f: String): String = "(^|.*/)" + java.util.regex.Pattern.quote(f) + "$"
   val filePattern = pathBoundaryRegex(filename)
@@ -172,8 +173,24 @@
         }
         if (uniq.size > maxResults)
           output.append(s"... TRUNCATED: showing $maxResults of ${uniq.size} entries. Raise the limit or narrow the line.\n")
+        evidence = Some(Map(
+          "variable" -> targetVar, "direction" -> direction, "line" -> targetLine,
+          "method" -> Map("node_id" -> method.id.toString, "name" -> method.name, "full_name" -> method.fullName),
+          "declarations" -> decls.map {
+            case l: Local => Map("kind" -> "local", "type" -> l.typeFullName, "line" -> l.lineNumber.getOrElse(-1))
+            case p: MethodParameterIn => Map("kind" -> "parameter", "type" -> p.typeFullName, "line" -> p.lineNumber.getOrElse(-1))
+            case d => Map("kind" -> d.label, "type" -> "", "line" -> -1)
+          },
+          "aliases" -> aliasDecls.map(_.name),
+          "rows" -> uniq.take(maxResults).map { case (line, code, kind, note) =>
+            Map("filename" -> filename, "line" -> line, "code" -> code, "kind" -> kind, "note" -> note) },
+          "total" -> uniq.size, "returned" -> math.min(uniq.size, maxResults),
+          "truncated" -> (uniq.size > maxResults)))
       }
   }
 
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  evidence match {
+    case Some(ev) => "<codebadger_result>\n" + List(ev + ("summary" -> output.toString())).toJson + "\n</codebadger_result>"
+    case None => "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  }
 }
