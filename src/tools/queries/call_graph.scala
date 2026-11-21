@@ -2,10 +2,11 @@
   val methodName = "{{method_name}}"
   val maxDepth = {{depth}}
   val direction = "{{direction}}"
-  val maxResults = 500
+  val maxEdges = 500
+  val fanoutLimit = 50
 
-  val output = new StringBuilder()
-  
+  type M = io.shiftleft.codepropertygraph.generated.nodes.Method
+
   // Resolve the root: an exact graph node ID wins; otherwise the name pattern must
   // identify one method (internal definitions preferred over external stubs).
   val methodId = {{method_id}}L
@@ -16,172 +17,119 @@
       val internal = all.filterNot(_.isExternal)
       if (internal.nonEmpty) internal else all
     }
-  def describeCandidates(sb: StringBuilder): Unit = {
-    sb.append(s"Ambiguous method name '$methodName': ${candidates.size} matches. Re-run with method_id set to one of:\n")
-    candidates.sortBy(_.id).take(10).foreach { c =>
-      val loc = s"${c.file.name.headOption.getOrElse("unknown")}:${c.lineNumber.getOrElse(-1)}"
-      sb.append(s"  method_id=${c.id}  ${c.fullName}  ($loc)\n")
-    }
-    if (candidates.size > 10) sb.append(s"  ... and ${candidates.size - 10} more; narrow method_name.\n")
-  }
-  def describeMissing(sb: StringBuilder): Unit = {
-    if (methodId >= 0) sb.append(s"Method not found for method_id $methodId\n")
-    else {
-      sb.append(s"Method not found: $methodName\n")
-      val similar = cpg.method.name(s".*$methodName.*").name.l.distinct.take(10)
-      if (similar.nonEmpty) {
-        sb.append(s"\nDid you mean one of these?\n")
-        similar.foreach(m => sb.append(s"  - $m\n"))
-      }
-    }
-  }
+  def methodInfo(m: M) = Map(
+    "node_id" -> m.id.toString, "name" -> m.name, "full_name" -> m.fullName,
+    "filename" -> m.file.name.headOption.getOrElse("unknown"), "line" -> m.lineNumber.getOrElse(-1),
+    "external" -> m.isExternal)
+  def describeCandidates() = Map(
+    "status" -> "ambiguous", "count" -> candidates.size,
+    "candidates" -> candidates.sortBy(_.id).take(10).map(methodInfo))
+  def describeMissing() = Map(
+    "status" -> "not_found",
+    "suggestions" -> (if (methodId >= 0) List.empty[String]
+                      else cpg.method.name(s".*${java.util.regex.Pattern.quote(methodName)}.*").name.l.distinct.take(10)))
 
-  candidates match {
-    case List(rootMethod) => {
-      val rootName = rootMethod.name
-      val rootFile = rootMethod.file.name.headOption.getOrElse("unknown")
-      val rootLine = rootMethod.lineNumber.getOrElse(-1)
-      
-      // Header
-      output.append(s"Call Graph for $rootName ($direction)\n")
-      output.append("=" * 60 + "\n")
-      output.append(s"Root: $rootName at $rootFile:$rootLine\n")
+  val result: Map[String, Any] = candidates match {
+    case List(root) =>
+      val outgoing = direction == "outgoing"
+      def neighbors(m: M): List[M] =
+        (if (outgoing) m.call.callee.l else m.caller.l)
+          .filterNot(_.name.startsWith("<operator>")).distinctBy(_.id).sortBy(_.id)
 
-      // Gated-body probe: a method that resolves but has zero calls and a ≤1-line
-      // span almost always has an empty body because it was preprocessed out
-      // (#ifdef / feature macro). Queries would silently return 0 edges; warn so
-      // the caller rebuilds with the right defines instead of trusting the empty.
-      val gatedBody = rootMethod.call.size == 0 &&
-        (rootMethod.lineNumberEnd.getOrElse(0) - rootMethod.lineNumber.getOrElse(0)) <= 1
-      if (gatedBody) output.append(
-        s"WARNING: method '$rootName' is present but has no body in this CPG — likely #ifdef/feature-gated. " +
-        "Rebuild with generate_cpg(defines=[...], include_paths=[...]) and re-check " +
-        "cpg.method.name(\"" + rootName + "\").call.size > 0.\n")
-
-      // BFS helper: returns (edgesByDepth, totalEdges)
-      // Each edge is (fromName, toName, toFile, toLine, isCycle)
-      // Single-line parameters: Scala 3 rejects a function type wrapped onto a
-      // continuation line inside a parameter list.
-      type M = io.shiftleft.codepropertygraph.generated.nodes.Method
-      def bfsEdges(
-        seed: M,
-        seedDepth: Int,
-        nextNodes: M => List[M],
-        edgeDir: (String, String) => (String, String),  // (from, to) ordering
-        edgeIds: (Long, Long) => (Long, Long)
-      ): (scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]], Int) = {
-
-        val toVisit     = scala.collection.mutable.Queue[(M, Int)]()
-        // Track methods and edges by graph node ID: distinct methods can share a
-        // short name (overloads, file-static helpers) and must not collapse.
-        var visited     = Set[Long]()
-        var edgesVisited= Set[(Long, Long)]()
-        val edgesByDepth= scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]]()
-
-        toVisit.enqueue((seed, seedDepth))
-        var totalEdges = 0
-
-        while (toVisit.nonEmpty && totalEdges < maxResults) {
-          val (current, currentDepth) = toVisit.dequeue()
-          val currentName = current.name
-
-          if (!visited.contains(current.id) && currentDepth < maxDepth) {
-            visited = visited + current.id
-
-            for (neighbor <- nextNodes(current).take(50)) {
-              val neighborName = neighbor.name
-              val neighborFile = neighbor.file.name.headOption.getOrElse("unknown")
-              val neighborLine = neighbor.lineNumber.getOrElse(-1)
-              val depth        = currentDepth + 1
-              val (eFrom, eTo) = edgeDir(currentName, neighborName)
-              val edgeKey      = edgeIds(current.id, neighbor.id)
-              val isCycle      = visited.contains(neighbor.id)
-
-              if (!edgesVisited.contains(edgeKey)) {
-                edgesVisited = edgesVisited + edgeKey
-                totalEdges  += 1
-                if (!edgesByDepth.contains(depth))
-                  edgesByDepth(depth) = scala.collection.mutable.ListBuffer()
-                // Store (from, to) always as caller->callee for display
-                edgesByDepth(depth) += ((eFrom, eTo, neighborFile, neighborLine, isCycle))
-                if (!isCycle && depth < maxDepth)
-                  toVisit.enqueue((neighbor, depth))
+      // Breadth-first over methods (by node ID: overloads and file-static helpers
+      // share short names). Edges are stored caller -> callee in both directions.
+      val byId = scala.collection.mutable.Map[Long, M](root.id -> root)
+      val edges = scala.collection.mutable.LinkedHashMap[(Long, Long), Int]() // (caller, callee) -> depth
+      val capped = scala.collection.mutable.ListBuffer[Map[String, Any]]()
+      val visited = scala.collection.mutable.Set[Long]()
+      val queue = scala.collection.mutable.Queue[(M, Int)]((root, 0))
+      var edgeCapHit = false
+      while (queue.nonEmpty && !edgeCapHit) {
+        val (current, d) = queue.dequeue()
+        if (d < maxDepth && visited.add(current.id)) {
+          val all = neighbors(current)
+          if (all.size > fanoutLimit)
+            capped += Map("method_id" -> current.id.toString, "name" -> current.name,
+                          "shown" -> fanoutLimit, "total" -> all.size)
+          all.take(fanoutLimit).foreach { n =>
+            val key = if (outgoing) (current.id, n.id) else (n.id, current.id)
+            if (!edges.contains(key)) {
+              if (edges.size >= maxEdges) edgeCapHit = true
+              else {
+                edges(key) = d + 1
+                byId(n.id) = n
+                if (!visited.contains(n.id)) queue.enqueue((n, d + 1))
               }
             }
           }
         }
-        (edgesByDepth, totalEdges)
       }
 
-      def printEdges(
-        edgesByDepth: scala.collection.mutable.Map[Int, scala.collection.mutable.ListBuffer[(String, String, String, Int, Boolean)]],
-        totalEdges: Int
-      ): Unit = {
-        val cycleCount = edgesByDepth.values.flatten.count(_._5)
-        for (depth <- edgesByDepth.keys.toList.sorted) {
-          output.append(s"\n[DEPTH $depth]\n")
-          for ((from, to, file, line, isCycle) <- edgesByDepth(depth)) {
-            val location = if (line > 0) s"$file:$line" else file
-            val tag = if (isCycle) " [CYCLE]" else ""
-            output.append(s"  $from → $to ($location)$tag\n")
+      // An edge is recursive when its callee can reach its caller again through
+      // the edges found — not merely because the callee was seen before (a callee
+      // shared by two callers is not a cycle).
+      val succ: Map[Long, List[Long]] = edges.keys.toList.groupBy(_._1).view.mapValues(_.map(_._2)).toMap
+      def reaches(from: Long, target: Long): Boolean = {
+        val seen = scala.collection.mutable.Set[Long](from)
+        val work = scala.collection.mutable.Stack[Long](from)
+        var found = from == target
+        while (!found && work.nonEmpty) {
+          succ.getOrElse(work.pop(), Nil).foreach { n =>
+            if (n == target) found = true
+            else if (seen.add(n)) work.push(n)
           }
         }
-        output.append(s"\nTotal: $totalEdges edges")
-        if (cycleCount > 0) output.append(s" ($cycleCount cyclic)")
-        output.append("\n")
+        found
       }
 
-      if (direction == "outgoing") {
-        val (edgesByDepth, totalEdges) = bfsEdges(
-          rootMethod,
-          0,
-          m => m.call.callee.l.filterNot(_.name.startsWith("<operator>")),
-          (cur, nei) => (cur, nei),   // from=caller, to=callee
-          (cur, nei) => (cur, nei)
-        )
-        printEdges(edgesByDepth, totalEdges)
+      def callSites(caller: M, callee: M) =
+        caller.call.filter(_.callee.id.l.contains(callee.id)).l.sortBy(_.id).take(10).map(c => Map(
+          "node_id" -> c.id.toString, "filename" -> c.file.name.headOption.getOrElse("unknown"),
+          "line" -> c.lineNumber.getOrElse(-1), "column" -> c.columnNumber.getOrElse(-1)))
 
-      } else if (direction == "incoming") {
-        val (edgesByDepth, totalEdges) = bfsEdges(
-          rootMethod,
-          0,
-          m => m.caller.l.filterNot(_.name.startsWith("<operator>")),
-          (cur, nei) => (nei, cur),   // from=caller(neighbor), to=callee(current)
-          (cur, nei) => (nei, cur)
-        )
-        printEdges(edgesByDepth, totalEdges)
-
-        // Indirect-dispatch fallback: Joern synthesizes no caller edge when a
-        // function is invoked through a pointer / vtable / callback, so a real
-        // bug reached that way shows 0 direct callers. When that happens, surface
-        // every site where this method's ADDRESS is taken (assigned to a function
-        // pointer, registered as a callback, stored in a vtable) — those are the
-        // likely real callers. Clearly labelled heuristic, not a proven edge.
-        if (totalEdges == 0) {
-          val refs = cpg.methodRef
-            .where(_.referencedMethod.filter(_.id == rootMethod.id))
-            .map(mr => (mr.method.fullName, mr.file.name.headOption.getOrElse("?"), mr.lineNumber.getOrElse(-1)))
-            .dedup.take(50).l
-          if (refs.nonEmpty) {
-            output.append(
-              s"\nNo direct call edges (likely indirect/virtual/callback dispatch). " +
-              s"${refs.size} site(s) take the address of '$rootName' — these are the likely caller(s):\n")
-            refs.foreach { case (m, f, l) =>
-              val loc = if (l > 0) s"$f:$l" else f
-              output.append(s"  $m  ($loc)\n")
-            }
-            output.append("(heuristic: address-taken sites, not statically-resolved call edges)\n")
-          }
-        }
-
-      } else {
-        output.append(s"ERROR: Direction must be 'outgoing' or 'incoming', got: '$direction'\n")
+      val edgeRows = edges.toList.map { case ((from, to), d) =>
+        val caller = byId(from)
+        val callee = byId(to)
+        Map(
+          "from_id" -> from.toString, "from" -> caller.name,
+          "to_id" -> to.toString, "to" -> callee.name,
+          "depth" -> d,
+          "call_sites" -> callSites(caller, callee),
+          "definition" -> Map("filename" -> callee.file.name.headOption.getOrElse("unknown"),
+                              "line" -> callee.lineNumber.getOrElse(-1)),
+          "recursive" -> reaches(to, from))
       }
-    }
-    case Nil => describeMissing(output)
-    case _ => describeCandidates(output)
+
+      // Gated-body probe: a method with zero calls and a <=1-line span almost
+      // always had its body preprocessed out (#ifdef / feature macro).
+      val gatedBody = root.call.size == 0 &&
+        (root.lineNumberEnd.getOrElse(0) - root.lineNumber.getOrElse(0)) <= 1
+      val warnings = if (gatedBody) List(
+        s"method '${root.name}' is present but has no body in this CPG (likely #ifdef/feature-gated); " +
+        "rebuild with generate_cpg(defines=[...], include_paths=[...]) before trusting an empty graph") else Nil
+
+      // Indirect-dispatch fallback: Joern adds no caller edge for a call through a
+      // function pointer, vtable or callback, so list where the address is taken.
+      val addressTaken =
+        if (!outgoing && edgeRows.isEmpty)
+          // The C frontend also emits a reference at each function's own definition
+          // in <global>; that is not an address-taken use.
+          cpg.methodRef.where(_.referencedMethod.filter(_.id == root.id))
+            .filterNot(mr => mr.lineNumber == root.lineNumber &&
+                             mr.file.name.headOption == root.file.name.headOption)
+            .map(mr => Map("method" -> mr.method.fullName, "filename" -> mr.file.name.headOption.getOrElse("?"),
+                           "line" -> mr.lineNumber.getOrElse(-1)))
+            .l.distinct.take(50)
+        else Nil
+
+      Map(
+        "status" -> "ok", "root" -> methodInfo(root), "direction" -> direction, "depth" -> maxDepth,
+        "edges" -> edgeRows, "truncated" -> (edgeCapHit || capped.nonEmpty),
+        "edge_cap" -> maxEdges, "edge_cap_hit" -> edgeCapHit, "capped_methods" -> capped.toList,
+        "warnings" -> warnings, "address_taken_sites" -> addressTaken)
+    case Nil => describeMissing()
+    case _ => describeCandidates()
   }
-  
-  // Return with markers for easy extraction
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+
+  "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"
 }
