@@ -85,6 +85,8 @@ def test_program_slice_forward_matching_uses_exact_identifiers():
         include_control_flow=True,
     )
 
-    assert "c.argument.ast.isIdentifier.name.l.contains(varName)" in q
-    assert "a.source.ast.isIdentifier.name.l.contains(varName)" in q
+    # Forward uses are the identifiers whose reaching definitions include the
+    # anchor's definition (dataflow overlay): exact nodes, never substring matches.
+    assert "i.ddgIn.l.exists(_.id == d.id)" in q
+    assert "anchor.node.controlledBy" in q
     assert ".code.l.exists(_.contains(varName))" not in q
