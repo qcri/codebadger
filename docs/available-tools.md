@@ -57,7 +57,10 @@ to pull node `.code` from the graph.)
 | `diff_cpgs` | Method-level diff between two CPGs, such as two commits (build each with `generate_cpg(commit=...)`) or two builds: added, removed, and modified methods, with whether a signature changed. Line-only moves count as unchanged. Warns when language, build options, or Joern version differ. |
 | `diff_findings` | Run one memory-safety detector on two CPGs (e.g. two commits) and compare its findings: new, fixed, unchanged, or unconfirmed when a report was cut off by its limit. Findings are matched without line numbers, so code shifts don't make them look new. |
 | `get_call_graph` | Outgoing (callees) or incoming (callers) call graph for a method, to a given depth. Select the root by `method_name` or by the exact `method_id` (`node_id` from `list_methods`); an ambiguous name lists candidate IDs. |
-| `list_parameters` | Names, types, and order of a method's parameters. |
+| `list_parameters` | Names, types, and order of a method's parameters, by name or exact `method_id`, with each method's owner (defining class). |
+| `resolve_location` | Turn `file:line` or `file:line:column` into graph nodes with IDs, kind, column, and enclosing method, e.g. to pick one of two identical calls on a line and pass its ID to `find_taint_flows`. |
+| `find_references` | Every read, write, read-write (`+=`, `++`), and address-taken use of one variable, found by its declaration (local, parameter, or file global), so `x` never matches `x_count` or a pointer to it. |
+| `find_literals` | Locate string and numeric literals, e.g. where an error message is produced. Punctuation is matched literally unless `match="regex"`; each hit carries the enclosing method's ID. |
 
 ---
 
