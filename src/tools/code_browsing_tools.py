@@ -3,6 +3,7 @@ Code Browsing MCP Tools for CodeBadger Server
 Tools for exploring and navigating codebase structure
 """
 
+import json
 import logging
 import os
 import re
@@ -69,6 +70,50 @@ def _resolve_method_selector(method_name: Optional[str], method_id) -> tuple[str
     if not method_name or not method_name.strip():
         raise ValidationError("Provide method_name or method_id")
     return method_name.strip(), -1
+
+
+def _parse_json_result(text: str) -> dict:
+    """Decode a template that returns `List(map).toJson` inside result markers."""
+    data = json.loads(text)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        raise ValueError("unexpected query result shape")
+    return data
+
+
+def _cfg_response(graph: dict) -> Dict[str, Any]:
+    """Structured CFG result plus the text rendering existing clients read."""
+    method = graph.get("method") or {}
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    total, total_edges = int(graph.get("total_nodes", len(nodes))), int(graph.get("total_edges", len(edges)))
+    truncated = len(nodes) < total
+
+    lines = [f"Control Flow Graph for {method.get('name')} ({method.get('filename')}:{method.get('line')})", "=" * 60]
+    lines.append(f"Nodes ({len(nodes)} of {total}):")
+    for n in nodes:
+        lines.append(f"  [{n['node_id']}] {n['kind']} line {n['line']}: {n['code']}")
+    lines.append(f"\nEdges ({len(edges)} of {total_edges}):")
+    for e in edges:
+        lines.append(f"  [{e['from']}] -> [{e['to']}]" + (" (branch)" if e.get("branch") else ""))
+    if not edges:
+        lines.append("  (none among the returned nodes)" if total_edges else "  (the method has no control flow edges)")
+    if truncated:
+        lines.append(f"\nTRUNCATED: showing {len(nodes)} of {total} nodes and {len(edges)} of {total_edges} edges. Raise limit.")
+
+    return {
+        "success": True,
+        "method": method,
+        "nodes": nodes,
+        "edges": edges,
+        "total": total,
+        "returned": len(nodes),
+        "total_edges": total_edges,
+        "returned_edges": len(edges),
+        "truncated": truncated,
+        "summary": "\n".join(lines),
+    }
 
 
 def register_code_browsing_tools(mcp, services: dict):
@@ -695,32 +740,46 @@ Examples:
     @mcp.tool(
         title="Get Control Flow Graph",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
-        description="""Get control flow graph (CFG) for a method.
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "method": {"type": "object"},
+                "nodes": {"type": "array", "items": {"type": "object"}},
+                "edges": {"type": "array", "items": {"type": "object"}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "total_edges": {"type": "integer"}, "returned_edges": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "summary": {"type": "string"},
+            },
+            "required": ["success", "method", "nodes", "edges", "total", "returned", "truncated", "summary"],
+            "additionalProperties": False,
+        },
+        description="""Get the control flow graph (CFG) of one method.
 
-Understand the control flow of a method with a human-readable graph.
+Nodes are listed breadth-first from the method entry, so a capped view is the
+connected start of the graph. AST-only nodes (blocks, the if/while statement
+itself) are not CFG nodes; their conditions and bodies are.
 
 Returns:
-    A human-readable text graph:
-    
-    Control Flow Graph for main
-    ============================================================
-    Nodes:
-      [1001] ControlStructure: if (x > 0)
-      [1002] Return: return x
-    
-    Edges:
-      [1001] -> [1002] [Label: TRUE]
+    {"success": true,
+     "method": {"node_id", "name", "full_name", "filename", "line"},
+     "nodes": [{"node_id", "kind", "code", "line", "out_degree"}],
+     "edges": [{"from", "to", "branch"}],
+     "total": 16, "returned": 16, "total_edges": 17, "returned_edges": 17,
+     "truncated": false, "summary": "<the same graph as text>"}
 
 Notes:
-    - Essential for understanding loops, conditions, and execution paths.
-    - Returns plain text.
-    - If method_name matches several methods, the summary lists up to 10
-      candidates with their method_id; re-run with one.
+    - total/total_edges count the whole method; edges lists only edges between
+      returned nodes. A node whose out_degree exceeds its listed edges continues
+      past the limit. branch=true marks the edges leaving a node with several
+      successors (a condition).
+    - An unknown method, or a method_name matching several methods, is a
+      VALIDATION_ERROR; the ambiguous case lists each candidate's method_id.
 
 Examples:
     get_cfg(codebase_hash="abc", method_name="main")
-    get_cfg(codebase_hash="abc", method_id="12345")""",
+    get_cfg(codebase_hash="abc", method_id="12345", limit=500)""",
     )
     def get_cfg(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -729,6 +788,7 @@ Examples:
         method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
         """Get nodes and edges representing control flow in a method."""
+        hint = "provide a valid codebase hash and a method_name or numeric method_id."
         try:
             validate_codebase_hash(codebase_hash)
             method_name, node_id = _resolve_method_selector(method_name, method_id)
@@ -736,28 +796,33 @@ Examples:
 
             codebase_info = require_cpg(services, codebase_hash)
 
-            query = QueryLoader.load(
-                "cfg",
-                method_name=method_name,
-                method_id=node_id,
-                max_nodes=limit
-            )
-
+            query = QueryLoader.load("cfg", method_name=method_name, method_id=node_id, max_nodes=limit)
             result = query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
                 query=query,
                 timeout=30,
-                limit=limit,
             )
-
-            if not result.success:
-                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'CFG query failed'} Hint: verify the CPG is ready and lower limit for large methods.")
-            return {"success": True, "summary": unwrap_result(result)}
+            graph = _parse_json_result(unwrap_result(result))
+            status = graph.get("status")
+            if status == "not_found":
+                what = f"method_id {node_id}" if node_id >= 0 else f"method_name '{method_name}'"
+                similar = graph.get("suggestions") or []
+                extra = f" Similar names: {', '.join(similar)}." if similar else ""
+                raise ValidationError(f"no method matches {what}.{extra}")
+            if status == "ambiguous":
+                choices = "; ".join(
+                    f"method_id={c['node_id']} {c['full_name']} ({c['filename']}:{c['line']})"
+                    for c in graph.get("candidates", [])
+                )
+                raise ValidationError(
+                    f"method_name '{method_name}' matches {graph.get('count')} methods; "
+                    f"re-run with method_id set to one of: {choices}"
+                )
+            return _cfg_response(graph)
 
         except ValidationError as e:
-            logger.error(f"Error getting CFG: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide a valid codebase hash and a method_name or numeric method_id.") from e
+            raise tool_error("VALIDATION_ERROR", str(e), hint) from e
         except ToolError:
             raise
         except Exception as e:
