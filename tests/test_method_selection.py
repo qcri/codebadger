@@ -151,3 +151,32 @@ async def test_resolve_location_rejects_bad_input(payload, location, needle):
                                         raise_on_error=False)
     assert result.is_error and result.content[0].text.startswith("VALIDATION_ERROR: ")
     assert needle in result.content[0].text
+
+
+@pytest.mark.parametrize("payload, needle", [
+    ({"status": "not_found", "method": "scratch", "variables": ["copy", "x", "x_count"]},
+     "no local, parameter or file global 'nope' in scratch; variables there: copy, x, x_count"),
+    ({"status": "no_method"}, "no function contains control.c:3"),
+])
+async def test_find_references_unresolved_variable_is_a_validation_error(payload, needle):
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(success=True, data=[json.dumps([payload])], row_count=1)
+    async with Client(_server(executor)) as client:
+        result = await client.call_tool("find_references", {"codebase_hash": CODEBASE_HASH,
+                                                            "location": "control.c:3", "variable": "nope"},
+                                        raise_on_error=False)
+    assert result.is_error and result.content[0].text.startswith("VALIDATION_ERROR: ")
+    assert needle in result.content[0].text
+
+
+async def test_find_references_reports_totals():
+    executor = MagicMock()
+    ref = {"node_id": "1", "access": "read", "code": "emit(x)", "filename": "control.c", "line": 8,
+           "column": 10, "method": "scratch", "method_id": "9"}
+    executor.execute_query.return_value = QueryResult(success=True, data=[json.dumps([{
+        "status": "ok", "declaration": {"name": "x", "scope": "local"}, "total": 3, "counts": {"read": 3},
+        "references": [ref]}])], row_count=1)
+    async with Client(_server(executor)) as client:
+        r = (await client.call_tool("find_references", {"codebase_hash": CODEBASE_HASH, "location": "control.c:8",
+                                                        "variable": "x", "limit": 1})).structured_content
+    assert (r["total"], r["returned"], r["truncated"]) == (3, 1, True)
