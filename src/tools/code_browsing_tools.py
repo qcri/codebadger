@@ -219,7 +219,8 @@ Examples:
                         "properties": {
                             "caller": {"type": "string"}, "callee": {"type": "string"},
                             "code": {"type": "string"}, "filename": {"type": "string"},
-                            "lineNumber": {"type": "integer"},
+                            "lineNumber": {"type": "integer"}, "columnNumber": {"type": "integer"},
+                            "node_id": {"type": "string"}, "caller_id": {"type": "string"},
                         },
                         "additionalProperties": False,
                     },
@@ -227,6 +228,7 @@ Examples:
                 "total": {"type": "integer"}, "returned": {"type": "integer"},
                 "truncated": {"type": "boolean"}, "page": {"type": "integer"},
                 "page_size": {"type": "integer"}, "total_pages": {"type": "integer"},
+                "hint": {"type": "string"},
             },
             "required": ["success"],
             "additionalProperties": False,
@@ -239,7 +241,9 @@ Returns:
     {
         "success": true,
         "calls": [
-            {"caller": "main", "callee": "printf", "filename": "main.c", "lineNumber": 10}
+            {"caller": "main", "callee": "printf", "code": "printf(\"%d\", n)",
+             "filename": "main.c", "lineNumber": 10, "columnNumber": 5,
+             "node_id": "30064771081", "caller_id": "107374182400"}
         ],
         "total": 25000,
         "returned": 100,
@@ -251,6 +255,11 @@ Returns:
 
 Notes:
     - Useful for finding where specific functions are used.
+    - One row per call site: identical calls on one line are separate rows,
+      told apart by columnNumber and node_id. Pass node_id to tools that take a
+      call-site ID (find_taint_flows source_node_id/sink_node_id); caller_id is
+      the enclosing method's node_id (get_cfg, get_call_graph method_id).
+    - When matches are hidden, `hint` says whether to page on or raise limit.
 
 Examples:
     list_calls(codebase_hash="abc", callee_pattern="strcpy")

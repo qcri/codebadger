@@ -327,7 +327,8 @@ class CodeBrowsingService:
             "caller_pattern": caller_pattern,
             "callee_pattern": callee_pattern,
             "limit": limit,
-            "result_schema_version": 2,
+            # v3: one row per call node, with node_id/columnNumber/caller_id.
+            "result_schema_version": 3,
         }
 
         def execute_query():
@@ -343,14 +344,18 @@ class CodeBrowsingService:
                     f'.where(_.method.name("{escape_scala_string(caller_pattern)}"))'
                 )
 
+            # Deduplicate call nodes, not projected rows: two identical calls on
+            # one line are two call sites.
+            nodes_query = "".join(query_parts) + ".dedup"
             projection = (
-                ".map(c => (c.method.name, c.name, c.code, c.method.filename, c.lineNumber.getOrElse(-1)))"
+                ".map(c => (c.method.name, c.name, c.code, c.method.filename, c.lineNumber.getOrElse(-1),"
+                " c.id, c.columnNumber.getOrElse(-1), c.method.id))"
             )
-            base_query = "".join(query_parts) + projection + ".dedup"
+            base_query = nodes_query + projection
             count_result = self.query_executor.execute_query(
                 codebase_hash=codebase_hash,
                 cpg_path=codebase_info.cpg_path,
-                query=f"{base_query}.size",
+                query=f"{nodes_query}.size",
                 timeout=30,
             )
             if not count_result.success:
@@ -384,6 +389,9 @@ class CodeBrowsingService:
                             "code": item.get("_3", ""),
                             "filename": item.get("_4", ""),
                             "lineNumber": item.get("_5", -1),
+                            "columnNumber": item.get("_7", -1),
+                            "node_id": str(item.get("_6", "")),
+                            "caller_id": str(item.get("_8", "")),
                         }
                     )
             return {
@@ -407,8 +415,9 @@ class CodeBrowsingService:
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
         paged_calls = calls[start_idx:end_idx]
+        total_pages = (available + page_size - 1) // page_size if page_size > 0 else 1
 
-        return {
+        response = {
             "success": True,
             "calls": paged_calls,
             "total": total,
@@ -417,10 +426,12 @@ class CodeBrowsingService:
             "truncated": start_idx + len(paged_calls) < total,
             "page": page,
             "page_size": page_size,
-            "total_pages": (
-                (available + page_size - 1) // page_size if page_size > 0 else 1
-            ),
+            "total_pages": total_pages,
         }
+        hint = _paging_hint(total, available, limit, page, page_size, total_pages)
+        if hint:
+            response["hint"] = hint
+        return response
 
     def list_parameters(
         self,

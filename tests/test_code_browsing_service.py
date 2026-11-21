@@ -69,7 +69,9 @@ def test_list_calls_reports_exact_total_beyond_the_limit():
 
     count_call, calls_call = executor.execute_query.call_args_list
     assert count_call.kwargs["query"].endswith(".dedup.size")
-    assert calls_call.kwargs["query"].endswith(".dedup.take(10).l")
+    # Dedup call nodes before projecting, so identical same-line calls stay distinct.
+    assert ".dedup.map(c => (" in calls_call.kwargs["query"]
+    assert calls_call.kwargs["query"].endswith(" c.id, c.columnNumber.getOrElse(-1), c.method.id)).take(10).l")
 
 
 def test_list_calls_reports_untruncated_results():
@@ -102,7 +104,7 @@ def test_list_calls_versions_its_cache_key():
         "caller_pattern": None,
         "callee_pattern": None,
         "limit": 1000,
-        "result_schema_version": 2,
+        "result_schema_version": 3,
     }
     db_manager.get_cached_tool_output.assert_called_once_with(
         "list_calls", CODEBASE_HASH, expected_params, cache_ttl=300
@@ -307,3 +309,17 @@ def test_list_methods_complexity_counts_cfg_branches():
     query = service.query_executor.execute_query.call_args_list[1].kwargs["query"]
     assert "m.cfgNode.l.map(_._cfgOut.size).filter(_ > 1).map(_ - 1).sum + 1" in query
     assert "controlStructure.size" not in query
+
+
+def test_list_calls_keeps_same_line_calls_apart_by_node_and_column():
+    # Audit case calls_twice: `show_value(9); show_value(9);` on one line.
+    row = lambda node, col: {"_1": "twice", "_2": "show_value", "_3": "show_value(9)", "_4": "a.c",
+                             "_5": 4, "_6": node, "_7": col, "_8": 107374182400}
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=2, row_count=1),
+        QueryResult(success=True, data=[row(30064771081, 25), row(30064771082, 40)], row_count=2),
+    ]
+    calls = service.list_calls(CODEBASE_HASH, caller_pattern="twice")["calls"]
+    assert [(c["node_id"], c["columnNumber"], c["caller_id"]) for c in calls] == [
+        ("30064771081", 25, "107374182400"), ("30064771082", 40, "107374182400")]
