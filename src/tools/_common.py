@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 ERROR_PREFIXES = ("Error:", "Validation Error:", "Internal Error:", "ANCHOR_NOT_FOUND:", "VARIABLE_NOT_FOUND:")
 
 
+def parse_json_result(text: str) -> dict:
+    """Decode a template that returns `List(map).toJson` inside result markers."""
+    import json
+
+    data = json.loads(text)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        raise ValueError("unexpected query result shape")
+    return data
+
+
 def is_error_output(text) -> bool:
     """True if a string tool result is an error sentinel (so: don't cache it)."""
     return isinstance(text, str) and text.startswith(ERROR_PREFIXES)

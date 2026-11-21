@@ -46,6 +46,20 @@ def fake_services():
         elif len(args) > 2:
             query_executor.last_query = args[2]  # query is typically 3rd arg
 
+        row = {
+            "node_id": 123,
+            "name": "getenv",
+            "code": 'char *s = getenv("FOO")',
+            "filename": "core.c",
+            "lineNumber": 10,
+            "method": "main",
+        }
+        # Location queries return {"total", "rows"} in a JSON envelope (the
+        # executor has already stripped the result markers).
+        if '"total" -> matches.size' in str(query_executor.last_query):
+            import json
+            return QueryResult(success=True, data=[json.dumps([{"total": 1, "rows": [row]}])], row_count=1)
+
         # Return the mock result
         return QueryResult(
             success=True,
@@ -507,3 +521,45 @@ async def test_find_taint_flows_validation_error(fake_services):
                     "timeout": 10,
                 },
             )
+
+
+def _location_services(fake_services, total, rows):
+    import json
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(
+        success=True, data=[json.dumps([{"total": total, "rows": rows}])], row_count=1)
+    return {**fake_services, "query_executor": executor}
+
+
+def _site(node_id, line, col):
+    return {"node_id": node_id, "name": "show_value", "code": "show_value(9)", "filename": "audit.c",
+            "lineNumber": line, "columnNumber": col, "method": "twice"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, key", [("find_taint_sources", "sources"), ("find_taint_sinks", "sinks")])
+async def test_location_tools_flag_truncation_only_when_another_match_exists(fake_services, tool, key):
+    # Audit sourcescap: one match at limit=1 is complete.
+    services = _location_services(fake_services, 1, [_site(1, 12, 5)])
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, services)
+    async with Client(mcp) as client:
+        res = (await client.call_tool(tool, {"codebase_hash": fake_services["codebase_hash"], "language": "c",
+                                             "limit": 1, f"{key[:-1]}_patterns": ["show_value"]})).structured_content
+    assert (res["total"], res["returned"], res["truncated"]) == (1, 1, False)
+
+
+@pytest.mark.asyncio
+async def test_sinks_report_the_full_match_count_beyond_the_limit(fake_services):
+    # Audit sinkscap: five show_value calls, limit=1 -> total=5, truncated.
+    services = _location_services(fake_services, 5, [_site(30064771087, 23, 20)])
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, services)
+    async with Client(mcp) as client:
+        res = (await client.call_tool("find_taint_sinks", {"codebase_hash": fake_services["codebase_hash"],
+                                                           "language": "c", "limit": 1,
+                                                           "sink_patterns": ["show_value"]})).structured_content
+    assert (res["total"], res["returned"], res["truncated"]) == (5, 1, True)
+    assert res["sinks"][0]["columnNumber"] == 20
+    query = services["query_executor"].execute_query.call_args.kwargs["query"]
+    assert ".dedup.l" in query and "matches.take(1)" in query and '"total" -> matches.size' in query
