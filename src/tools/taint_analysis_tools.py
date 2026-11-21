@@ -495,6 +495,7 @@ def _find_taint_flows_auto(
         "sanitizer_patterns": sorted(set(san_patterns)) if san_patterns else [],
         "filename": filename,
         "max_results": max_results,
+        "result_shape": "evidence-v2",
     }
 
     def _execute():
@@ -731,6 +732,8 @@ Examples:
             "source_nodes": {"type": "array", "items": {"type": "object"}},
             "sink_nodes": {"type": "array", "items": {"type": "object"}},
             "flows": {"type": "integer"}, "truncated": {"type": "boolean"},
+            "sources_matched": {"type": "integer"}, "sinks_matched": {"type": "integer"},
+            "counts": {"type": "object"}, "flow_paths": {"type": "array", "items": {"type": "object"}},
         }, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
@@ -756,7 +759,12 @@ Returns:
     "flows": 1, "truncated": false, "summary": "<paths as text>"}. Each endpoint
     node carries node_id, kind, name, code, filename, lineNumber, columnNumber
     and method: exactly the nodes that were searched.
-    Auto mode: {"success": true, "summary": "<counts and paths as text>"}.
+    Auto mode: {"success": true, "sources_matched": 1, "sinks_matched": 5,
+    "counts": {"matched", "confirmed", "sanitized", "emitted", "truncated"},
+    "flows": 1, "truncated": false,
+    "flow_paths": [{"source": {node}, "sink": {node}, "path": [{node}, ...], "length": 3}],
+    "summary": "<counts and paths as text>"}; each node has node_id, code,
+    filename, line and method, and path lists up to 15 intermediate steps.
 
 Notes:
     - Manual mode: BOTH source AND sink are required. A location resolves to the
@@ -806,7 +814,7 @@ Examples:
 
             # --- AUTO MODE ---
             if mode == "auto":
-                summary = str(_find_taint_flows_auto(
+                raw = str(_find_taint_flows_auto(
                     services=services,
                     codebase_hash=codebase_hash,
                     codebase_info=codebase_info,
@@ -819,9 +827,23 @@ Examples:
                     max_results=limit,
                     timeout=timeout if timeout != 120 else 300,  # default to 300s for auto mode (large codebases need more time)
                 ))
+                if not raw.startswith("["):  # no patterns for the language: plain text
+                    return {"success": True, "summary": raw}
+                evidence = parse_json_result(raw)
+                summary = str(evidence.get("summary", ""))
                 if detail == "compact" and len(summary) > 3000:
                     summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
-                return {"success": True, "summary": summary}
+                counts = evidence.get("counts") or {}
+                return {
+                    "success": True,
+                    "summary": summary,
+                    "sources_matched": int(evidence.get("sources_matched", 0)),
+                    "sinks_matched": int(evidence.get("sinks_matched", 0)),
+                    "counts": counts,
+                    "flow_paths": evidence.get("flows", []),
+                    "flows": int(counts.get("emitted", 0)),
+                    "truncated": bool(counts.get("truncated", False)),
+                }
 
             # --- MANUAL MODE ---
             if mode is not None:
