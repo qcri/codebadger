@@ -1081,8 +1081,14 @@ Returns:
     - List of dependencies
 
 Notes:
-    - Backward: Finds initialization, assignment, modification, and pointer assignment.
-    - Forward: Finds usage, propagation, and modification.
+    - The variable is resolved by its declaration (local or parameter) in the
+      method containing the line; names that merely contain it are ignored.
+    - Aliases are pointers assigned the address of that declaration (p = &x).
+    - Backward: the name's history up to the line; rows tagged [reaches line N]
+      are the definitions that actually reach it (reaching definitions).
+    - Forward: uses from the line on; [value from line N] marks uses of the value
+      assigned there, [name only: a later value] marks uses after an overwrite.
+    - An unknown variable or a line outside any method is a VALIDATION_ERROR.
     - location filename should be relative to the project root.
 
 Examples:
@@ -1126,6 +1132,8 @@ Examples:
                 "location": location,
                 "variable": variable,
                 "direction": direction,
+                # v3: declaration-resolved variable, reaching definitions.
+                "analysis_version": 3,
             }
 
             def _execute():
@@ -1148,6 +1156,9 @@ Examples:
                 return unwrap_result(result)
 
             summary = str(_cached_taint_query(services, "get_variable_flow", codebase_hash, cache_params, _execute))
+            for prefix in ("ANCHOR_NOT_FOUND:", "VARIABLE_NOT_FOUND:"):
+                if summary.startswith(prefix):
+                    raise ValidationError(summary.split(prefix, 1)[1].strip())
             if detail == "compact" and len(summary) > 2500:
                 summary = summary[:2500].rstrip() + "\n...[truncated; use detail='full']"
             return {"success": True, "summary": summary}
