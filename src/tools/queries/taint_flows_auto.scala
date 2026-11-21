@@ -10,6 +10,15 @@
   val maxResults = {{max_results}}
 
   val output = new StringBuilder()
+  // Structured evidence returned with the text summary.
+  val flowRows = mutable.ListBuffer[Map[String, Any]]()
+  var counts: Map[String, Any] = Map("matched" -> 0, "confirmed" -> 0, "emitted" -> 0, "truncated" -> false)
+  def endpoint(n: StoredNode): Map[String, Any] = n match {
+    case c: CfgNode => Map("node_id" -> c.id.toString, "code" -> c.code.take(120),
+      "filename" -> c.file.name.headOption.getOrElse("?"), "line" -> c.lineNumber.getOrElse(-1),
+      "method" -> getMethodName(c))
+    case other => Map("node_id" -> other.id.toString, "code" -> "", "filename" -> "?", "line" -> -1, "method" -> "unknown")
+  }
 
   // Helper to get method name safely from any node
   def getMethodName(node: StoredNode): String = {
@@ -97,6 +106,8 @@
       }
     }
 
+    counts = Map("matched" -> rawFlows.size, "confirmed" -> flows.size, "emitted" -> 0, "truncated" -> truncated,
+                  "sanitized" -> (rawFlows.size - flows.size))
     if (flows.isEmpty) {
       output.append("No confirmed taint flows found.\n")
       output.append(s"Matched flow candidates: ${rawFlows.size}\n")
@@ -135,6 +146,10 @@
           val key = s"$srcFile:$srcLine->$snkFile:$snkLine"
           if (!seen.contains(key)) {
             seen.add(key)
+            flowRows += Map(
+              "source" -> endpoint(source), "sink" -> endpoint(sink),
+              "path" -> elements.slice(1, elements.size - 1).take(15).map(endpoint),
+              "length" -> elements.size)
 
             output.append(s"--- Flow ${seen.size} ---\n")
 
@@ -171,8 +186,12 @@
       output.append("=" * 60 + "\n")
       output.append(s"Summary: ${seen.size} emitted unique flow(s) from ${sources.size} sources to ${sinkCalls.size} sinks\n")
       output.append(s"Counts: matched=${rawFlows.size}, confirmed=${flows.size}, emitted=${seen.size}, truncated=$truncated\n")
+      counts = counts + ("emitted" -> seen.size)
     }
   }
 
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  val result = Map(
+    "sources_matched" -> sources.size, "sinks_matched" -> sinkCalls.size,
+    "counts" -> counts, "flows" -> flowRows.toList, "summary" -> output.toString())
+  "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"
 }

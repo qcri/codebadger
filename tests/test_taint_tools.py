@@ -563,3 +563,28 @@ async def test_find_taint_flows_missing_endpoint_is_a_validation_error(fake_serv
             "source_location": "audit.c:12", "sink_location": "audit.c:80"}, raise_on_error=False)
     assert res.is_error
     assert res.content[0].text.startswith("VALIDATION_ERROR: no sink node at audit.c:80")
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_returns_counts_and_flow_paths(fake_services):
+    import json
+    node = lambda nid, code, line: {"node_id": str(nid), "code": code, "filename": "audit.c", "line": line,
+                                    "method": "report"}
+    envelope = json.dumps([{
+        "sources_matched": 1, "sinks_matched": 5,
+        "counts": {"matched": 2, "confirmed": 2, "sanitized": 0, "emitted": 1, "truncated": False},
+        "flows": [{"source": node(1, "read_value()", 12), "sink": node(2, "x", 14),
+                   "path": [node(3, "x", 12)], "length": 3}],
+        "summary": "Auto Taint Flow Analysis\n--- Flow 1 ---\n"}])
+    fake_services["query_executor"].execute_query = MagicMock(
+        return_value=QueryResult(success=True, data=[envelope], row_count=1))
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+    async with Client(mcp) as client:
+        res = (await client.call_tool("find_taint_flows", {
+            "codebase_hash": fake_services["codebase_hash"], "mode": "auto",
+            "source_patterns": ["read_value"], "sink_patterns": ["show_value"]})).structured_content
+    assert (res["sources_matched"], res["sinks_matched"], res["flows"], res["truncated"]) == (1, 5, 1, False)
+    (flow,) = res["flow_paths"]
+    assert (flow["source"]["line"], flow["sink"]["line"], flow["length"]) == (12, 14, 3)
+    assert res["summary"].startswith("Auto Taint Flow Analysis")
