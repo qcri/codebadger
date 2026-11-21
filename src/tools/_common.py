@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Prefixes a string-returning tool uses to signal failure. Centralized so the
 # cache layer (which must not cache failures) stays in lock-step with the tools
 # that emit these strings (unwrap_result, the tool try/except handlers).
-ERROR_PREFIXES = ("Error:", "Validation Error:", "Internal Error:")
+ERROR_PREFIXES = ("Error:", "Validation Error:", "Internal Error:", "ANCHOR_NOT_FOUND:")
 
 
 def is_error_output(text) -> bool:

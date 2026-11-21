@@ -1019,6 +1019,8 @@ Examples:
                 "direction": direction,
                 "max_depth": max_depth,
                 "include_control_flow": include_control_flow,
+                # v3: reaching definitions + control dependence, authoritative anchors.
+                "analysis_version": 3,
             }
 
             def _execute():
@@ -1046,6 +1048,9 @@ Examples:
                 return unwrap_result(result)
 
             summary = str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))
+            if summary.startswith("ANCHOR_NOT_FOUND:"):
+                # A missing anchor is not an empty slice: fail with the diagnostics.
+                raise ValidationError(summary.split("ANCHOR_NOT_FOUND:", 1)[1].strip())
             if detail == "compact" and len(summary) > 3000:
                 summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
             return {"success": True, "summary": summary}

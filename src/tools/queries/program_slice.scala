@@ -1,5 +1,6 @@
 {
   import scala.collection.mutable
+  import io.shiftleft.codepropertygraph.generated.nodes._
 
   def normalizeFilename(path: String, target: String): Boolean = {
     def toPath(p: String) = p.replaceAll("\\\\", "/")
@@ -19,219 +20,178 @@
 
   val output = new StringBuilder()
 
-  // Per-node code clip: one macro-expanded statement (jq assert macros, simdjson
-  // SIMD/template headers) can be enormous and blow the response budget. Cap the
-  // .code of any single node and mark how much was dropped.
+  // Per-node code clip: one macro-expanded statement can be enormous.
   def clip(s: String, n: Int = 200): String =
     if (s != null && s.length > n) s.take(n) + s"…(+${s.length - n} chars)" else s
 
-  // Cap on how many slice nodes (data deps / propagations) we emit per direction,
-  // so a huge slice can't overflow the response. Surfaced via a truncation note.
+  // Cap on slice entries per direction; surfaced via a truncation note.
   val maxNodes = 60
 
-  val isHeaderFile = filename.endsWith(".h") || filename.endsWith(".hpp") || filename.endsWith(".hxx")
-
-  // All assignment-like operator names (simple + compound)
-  def isAssignmentOp(name: String): Boolean =
-    name == "<operator>.assignment" || name.startsWith("<operator>.assignment")
-
-  // Find target method - try non-global first, then relax (handles header inlines and <global>)
-  val targetMethodOpt = {
-    val nonGlobal = cpg.method
-      .filter(m => normalizeFilename(m.file.name.headOption.getOrElse(""), filename))
-      .filterNot(_.name == "<global>")
-      .filter(m => {
-        val start = m.lineNumber.getOrElse(-1)
-        val end   = m.lineNumberEnd.getOrElse(-1)
-        start <= lineNum && end >= lineNum
-      })
-      .headOption
-
-    // For header files or when no non-global method encloses the line, also include <global>
-    if (nonGlobal.isDefined) nonGlobal
-    else cpg.method
-      .filter(m => normalizeFilename(m.file.name.headOption.getOrElse(""), filename))
-      .filter(m => {
-        val start = m.lineNumber.getOrElse(-1)
-        val end   = m.lineNumberEnd.getOrElse(-1)
-        start <= lineNum && end >= lineNum
-      })
-      .headOption
+  type M = Method
+  def fileOf(n: StoredNode): String = n match {
+    case c: CfgNode => c.method.file.name.headOption.getOrElse("unknown")
+    case _ => "unknown"
   }
+  def lineOf(n: StoredNode): Int = n match {
+    case c: CfgNode => c.lineNumber.getOrElse(-1)
+    case _ => -1
+  }
+  def isAssignmentOp(name: String): Boolean = name.startsWith("<operator>.assignment")
 
-  // Return anchor info as (code, name, line, argVars) or None
-  // Tries: real CALL → ASSIGNMENT → CONTROL_STRUCTURE condition → compound-assignment CALL → any CALL
-  // If nothing found at lineNum, retries ±3 lines (macro-expansion fallback)
-  def findAnchor(method: io.shiftleft.codepropertygraph.generated.nodes.Method, targetLine: Int)
-      : Option[(String, String, Int, List[String])] = {
-
-    def tryLine(ln: Int): Option[(String, String, Int, List[String])] = {
-      // 1. Real (non-operator) CALL
-      val callsOnLine = method.call.filter(c => c.lineNumber.getOrElse(-1) == ln).l
-      val realCallOpt = if (callName.nonEmpty && callsOnLine.nonEmpty)
-        callsOnLine.filter(_.name == callName).headOption
-      else if (callsOnLine.nonEmpty)
-        callsOnLine.filterNot(c => c.name.startsWith("<operator>")).headOption
-      else None
-
-      realCallOpt.map { c =>
-        (c.code, c.name, c.lineNumber.getOrElse(ln), c.argument.ast.isIdentifier.name.l.distinct)
-      }.orElse {
-        // 2. ASSIGNMENT node
-        val assigns = method.assignment.filter(a => a.lineNumber.getOrElse(-1) == ln).l
-        assigns.headOption.map { a =>
-          val vars = (a.target.ast.isIdentifier.name.l ++ a.source.ast.isIdentifier.name.l).distinct
-          (a.code, "<assignment>", a.lineNumber.getOrElse(ln), vars)
-        }
-      }.orElse {
-        // 3. CONTROL_STRUCTURE condition (if/while/for guards)
-        val ctrls = method.controlStructure.filter(c => c.lineNumber.getOrElse(-1) == ln).l
-        ctrls.headOption.map { ctrl =>
-          val condCode = ctrl.condition.code.headOption.getOrElse(ctrl.code.take(80))
-          val vars = ctrl.condition.ast.isIdentifier.name.l.distinct
-          (condCode, "<condition>", ctrl.lineNumber.getOrElse(ln), vars)
-        }
-      }.orElse {
-        // 4. Compound-assignment CALL (<operator>.assignmentAnd etc.)
-        val compoundOpt = callsOnLine.filter(c => isAssignmentOp(c.name)).headOption
-        compoundOpt.map { c =>
-          (c.code, c.name, c.lineNumber.getOrElse(ln), c.argument.ast.isIdentifier.name.l.distinct)
-        }
-      }.orElse {
-        // 5. Any CALL (last resort, e.g. pure comparison operators)
-        callsOnLine.headOption.map { c =>
-          (c.code, c.name, c.lineNumber.getOrElse(ln), c.argument.ast.isIdentifier.name.l.distinct)
-        }
+  // The statement a node belongs to: the nearest enclosing assignment, else the
+  // outermost enclosing call (so `use(f(x))` reports the whole statement).
+  def statementOf(n: Expression): Expression = {
+    var cur: StoredNode = n
+    var best: Expression = n
+    var steps = 0
+    while (steps < 20 && cur.isInstanceOf[Expression]) {
+      cur match {
+        case c: Call if isAssignmentOp(c.name) => return c
+        case c: Call => best = c
+        case _ =>
       }
+      cur = cur.asInstanceOf[Expression].astParent
+      steps += 1
     }
+    best
+  }
 
-    // Try exact line first, then ±1..3 (macro-expansion fallback)
-    tryLine(targetLine).orElse {
-      (1 to 3).flatMap(d => List(-d, d)).flatMap(delta => tryLine(targetLine + delta)).headOption
+  // Enclosing method: prefer a real method over <global> (header inlines).
+  val targetMethodOpt: Option[M] = {
+    def encloses(m: M) = {
+      val start = m.lineNumber.getOrElse(-1)
+      val end = m.lineNumberEnd.getOrElse(-1)
+      start <= lineNum && end >= lineNum
+    }
+    val inFile = cpg.method.filter(m => normalizeFilename(m.file.name.headOption.getOrElse(""), filename)).l
+    inFile.filterNot(_.name == "<global>").find(encloses).orElse(inFile.find(encloses))
+  }
+
+  // Anchor: (node, code, name, line, operand identifiers).
+  // An explicitly named call is authoritative: it must be on the requested line.
+  // Without a name, try the line, then the nearest line within ±3 (macro
+  // expansion), and report the move.
+  case class Anchor(node: Expression, code: String, name: String, line: Int, operands: List[Identifier])
+
+  def anchorOnLine(method: M, ln: Int): Option[Anchor] = {
+    val calls = method.call.filter(c => c.lineNumber.getOrElse(-1) == ln).l
+    if (callName.nonEmpty) {
+      calls.find(_.name == callName).map(c =>
+        Anchor(c, c.code, c.name, ln, c.argument.ast.isIdentifier.l))
+    } else {
+      calls.filterNot(_.name.startsWith("<operator>")).headOption
+        .map(c => Anchor(c, c.code, c.name, ln, c.argument.ast.isIdentifier.l))
+        .orElse(method.assignment.filter(a => a.lineNumber.getOrElse(-1) == ln).headOption
+          .map(a => Anchor(a, a.code, "<assignment>", ln, a.source.ast.isIdentifier.l)))
+        .orElse(method.controlStructure.filter(c => c.lineNumber.getOrElse(-1) == ln).headOption
+          .flatMap(ctrl => ctrl.condition.headOption.map(cond =>
+            Anchor(cond, cond.code, "<condition>", ln, cond.ast.isIdentifier.l))))
+        .orElse(calls.headOption.map(c => Anchor(c, c.code, c.name, ln, c.argument.ast.isIdentifier.l)))
     }
   }
+
+  def findAnchor(method: M): Option[Anchor] =
+    anchorOnLine(method, lineNum).orElse {
+      if (callName.nonEmpty) None
+      else (1 to 3).flatMap(d => List(lineNum - d, lineNum + d)).flatMap(anchorOnLine(method, _)).headOption
+    }
 
   targetMethodOpt match {
     case Some(method) => {
-      // Gated-body probe: an enclosing method with zero calls and a ≤1-line span
-      // was almost certainly preprocessed out (#ifdef / feature macro), so the
-      // slice will be empty/misleading. Warn so the caller rebuilds with defines.
       if (method.call.size == 0 && (method.lineNumberEnd.getOrElse(0) - method.lineNumber.getOrElse(0)) <= 1)
         output.append(
           s"WARNING: method '${method.name}' is present but has no body in this CPG — likely #ifdef/feature-gated. " +
           "Rebuild with generate_cpg(defines=[...], include_paths=[...]) before trusting this slice.\n")
-      findAnchor(method, lineNum) match {
-        case Some((anchorCode, anchorName, anchorLine, argVars)) => {
+
+      findAnchor(method) match {
+        case Some(anchor) => {
           val targetFile = method.file.name.headOption.getOrElse("unknown")
-
-          output.append(s"Program Slice for ${anchorName} at $targetFile:$anchorLine\n")
+          output.append(s"Program Slice for ${anchor.name} at $targetFile:${anchor.line}\n")
           output.append("=" * 60 + "\n")
-          output.append(s"Code: ${clip(anchorCode)}\n")
+          output.append(s"Requested: $filename:$lineNum${if (callName.nonEmpty) ":" + callName else ""}\n")
+          if (anchor.line != lineNum)
+            output.append(s"Selected anchor: line ${anchor.line} (no statement on line $lineNum; nearest within 3 lines)\n")
+          output.append(s"Code: ${clip(anchor.code)}\n")
           output.append(s"Method: ${method.fullName}\n")
-          if (argVars.nonEmpty) output.append(s"Variables: ${argVars.mkString(", ")}\n")
+          val anchorVars = anchor.operands.map(_.name).distinct
+          if (anchorVars.nonEmpty) output.append(s"Variables: ${anchorVars.mkString(", ")}\n")
 
-          // === BACKWARD SLICE ===
+          // === BACKWARD SLICE: reaching definitions (dataflow overlay) ===
           if (includeBackward) {
-            val visited      = mutable.Set[String]()
-            val dataDepsList = mutable.ListBuffer[(Int, String, String, String, List[String])]()
+            val seen = mutable.Set[Long]()
+            // (line, file, variable, code, depends-on, kind)
+            val deps = mutable.ListBuffer[(Int, String, String, String, List[String], String)]()
 
-            def backwardTrace(currMethod: io.shiftleft.codepropertygraph.generated.nodes.Method,
-                              varName: String,
-                              beforeLine: Int,
-                              depth: Int): Unit = {
-
-              val uniqueId = s"${currMethod.fullName}:$varName:$beforeLine"
-              if (depth <= 0 || visited.contains(uniqueId)) return
-              visited.add(uniqueId)
-
-              // 1a. Simple assignments (<operator>.assignment)
-              currMethod.assignment
-                .filter(a => { val ln = a.lineNumber.getOrElse(0); ln > 0 && ln < beforeLine })
-                .filter(a => {
-                  val tc = a.target.code
-                  tc == varName                       ||
-                  tc.startsWith(varName + "[")        ||
-                  tc.startsWith(varName + "->")       ||
-                  tc.startsWith(varName + ".")        ||
-                  tc.endsWith("->" + varName)         ||
-                  tc.endsWith("." + varName)
-                })
-                .l.foreach { assign =>
-                  val rhsVars = assign.source.ast.isIdentifier.name.l.distinct.filter(_ != varName)
-                  val f = assign.file.name.headOption.getOrElse("unknown")
-                  dataDepsList += ((assign.lineNumber.getOrElse(-1), f, varName, assign.code, rhsVars))
-                  rhsVars.foreach(v => backwardTrace(currMethod, v, assign.lineNumber.getOrElse(0), depth - 1))
-                }
-
-              // 1b. Compound assignments (+=, &=, |=, etc.) — not returned by .assignment
-              currMethod.call
-                .filter(c => isAssignmentOp(c.name) && c.name != "<operator>.assignment")
-                .filter(c => { val ln = c.lineNumber.getOrElse(0); ln > 0 && ln < beforeLine })
-                .filter(c => {
-                  val lhs = c.argument.filter(_.argumentIndex == 1).code.headOption.getOrElse("")
-                  lhs == varName                  ||
-                  lhs.startsWith(varName + "[")   ||
-                  lhs.endsWith("->" + varName)    ||
-                  lhs.endsWith("." + varName)
-                })
-                .l.foreach { call =>
-                  val rhsVars = call.argument.filter(_.argumentIndex == 2).ast.isIdentifier.name.l.distinct.filter(_ != varName)
-                  val f = call.file.name.headOption.getOrElse("unknown")
-                  dataDepsList += ((call.lineNumber.getOrElse(-1), f, varName, call.code, rhsVars))
-                  rhsVars.foreach(v => backwardTrace(currMethod, v, call.lineNumber.getOrElse(0), depth - 1))
-                }
-
-              // 2. Inter-procedural: varName is a parameter → trace callers
-              val matchedParams = currMethod.parameter.filter(_.name == varName).l
-              if (matchedParams.nonEmpty) {
-                matchedParams.foreach { param =>
-                  // Static dispatch callers
-                  currMethod.callIn.foreach { call =>
-                    val callerMethod = call.method
-                    call.argument.filter(_.argumentIndex == param.order).foreach { arg =>
-                      val avars = arg.ast.isIdentifier.name.l.distinct
-                      if (avars.nonEmpty) {
-                        val f  = call.file.name.headOption.getOrElse("unknown")
-                        val ln = call.lineNumber.getOrElse(-1)
-                        dataDepsList += ((ln, f, varName, s"Passed as arg to ${currMethod.name}", avars))
-                        avars.foreach(v => backwardTrace(callerMethod, v, ln, depth - 1))
-                      }
+            def backward(uses: List[Identifier], depth: Int): Unit = {
+              if (depth <= 0) return
+              uses.foreach { use =>
+                use.ddgIn.l.foreach { d =>
+                  if (!seen.contains(d.id)) {
+                    seen.add(d.id)
+                    d match {
+                      case p: MethodParameterIn =>
+                        val m = p.method
+                        deps += ((lineOf(p), fileOf(p), p.name, s"parameter ${p.name} of ${m.name}", Nil, "parameter"))
+                        // Statically resolved callers pass the argument at the same index.
+                        m.callIn.l.foreach { site =>
+                          site.argument.filter(_.argumentIndex == p.index).l.foreach { arg =>
+                            val argIds = arg.ast.isIdentifier.l
+                            deps += ((lineOf(site), fileOf(site), p.name, s"argument to ${m.name}: ${clip(site.code)}",
+                              argIds.map(_.name).distinct, "caller"))
+                            backward(argIds, depth - 1)
+                          }
+                        }
+                        // Unresolved dynamic calls with the same short name: candidates only.
+                        cpg.call.filter(c => c.dispatchType == "DYNAMIC_DISPATCH" && c.name == m.name && c.callee.isEmpty)
+                          .l.take(10).foreach { site =>
+                            deps += ((lineOf(site), fileOf(site), p.name,
+                              s"name-based candidate (unresolved dynamic call): ${clip(site.code)}", Nil, "candidate"))
+                          }
+                      case e: Expression =>
+                        val stmt = statementOf(e)
+                        val assignTarget = stmt match {
+                          case c: Call if isAssignmentOp(c.name) =>
+                            c.argument.filter(_.argumentIndex == 1).ast.l.exists(_.id == e.id)
+                          case _ => false
+                        }
+                        val passedToCall = e.astParent match {
+                          case call: Call => !call.name.startsWith("<operator>")
+                          case _ => false
+                        }
+                        if (assignTarget) {
+                          val c = stmt.asInstanceOf[Call]
+                          val rhs = c.argument.filter(_.argumentIndex >= 2).ast.isIdentifier.l
+                          deps += ((lineOf(c), fileOf(c), e.code, c.code, rhs.map(_.name).distinct, "definition"))
+                          backward(rhs, depth - 1)
+                        } else if (passedToCall) {
+                          // Joern treats a call argument as possibly written by the callee.
+                          val call = e.astParent.asInstanceOf[Call]
+                          deps += ((lineOf(call), fileOf(call), e.code, s"may be modified by ${clip(call.code)}", Nil, "call_argument"))
+                          backward(List(e).collect { case i: Identifier => i }, depth - 1)
+                        } else {
+                          // A read (e.g. inside a comparison) that Joern chains reaching
+                          // definitions through: not a write, so look through it.
+                          backward(List(e).collect { case i: Identifier => i }, depth)
+                        }
+                      case _ =>
                     }
                   }
-                  // C++ dynamic dispatch callers (virtual method calls)
-                  cpg.call
-                    .filter(c => c.dispatchType == "DYNAMIC_DISPATCH" && c.name == currMethod.name)
-                    .foreach { call =>
-                      val callerMethod = call.method
-                      call.argument.filter(_.argumentIndex == param.order).foreach { arg =>
-                        val avars = arg.ast.isIdentifier.name.l.distinct
-                        if (avars.nonEmpty) {
-                          val f  = call.file.name.headOption.getOrElse("unknown")
-                          val ln = call.lineNumber.getOrElse(-1)
-                          dataDepsList += ((ln, f, varName, s"Dynamic dispatch arg to ${currMethod.name}", avars))
-                          avars.foreach(v => backwardTrace(callerMethod, v, ln, depth - 1))
-                        }
-                      }
-                    }
                 }
               }
             }
 
-            argVars.foreach(v => backwardTrace(method, v, anchorLine, maxDepth))
+            backward(anchor.operands, maxDepth)
 
-            val sortedDeps  = dataDepsList.toList.distinct.sortBy(_._1)
-            val backwardCount = sortedDeps.size
-
-            output.append(s"\n[BACKWARD SLICE] (${backwardCount} data dependencies)\n")
-
+            val sortedDeps = deps.toList.distinct.sortBy(d => (d._2, d._1))
+            output.append(s"\n[BACKWARD SLICE] (${sortedDeps.size} data dependencies, reaching definitions)\n")
             if (sortedDeps.nonEmpty) {
               output.append("\n  Data Dependencies:\n")
-              val displayDeps = sortedDeps.take(maxNodes)
-              displayDeps.groupBy(_._2).foreach { case (file, deps) =>
+              sortedDeps.take(maxNodes).groupBy(_._2).toList.sortBy(_._1).foreach { case (file, ds) =>
                 output.append(s"  File: $file\n")
-                deps.sortBy(_._1).foreach { case (line, _, vn, code, depVars) =>
+                ds.sortBy(_._1).foreach { case (line, _, vn, code, depVars, kind) =>
                   val lineInfo = if (line != -1) s"[$file:$line]" else "[Local]"
-                  output.append(s"    $lineInfo $vn: ${clip(code)}\n")
+                  val tag = if (kind == "candidate") " [CANDIDATE]" else ""
+                  output.append(s"    $lineInfo $vn: ${clip(code)}$tag\n")
                   if (depVars.nonEmpty) output.append(s"      <- depends on: ${depVars.mkString(", ")}\n")
                 }
               }
@@ -242,94 +202,85 @@
             }
 
             if (includeControlFlow) {
-              val controlDeps = method.controlStructure
-                .filter(c => { val ln = c.lineNumber.getOrElse(0); ln > 0 && ln < anchorLine })
-                .map(ctrl => (ctrl.lineNumber.getOrElse(-1), ctrl.file.name.headOption.getOrElse("unknown"), ctrl.controlStructureType, ctrl.condition.code.headOption.getOrElse(ctrl.code.take(60))))
-                .l.distinct.take(30)
+              // Control dependence (CDG): only conditions that decide whether the
+              // anchor executes, not every earlier branch in the method.
+              val controllers = anchor.node.controlledBy.l
+                .map(c => (lineOf(c), fileOf(c), c.code)).distinct.sortBy(_._1).take(30)
+              output.append("\n  Control Dependencies (Target Method):\n")
+              if (controllers.isEmpty) output.append("    (none: the anchor runs on every path through the method)\n")
+              controllers.foreach { case (line, file, cond) =>
+                output.append(s"    [$file:$line] ${clip(cond)}\n")
+              }
+            }
 
-              if (controlDeps.nonEmpty) {
-                output.append("\n  Control Dependencies (Target Method):\n")
-                controlDeps.foreach { case (line, file, ctrlType, cond) =>
-                  output.append(s"    [$file:$line] $ctrlType: ${clip(cond)}\n")
+            val params = method.parameter.filter(p => anchorVars.contains(p.name)).l
+            if (params.nonEmpty)
+              output.append(s"\n  Parameters: ${params.map(p => s"${p.name} (${p.typeFullName})").mkString(", ")}\n")
+          }
+
+          // === FORWARD SLICE: uses reached by the anchor's definitions ===
+          if (includeForward) {
+            // The values the anchor defines: the target of the assignment that
+            // contains it (x = read_value()), or the assignment's own target.
+            val definedAt: List[Identifier] = statementOf(anchor.node) match {
+              case c: Call if isAssignmentOp(c.name) => c.argument.filter(_.argumentIndex == 1).ast.isIdentifier.l
+              case _ => Nil
+            }
+            val seenDefs = mutable.Set[Long]()
+            // (line, file, kind, variable, code)
+            val props = mutable.ListBuffer[(Int, String, String, String, String)]()
+            val reachedUses = mutable.Set[Long]()
+
+            def usesOf(d: StoredNode, m: M): List[Identifier] =
+              m.ast.isIdentifier.filter(i => i.ddgIn.l.exists(_.id == d.id)).l
+
+            def forward(defs: List[CfgNode], depth: Int): Unit = {
+              if (depth <= 0) return
+              defs.foreach { d =>
+                if (!seenDefs.contains(d.id)) {
+                  seenDefs.add(d.id)
+                  val m = d.method
+                  val varName = d match { case p: MethodParameterIn => p.name; case other => other.code }
+                  usesOf(d, m).foreach { use =>
+                    reachedUses.add(use.id)
+                    val stmt = statementOf(use)
+                    stmt match {
+                      case c: Call if isAssignmentOp(c.name) && !c.argument.filter(_.argumentIndex == 1).ast.isIdentifier.l.exists(_.id == use.id) =>
+                        props += ((lineOf(c), fileOf(c), "propagation", varName, c.code))
+                        forward(c.argument.filter(_.argumentIndex == 1).ast.isIdentifier.l, depth - 1)
+                      case c: Call =>
+                        props += ((lineOf(c), fileOf(c), "usage", varName, c.code))
+                      case other =>
+                        props += ((lineOf(other), fileOf(other), "usage", varName, other.code))
+                    }
+                    // Passed as an argument to a resolved callee: continue at its parameter.
+                    use.astParent match {
+                      case call: Call if !call.name.startsWith("<operator>") =>
+                        call.callee.l.foreach { callee =>
+                          callee.parameter.filter(_.index == use.argumentIndex).l.foreach { param =>
+                            props += ((lineOf(callee), fileOf(callee), "passed_to_func", varName,
+                              s"Passed to ${callee.name} as ${param.name}"))
+                            forward(List(param), depth - 1)
+                          }
+                        }
+                      case _ =>
+                    }
+                  }
                 }
               }
             }
 
-            val params = method.parameter.filter(p => argVars.contains(p.name)).l
-            if (params.nonEmpty) {
-              val paramStr = params.map(p => s"${p.name} (${p.typeFullName})").mkString(", ")
-              output.append(s"\n  Parameters: $paramStr\n")
-            }
-          }
+            forward(definedAt, maxDepth)
 
-          // === FORWARD SLICE ===
-          if (includeForward) {
-            val resultVars = method.assignment
-              .filter(a => a.lineNumber.getOrElse(0) == anchorLine)
-              .filter(a => a.source.code.contains(anchorName))
-              .target.code.l.distinct
-
-            val forwardVisited  = mutable.Set[String]()
-            val propagationsList = mutable.ListBuffer[(Int, String, String, String, String)]()
-
-            def forwardTrace(currMethod: io.shiftleft.codepropertygraph.generated.nodes.Method,
-                             varName: String,
-                             afterLine: Int,
-                             depth: Int): Unit = {
-
-              val uniqueId = s"${currMethod.fullName}:$varName:$afterLine"
-              if (depth <= 0 || forwardVisited.contains(uniqueId)) return
-              forwardVisited.add(uniqueId)
-
-              currMethod.call
-                .filter(c => c.lineNumber.getOrElse(0) > afterLine)
-                .filter(c => c.argument.ast.isIdentifier.name.l.contains(varName))
-                .l.take(15)
-                .foreach { call =>
-                  val callFile = call.file.name.headOption.getOrElse("unknown")
-                  propagationsList += ((call.lineNumber.getOrElse(-1), callFile, "usage", varName, call.code))
-
-                  call.argument.filter(_.ast.isIdentifier.name.l.contains(varName)).foreach { arg =>
-                    call.callee.foreach { calleeMethod =>
-                      calleeMethod.parameter.filter(_.order == arg.argumentIndex).foreach { param =>
-                        val pName = param.name
-                        propagationsList += ((calleeMethod.lineNumber.getOrElse(-1), calleeMethod.file.name.headOption.getOrElse("unknown"), "passed_to_func", varName, s"Passed to ${calleeMethod.name} as $pName"))
-                        forwardTrace(calleeMethod, pName, calleeMethod.lineNumber.getOrElse(0), depth - 1)
-                      }
-                    }
-                  }
-                }
-
-              currMethod.assignment
-                .filter(a => a.lineNumber.getOrElse(0) > afterLine)
-                .filter(a => a.source.ast.isIdentifier.name.l.contains(varName))
-                .l.take(15)
-                .foreach { assign =>
-                  val targetVar = assign.target.code
-                  val assignFile = assign.file.name.headOption.getOrElse("unknown")
-                  propagationsList += ((assign.lineNumber.getOrElse(-1), assignFile, "propagation", varName, assign.code))
-                  if (targetVar != varName) forwardTrace(currMethod, targetVar, assign.lineNumber.getOrElse(0), depth - 1)
-                }
-            }
-
-            resultVars.foreach(v => forwardTrace(method, v, anchorLine, maxDepth))
-
-            val sortedProps  = propagationsList.toList.distinct.sortBy(_._1)
-            val forwardCount = sortedProps.size
-
-            output.append(s"\n[FORWARD SLICE] (${forwardCount} propagations)\n")
-
-            if (resultVars.nonEmpty) {
-              output.append(s"  Result stored in: ${resultVars.mkString(", ")}\n")
-            }
-
+            val sortedProps = props.toList.distinct.sortBy(p => (p._2, p._1))
+            output.append(s"\n[FORWARD SLICE] (${sortedProps.size} propagations, uses reached by the anchor's value)\n")
+            if (definedAt.nonEmpty) output.append(s"  Result stored in: ${definedAt.map(_.code).distinct.mkString(", ")}\n")
             if (sortedProps.nonEmpty) {
               output.append("\n  Propagations:\n")
-              val displayProps = sortedProps.take(maxNodes)
-              displayProps.groupBy(_._2).foreach { case (file, props) =>
+              sortedProps.take(maxNodes).groupBy(_._2).toList.sortBy(_._1).foreach { case (file, ps) =>
                 output.append(s"  File: $file\n")
-                props.sortBy(_._1).foreach { case (line, _, propType, vn, code) =>
-                  output.append(s"    [$file:$line] $propType ($vn): ${clip(code)}\n")
+                ps.sortBy(_._1).foreach { case (line, _, kind, vn, code) =>
+                  output.append(s"    [$file:$line] $kind ($vn): ${clip(code)}\n")
                 }
               }
               if (sortedProps.size > maxNodes)
@@ -339,15 +290,13 @@
             }
 
             if (includeControlFlow) {
-              val controlAffected = method.controlStructure
-                .filter(c => c.lineNumber.getOrElse(0) > anchorLine)
-                .filter(c => resultVars.exists(v => c.condition.ast.isIdentifier.name.l.contains(v)))
-                .map(ctrl => (ctrl.lineNumber.getOrElse(-1), ctrl.file.name.headOption.getOrElse("unknown"), ctrl.controlStructureType, ctrl.condition.code.headOption.getOrElse("")))
-                .l.distinct.take(20)
-
-              if (controlAffected.nonEmpty) {
+              val affected = method.controlStructure
+                .filter(cs => cs.condition.ast.isIdentifier.l.exists(i => reachedUses.contains(i.id)))
+                .map(cs => (lineOf(cs), fileOf(cs), cs.controlStructureType, cs.condition.code.headOption.getOrElse("")))
+                .l.distinct.sortBy(_._1).take(20)
+              if (affected.nonEmpty) {
                 output.append("\n  Control Flow Affected (Target Method):\n")
-                controlAffected.foreach { case (line, file, ctrlType, cond) =>
+                affected.foreach { case (line, file, ctrlType, cond) =>
                   output.append(s"    [$file:$line] $ctrlType: $cond\n")
                 }
               }
@@ -357,46 +306,36 @@
 
         case None => {
           val callsOnLine = method.call.filter(c => c.lineNumber.getOrElse(-1) == lineNum).l
-          val callNames   = callsOnLine.map(_.name).distinct
-          output.append(s"ERROR: No anchor node found on line $lineNum in method ${method.name}\n")
-          if (callNames.nonEmpty) {
-            output.append(s"Available calls on line $lineNum: ${callNames.mkString(", ")}\n")
-          } else {
-            output.append(s"No calls, assignments, or control structures found on line $lineNum.\n")
-            val nearbyLines = method.call.lineNumber.l.filter(l => Math.abs(l - lineNum) <= 5).distinct.sorted
-            if (nearbyLines.nonEmpty) output.append(s"Nearby lines with calls: ${nearbyLines.mkString(", ")}\n")
-          }
+          val callNames = callsOnLine.map(_.name).filterNot(_.startsWith("<operator>")).distinct
+          if (callName.nonEmpty)
+            output.append(s"ANCHOR_NOT_FOUND: no call to '$callName' on line $lineNum in method ${method.name}\n")
+          else
+            output.append(s"ANCHOR_NOT_FOUND: no call, assignment, or condition on or within 3 lines of line $lineNum in method ${method.name}\n")
+          if (callNames.nonEmpty) output.append(s"Calls on line $lineNum: ${callNames.mkString(", ")}\n")
+          val nearbyLines = method.call.lineNumber.l.filter(l => Math.abs(l - lineNum) <= 5).distinct.sorted
+          if (nearbyLines.nonEmpty) output.append(s"Nearby lines with calls: ${nearbyLines.mkString(", ")}\n")
         }
       }
     }
 
     case None => {
-      val allFiles      = cpg.file.name.l.distinct.take(20)
       val matchingFiles = cpg.file.name.l.filter(f => f.contains(filename) || filename.split("/").lastOption.exists(f.endsWith(_))).distinct.take(10)
-      // Include all methods (including <global>) for diagnostics
       val methodsInFile = cpg.method.filter(m => normalizeFilename(m.file.name.headOption.getOrElse(""), filename)).l.take(10)
-
-      output.append(s"ERROR: No method found containing line $lineNum in '$filename'\n\n")
-
+      output.append(s"ANCHOR_NOT_FOUND: no method contains line $lineNum in '$filename'\n")
       if (matchingFiles.nonEmpty) {
         output.append(s"Matching files in CPG:\n")
         matchingFiles.foreach(f => output.append(s"  - $f\n"))
       }
-
       if (methodsInFile.nonEmpty) {
-        output.append(s"\nMethods in matching file(s):\n")
-        methodsInFile.foreach { m =>
-          output.append(s"  - ${m.name}: lines ${m.lineNumber.getOrElse(-1)}-${m.lineNumberEnd.getOrElse(-1)}\n")
-        }
+        output.append(s"Methods in matching file(s):\n")
+        methodsInFile.foreach(m => output.append(s"  - ${m.name}: lines ${m.lineNumber.getOrElse(-1)}-${m.lineNumberEnd.getOrElse(-1)}\n"))
       }
-
       if (matchingFiles.isEmpty && methodsInFile.isEmpty) {
         output.append(s"Sample files in CPG (first 5):\n")
-        allFiles.take(5).foreach(f => output.append(s"  - $f\n"))
+        cpg.file.name.l.distinct.take(5).foreach(f => output.append(s"  - $f\n"))
       }
     }
   }
 
-  // Return with markers for easy extraction
   "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
 }
