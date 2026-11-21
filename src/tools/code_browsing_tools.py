@@ -115,6 +115,49 @@ def _call_graph_response(graph: dict) -> Dict[str, Any]:
     }
 
 
+def _bounds_response(data: dict, location: str) -> Dict[str, Any]:
+    """Structured bounds-check result plus the text rendering."""
+    target = data.get("target") or {}
+    guards = data.get("guards") or []
+    caller_guards = data.get("caller_guards") or []
+    status = data.get("status", "no_guard_found")
+    lines = [f"Bounds Check Analysis for {location}", "=" * 60]
+    if target.get("kind") == "buffer_access":
+        lines += [f"Target:   {target.get('code')} (buffer {target.get('buffer')}, index {target.get('index')})"]
+    else:
+        lines += [f"Target:   {target.get('code')} ({target.get('label', 'sized call')}, size {target.get('size')})"]
+    if status == "no_variable":
+        lines.append("No variable in the index/size argument; nothing to check (constant).")
+    else:
+        unsigned = " (unsigned)" if target.get("variable_unsigned") else ""
+        lines.append(f"Variable: {target.get('variable')}{unsigned} in {target.get('method')}()")
+        lines.append("\nGUARDS")
+        for g in guards:
+            lines.append(f"  line {g['line']}: {g['condition']}  [{g['kind']}, {g['branch']} branch] "
+                         f"=> {', '.join(g['establishes'])}")
+        if not guards:
+            lines.append("  none controlling this line")
+        if caller_guards:
+            lines.append("\nCALLER GUARDS")
+            for g in caller_guards:
+                lines.append(f"  {g['caller']}() line {g['line']}: {g['condition']}  [{g['branch']} branch] "
+                             f"=> {', '.join(g['establishes'])}")
+        lines.append(f"\nLower bound: {'yes' if data.get('lower_bound') else 'no'}"
+                     + ("" if data.get("lower_bound_required", True) else " (not required for a size)")
+                     + f" | Upper bound: {'yes' if data.get('upper_bound') else 'no'}")
+    lines.append(f"Status: {status.upper()}")
+    return {
+        "success": True,
+        "status": status,
+        "target": target,
+        "guards": guards,
+        "caller_guards": caller_guards,
+        "lower_bound": bool(data.get("lower_bound")),
+        "upper_bound": bool(data.get("upper_bound")),
+        "summary": "\n".join(lines),
+    }
+
+
 def _cfg_response(graph: dict) -> Dict[str, Any]:
     """Structured CFG result plus the text rendering existing clients read."""
     method = graph.get("method") or {}
@@ -624,19 +667,45 @@ Examples:
     @mcp.tool(
         title="Find Bounds Checks",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
-        description="""Find bounds checks near buffer access.
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "status": {"type": "string", "enum": ["guarded", "partially_guarded", "no_guard_found", "no_variable"]},
+                "target": {"type": "object"},
+                "guards": {"type": "array", "items": {"type": "object"}},
+                "caller_guards": {"type": "array", "items": {"type": "object"}},
+                "lower_bound": {"type": "boolean"}, "upper_bound": {"type": "boolean"},
+                "summary": {"type": "string"},
+            },
+            "required": ["success", "status", "summary"],
+            "additionalProperties": False,
+        },
+        description="""Check whether a buffer access or sized call is guarded by a bounds check.
 
-Verify if buffer accesses have corresponding bounds checks by analyzing
-comparison operations involving the index variable.
+At filename:line, the target is the first `buf[i]` access, else the first sized
+call (memcpy, strncpy, snprintf, malloc, read, ...). The checked variable is the
+first identifier in the index or size argument.
 
 Returns:
-    A human-readable text summary of the bounds check analysis.
+    {"success": true, "status": "guarded",
+     "target": {"kind": "buffer_access", "code": "items[i]", "buffer": "items",
+                "index": "i", "variable": "i", "variable_unsigned": false, ...},
+     "guards": [{"line": 20, "condition": "i < 0 || i >= size", "branch": "false",
+                 "kind": "early_return", "establishes": ["i >= 0", "i < size"]}],
+     "caller_guards": [], "lower_bound": true, "upper_bound": true,
+     "summary": "<the same as text>"}
 
 Notes:
-    - Helps identify potential buffer overflow vulnerabilities.
-    - Checks for missing bounds checks or checks that happen too late.
-    - filename in buffer_access_location should be relative to the project root (e.g., 'src/parser.c:100').
+    - A guard is a condition that controls the target, together with the branch
+      that reaches it: the true or false arm of an if, a loop body, or the code
+      after an early return. `establishes` is what that branch proves.
+    - status: guarded = upper bound (and, for an index, lower bound or an
+      unsigned index) established; partially_guarded = some check found;
+      no_guard_found = no controlling check on the variable in this method or its
+      callers. It is not a proof of a bug: checks inside called helpers and
+      relations to the buffer's real length are not modelled.
+    - A line with no buffer access or sized call is a VALIDATION_ERROR.
 
 Examples:
     find_bounds_checks(codebase_hash="abc", buffer_access_location="parser.c:3393")""",
@@ -676,17 +745,18 @@ Examples:
                 query=query,
                 timeout=30,
             )
-
-            if result.success and result.data:
-                # Text queries return a single-element list wrapping the rendered text.
-                output = result.data[0] if isinstance(result.data, list) else str(result.data)
-                return {"success": True, "summary": output.strip()}
-            else:
-                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error if not result.success else 'No data returned'} Hint: verify the CPG is ready and use a relative filename:line location.")
+            data = _parse_json_result(unwrap_result(result))
+            if data.get("status") == "unsupported":
+                calls = data.get("calls_on_line") or []
+                seen = f" Calls on that line: {', '.join(calls)}." if calls else ""
+                raise ValidationError(
+                    f"no buffer access (buf[i]) or sized call at {buffer_access_location}.{seen}"
+                )
+            return _bounds_response(data, buffer_access_location)
 
         except ValidationError as e:
             logger.error(f"Error finding bounds checks: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: provide buffer_access_location as filename:line.") from e
+            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: point buffer_access_location at a line with buf[i] or a sized call such as memcpy.") from e
         except ToolError:
             raise
         except Exception as e:

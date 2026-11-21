@@ -111,3 +111,17 @@ async def test_selection_failures_are_validation_errors(tool, payload, needle):
     assert result.is_error
     assert result.content[0].text.startswith("VALIDATION_ERROR: ")
     assert needle in result.content[0].text
+
+
+async def test_bounds_check_on_an_unsupported_line_is_a_validation_error():
+    # Audit bounds8: a line with no buf[i] or sized call is not "unguarded".
+    executor = MagicMock()
+    executor.execute_query.return_value = QueryResult(
+        success=True, data=[json.dumps([{"status": "unsupported", "calls_on_line": ["leaf(n)"]}])], row_count=1)
+    async with Client(_server(executor)) as client:
+        result = await client.call_tool("find_bounds_checks", {"codebase_hash": CODEBASE_HASH,
+                                                               "buffer_access_location": "audit.c:8"},
+                                        raise_on_error=False)
+    assert result.is_error
+    assert result.content[0].text.startswith("VALIDATION_ERROR: no buffer access (buf[i]) or sized call at audit.c:8.")
+    assert "leaf(n)" in result.content[0].text
