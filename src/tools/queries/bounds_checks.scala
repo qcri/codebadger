@@ -1,204 +1,180 @@
 {
+  import io.shiftleft.codepropertygraph.generated.nodes._
+
   val filename = "{{filename}}"
   val lineNum = {{line_num}}
-  val output = new StringBuilder()
 
-  // --- Helper Functions ---
+  def pathBoundaryRegex(f: String): String = "(^|.*/)" + java.util.regex.Pattern.quote(f) + "$"
+  val filePattern = pathBoundaryRegex(filename)
 
-  def extractVariable(expr: String): String = {
-    Option(expr).getOrElse("").replaceAll("[^a-zA-Z0-9_].*", "").trim
+  /** (label, size argument index, destination argument index) for sized calls. */
+  def classifySizedOp(callName: String): Option[(String, Int, Option[Int])] = callName match {
+    case "memcpy" | "memmove"                          => Some(("Memory Copy", 3, Some(1)))
+    case "memset"                                      => Some(("Memory Set", 3, Some(1)))
+    case "strncpy" | "strlcpy"                         => Some(("String Copy", 3, Some(1)))
+    case "strncat" | "strlcat"                         => Some(("String Concat", 3, Some(1)))
+    case "snprintf" | "vsnprintf"                      => Some(("Formatted Output", 2, Some(1)))
+    case "read" | "recv"                               => Some(("I/O Read", 3, Some(2)))
+    case "fread"                                       => Some(("File Read", 3, Some(1)))
+    case "realloc" | "reallocarray"                    => Some(("Memory Reallocation", 2, None))
+    case "calloc"                                      => Some(("Memory Allocation", 1, None))
+    case "aligned_alloc" | "memalign" | "posix_memalign" => Some(("Memory Allocation", 2, None))
+    case "malloc" | "valloc" | "pvalloc"               => Some(("Memory Allocation", 1, None))
+    case "strndup"                                     => Some(("String Duplication", 2, None))
+    case _                                             => None
   }
 
-  /** Classify a call as a sized operation based on its name.
-    * Uses case-insensitive matching to generically handle common naming
-    * conventions without hardcoding specific function names.
-    *
-    * Returns: (typeLabel, sizeArgOrder, sizeLabel, optDstArgOrder)
-    */
-  def classifySizedOp(callName: String): Option[(String, Int, String, Option[Int])] = {
-    callName match {
-      case "memcpy" | "memmove"             => Some(("Memory Copy",        3, "Length",      Some(1)))
-      case "memset"                          => Some(("Memory Set",         3, "Length",      Some(1)))
-      case "strncpy" | "strlcpy"            => Some(("String Copy",        3, "Length",      Some(1)))
-      case "strncat" | "strlcat"            => Some(("String Concat",      3, "Length",      Some(1)))
-      case "snprintf" | "vsnprintf"         => Some(("Formatted Output",   2, "Buffer Size", Some(1)))
-      case "read" | "recv"                  => Some(("I/O Read",           3, "Length",      Some(2)))
-      case "fread"                           => Some(("File Read",          3, "Count",       Some(1)))
-      case "realloc" | "reallocarray"       => Some(("Memory Reallocation",2, "Size",        None))
-      case "calloc"                          => Some(("Memory Allocation",  1, "Count",       None))
-      case "aligned_alloc" | "memalign" |
-           "posix_memalign"                 => Some(("Memory Allocation",  2, "Size",        None))
-      case "malloc" | "valloc" | "pvalloc"  => Some(("Memory Allocation",  1, "Size",        None))
-      case "strndup"                         => Some(("String Duplication", 2, "Length",      None))
-      case _                                 => None
+  val comparisons = Map(
+    "<operator>.lessThan" -> "<", "<operator>.lessEqualsThan" -> "<=",
+    "<operator>.greaterThan" -> ">", "<operator>.greaterEqualsThan" -> ">=",
+    "<operator>.equals" -> "==", "<operator>.notEquals" -> "!=")
+  val negated = Map("<" -> ">=", "<=" -> ">", ">" -> "<=", ">=" -> "<", "==" -> "!=", "!=" -> "==")
+  val flipped = Map("<" -> ">", "<=" -> ">=", ">" -> "<", ">=" -> "<=", "==" -> "==", "!=" -> "!=")
+  val conditionOps = Set("<operator>.logicalAnd", "<operator>.logicalOr", "<operator>.logicalNot")
+
+  def arg(c: Call, i: Int): Option[Expression] = c.argument.l.find(_.argumentIndex == i)
+  def identifiersIn(e: Expression): List[Identifier] = (e match {
+    case i: Identifier => List(i)
+    case other => other.ast.isIdentifier.l
+  })
+
+  // Facts a condition guarantees on one of its branches: `!(a || b)` gives `!a` and
+  // `!b`; `a && b` gives `a` and `b`. Each fact is (comparison, holds).
+  def facts(e: Expression, holds: Boolean): List[(Call, Boolean)] = e match {
+    case c: Call if c.name == "<operator>.logicalNot" => arg(c, 1).toList.flatMap(facts(_, !holds))
+    case c: Call if c.name == "<operator>.logicalAnd" && holds => c.argument.l.flatMap(facts(_, true))
+    case c: Call if c.name == "<operator>.logicalOr" && !holds => c.argument.l.flatMap(facts(_, false))
+    case c: Call if comparisons.contains(c.name) => List((c, holds))
+    case _ => Nil
+  }
+
+  // Render a fact about `v` with v on the left: ("i", ">=", "0").
+  def factAbout(cmp: Call, holds: Boolean, v: String): Option[(String, String)] = {
+    val op0 = comparisons(cmp.name)
+    val op = if (holds) op0 else negated(op0)
+    val (l, r) = (arg(cmp, 1), arg(cmp, 2))
+    def isVar(e: Option[Expression]) = e.exists { case i: Identifier => i.name == v; case _ => false }
+    if (isVar(l)) Some((op, r.map(_.code).getOrElse("?")))
+    else if (isVar(r)) Some((flipped(op), l.map(_.code).getOrElse("?")))
+    else None
+  }
+
+  // Which branch of the controlling condition reaches `target`.
+  def branchTo(cond: Expression, target: Call): Option[(ControlStructure, String, Boolean)] = {
+    var top: Expression = cond
+    var steps = 0
+    while (steps < 20 && (top.astParent match { case c: Call => conditionOps.contains(c.name); case _ => false })) {
+      top = top.astParent.asInstanceOf[Expression]; steps += 1
+    }
+    top.astParent match {
+      case cs: ControlStructure =>
+        val inside = (t: Iterator[AstNode]) => t.ast.id.l.contains(target.id)
+        val kind = cs.controlStructureType
+        if (Set("WHILE", "FOR", "DO").contains(kind)) {
+          // FOR keeps its body as a plain AST child, not under whenTrue.
+          val inCondition = cs.condition.ast.id.l.contains(target.id)
+          if (!inCondition && cs.ast.id.l.contains(target.id)) Some((cs, "loop", true))
+          else Some((cs, "after_loop", false))
+        } else if (kind == "IF") {
+          def terminates(t: Iterator[AstNode]) = {
+            val nodes = t.ast.l
+            nodes.exists(_.isInstanceOf[Return]) ||
+              nodes.collect { case c: ControlStructure => c.controlStructureType }.exists(Set("BREAK", "CONTINUE", "GOTO"))
+          }
+          if (inside(cs.whenTrue)) Some((cs, "if_true", true))
+          else if (inside(cs.whenFalse)) Some((cs, "if_false", false))
+          else if (terminates(cs.whenTrue)) Some((cs, "early_return", false))
+          else if (terminates(cs.whenFalse)) Some((cs, "early_return", true))
+          else None
+        } else None
+      case _ => None
     }
   }
 
-  def pathBoundaryRegex(f: String): String = {
-    val escaped = java.util.regex.Pattern.quote(f)
-    "(^|.*/)" + escaped + "$"
-  }
-  val filePattern = pathBoundaryRegex(filename)
+  def isUnsigned(v: String, at: Call): Boolean =
+    identifiersIn(at).filter(_.name == v).map(_.typeFullName).exists(t => t.contains("unsigned") || t == "size_t")
 
-  // --- Target Identification ---
-
-  // 1. Buffer Access (buf[i])
-  val bufferAccessOpt = cpg.call
-    .name("<operator>.indirectIndexAccess")
-    .where(_.file.name(filePattern))
-    .filter(c => c.lineNumber.getOrElse(-1) == lineNum)
-    .l.headOption
-
-  // 2. Sized operations (allocation, memory copy/set, snprintf, strndup, etc.)
-  val sizedCallPattern = "malloc|calloc|realloc|aligned_alloc|reallocarray|strdup|strndup|memcpy|memmove|memset|strncpy|strlcpy|strncat|strlcat|snprintf|vsnprintf|read|recv|fread"
-  val sizedCallOpt = cpg.call
-    .name(sizedCallPattern)
-    .where(_.file.name(filePattern))
-    .filter(c => c.lineNumber.getOrElse(-1) == lineNum)
-    .l.headOption
-
-
-  // --- Analysis Logic ---
-
-  var foundTarget = false
-
-  // Handle Buffer Access
-  bufferAccessOpt.foreach(ba => {
-    foundTarget = true
-    val method = ba.method
-    val args = ba.argument.l
-    val bufferArg = args.find(_.order == 1)
-    val indexArg = args.find(_.order == 2)
-    val bufferName = bufferArg.map(_.code).getOrElse("unknown")
-    val indexExpr = indexArg.map(_.code).getOrElse("unknown")
-    val indexVar = extractVariable(indexExpr)
-
-    output.append(s"Bounds Check Analysis for $filename:$lineNum\n")
-    output.append("=" * 60 + "\n")
-    output.append(s"Type:          Buffer Access (buf[i])\n")
-    output.append(s"Operation:     ${ba.code}\n")
-    output.append(s"Buffer:        $bufferName\n")
-    output.append(s"Index:         $indexExpr (Variable: $indexVar)\n\n")
-
-    analyzeChecks(method, ba, indexVar, output)
-  })
-
-  // Handle Sized Operations (allocation, memcpy, memset, snprintf, strndup, etc.)
-  if (!foundTarget) {
-    sizedCallOpt.foreach(sc => {
-      classifySizedOp(sc.name).foreach { case (typeLabel, sizeArgOrder, sizeLabel, dstArgOrderOpt) =>
-        foundTarget = true
-        val method = sc.method
-        val args = sc.argument.l
-        val sizeArg = args.find(_.order == sizeArgOrder)
-        val sizeExpr = sizeArg.map(_.code).getOrElse("unknown")
-        val sizeVar = extractVariable(sizeExpr)
-
-        output.append(s"Bounds Check Analysis for $filename:$lineNum\n")
-        output.append("=" * 60 + "\n")
-        output.append(s"Type:          $typeLabel\n")
-        output.append(s"Function:      ${sc.name}\n")
-        output.append(s"Operation:     ${sc.code}\n")
-
-        dstArgOrderOpt.foreach { dstOrder =>
-          val dstArg = args.find(_.order == dstOrder)
-          val dstName = dstArg.map(_.code).getOrElse("unknown")
-          output.append(s"Destination:   $dstName\n")
-        }
-
-        val pad = " " * math.max(1, 15 - sizeLabel.length)
-        output.append(s"$sizeLabel:$pad$sizeExpr (Variable: $sizeVar)\n\n")
-
-        analyzeChecks(method, sc, sizeVar, output)
+  /** Guards on `v` that control `target`, with branch polarity and established facts. */
+  def guardsFor(target: Call, v: String): List[Map[String, Any]] =
+    target.controlledBy.collect { case e: Expression => e }.l.distinctBy(_.id).flatMap { cond =>
+      branchTo(cond, target).toList.flatMap { case (cs, how, holds) =>
+        val condition = cs.condition.headOption.getOrElse(cond)
+        val established = facts(condition, holds).flatMap { case (cmp, h) => factAbout(cmp, h, v) }
+        if (established.isEmpty) Nil
+        else List(Map(
+          "line" -> cs.lineNumber.getOrElse(-1),
+          "condition" -> condition.code,
+          "branch" -> (if (holds) "true" else "false"),
+          "kind" -> how,
+          "establishes" -> established.map { case (op, rhs) => s"$v $op $rhs" }))
       }
-    })
+    }.distinctBy(m => (m("line"), m("condition")))
+
+  def bounds(guards: List[Map[String, Any]], v: String): (Boolean, Boolean) = {
+    val ops = guards.flatMap(_("establishes").asInstanceOf[List[String]]).map(_.stripPrefix(v + " ").split(" ", 2))
+    val upper = ops.exists(p => Set("<", "<=", "==").contains(p(0)))
+    val lower = ops.exists(p => Set(">", ">=", "==").contains(p(0)))
+    (lower, upper)
   }
 
-  if (!foundTarget) {
-     output.append(s"ERROR: No supported operation found at $filename:$lineNum\n")
-     output.append("Supported: buf[i], memory copy/set functions, allocation functions,\n")
-     output.append("           snprintf, and their library-specific wrappers.\n")
+  val atLine = cpg.call.where(_.file.name(filePattern)).filter(_.lineNumber.contains(lineNum)).l
+  val access = atLine.filter(_.name == "<operator>.indirectIndexAccess").sortBy(_.columnNumber.getOrElse(0)).headOption
+  val sized = atLine.filter(c => classifySizedOp(c.name).nonEmpty).sortBy(_.columnNumber.getOrElse(0)).headOption
+
+  val target: Option[(Call, Map[String, Any], Option[Expression], Boolean)] = access match {
+    case Some(a) =>
+      Some((a, Map("kind" -> "buffer_access", "code" -> a.code, "buffer" -> arg(a, 1).map(_.code).getOrElse("?"),
+                   "index" -> arg(a, 2).map(_.code).getOrElse("?")), arg(a, 2), true))
+    case None => sized.map { c =>
+      val (label, sizeIdx, dstIdx) = classifySizedOp(c.name).get
+      (c, Map("kind" -> "sized_call", "label" -> label, "function" -> c.name, "code" -> c.code,
+              "size" -> arg(c, sizeIdx).map(_.code).getOrElse("?"),
+              "destination" -> dstIdx.flatMap(arg(c, _)).map(_.code).getOrElse("")), arg(c, sizeIdx), false)
+    }
   }
 
-
-  // --- Common Analysis Method ---
-
-  def analyzeChecks(method: Method, targetCall: Call, variable: String, out: StringBuilder): Unit = {
-
-      // 1. Control Dependence Checks
-      // Match actual Joern comparison operator names semantically
-      val comparisonOps = Set(
-        "<operator>.lessThan", "<operator>.greaterThan",
-        "<operator>.lessEqualsThan", "<operator>.greaterEqualsThan",
-        "<operator>.equals", "<operator>.notEquals"
-      )
-      val guardingChecks = targetCall.controlledBy.isCall.filter(c => {
-         c.code.contains(variable) && comparisonOps.contains(c.name)
-      }).l
-
-      out.append("LOCAL CHECKS\n")
-      out.append("-" * 30 + "\n")
-
-      var guarded = false
-
-      if (guardingChecks.isEmpty) {
-         out.append("  None found.\n")
-      } else {
-         guardingChecks.foreach(cmp => {
-             // Restart traversal from cmp to use .astParent steps
-             val isLoop = cmp.start.astParent.isControlStructure.controlStructureType.l.exists(t => t == "WHILE" || t == "FOR" || t == "DO")
-             val typeLabel = if (isLoop) "[LOOP GUARD]" else "[GUARD]"
-             guarded = true
-             out.append(f"  Line ${cmp.lineNumber.getOrElse(0)}%-4d: ${cmp.code}%-20s | $typeLabel\n")
-         })
-      }
-      out.append("\n")
-
-      // 2. Inter-procedural Checks
-      val paramOpt = method.parameter.filter(_.name == variable).l.headOption
-      out.append("INTER-PROCEDURAL CHECKS\n")
-      out.append("-" * 30 + "\n")
-
-      paramOpt match {
-        case Some(pNode) =>
-          val pIndex = pNode.order
-          val callSites = cpg.call.methodFullNameExact(method.fullName).l
-
-          if (callSites.isEmpty) {
-            out.append("  No callers found.\n")
-          } else {
-            var foundInter = false
-            callSites.foreach(callSite => {
-              val callerMethod = callSite.method
-              val argAtCallSite = callSite.argument.l.find(_.order == pIndex)
-
-              argAtCallSite.foreach(arg => {
-                val argVarInCaller = extractVariable(arg.code)
-                // Check controllers for the call site!
-                val callerGuards = callSite.controlledBy.isCall.filter(c => {
-                    c.code.contains(argVarInCaller) && comparisonOps.contains(c.name)
-                }).l
-
-                if (callerGuards.nonEmpty) {
-                   foundInter = true
-                   guarded = true
-                   out.append(s"  In Caller: ${callerMethod.name} (${callerMethod.file.name.headOption.getOrElse("?")})\n")
-                   callerGuards.foreach(cmp => {
-                     out.append(f"    Line ${cmp.lineNumber.getOrElse(0)}%-4d: ${cmp.code}\n")
-                   })
-                }
-              })
-            })
-            if (!foundInter) out.append("  None found in callers.\n")
-          }
+  val result: Map[String, Any] = target match {
+    case None =>
+      Map("status" -> "unsupported",
+          "calls_on_line" -> atLine.filterNot(_.name.startsWith("<operator>")).map(_.code).distinct.take(10))
+    case Some((call, info, valueExpr, needsLower)) =>
+      // The variable checked is the first identifier in the index / size argument.
+      val variable = valueExpr.toList.flatMap(identifiersIn).headOption.map(_.name)
+      variable match {
         case None =>
-          out.append("  N/A (Variable is not a method parameter).\n")
+          Map("status" -> "no_variable", "target" -> (info + ("line" -> lineNum)))
+        case Some(v) =>
+          val local = guardsFor(call, v)
+          // A parameter's checks may live in the callers.
+          val method = call.method
+          val param = method.parameter.nameExact(v).l.headOption
+          val callerGuards = param.toList.flatMap { p =>
+            method.callIn.l.take(50).flatMap { site =>
+              site.argument.l.find(_.argumentIndex == p.index).toList
+                .flatMap(identifiersIn).headOption.toList.flatMap { a =>
+                  guardsFor(site, a.name).map(g => g ++ Map(
+                    "caller" -> site.method.name, "caller_id" -> site.method.id.toString,
+                    "call_line" -> site.lineNumber.getOrElse(-1), "variable" -> a.name))
+                }
+            }
+          }
+          val unsigned = isUnsigned(v, call)
+          val (lowerL, upperL) = bounds(local, v)
+          val callerBounds = callerGuards.map(g => bounds(List(g), g("variable").toString))
+          val lower = lowerL || unsigned || callerBounds.exists(_._1)
+          val upper = upperL || callerBounds.exists(_._2)
+          val status =
+            if (upper && (lower || !needsLower)) "guarded"
+            else if (upper || lower || local.nonEmpty || callerGuards.nonEmpty) "partially_guarded"
+            else "no_guard_found"
+          Map("status" -> status,
+              "target" -> (info ++ Map("line" -> lineNum, "variable" -> v, "variable_unsigned" -> unsigned,
+                                       "method" -> method.name, "method_id" -> method.id.toString)),
+              "guards" -> local, "caller_guards" -> callerGuards,
+              "lower_bound" -> lower, "upper_bound" -> upper, "lower_bound_required" -> needsLower,
+              "is_parameter" -> param.nonEmpty)
       }
-
-      out.append("\nSUMMARY\n")
-      out.append("-" * 30 + "\n")
-      out.append(s"Overall Status: ${if (guarded) "GUARDED" else "UNGUARDED OR INSUFFICIENT CHECKS"}\n")
   }
 
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"
 }
