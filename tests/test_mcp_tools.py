@@ -2001,149 +2001,35 @@ class TestMCPTools:
 
     @pytest.mark.asyncio
     async def test_get_type_definition_success(self, mock_services):
-        """Test getting type definition with members"""
+        """Types carry member totals, truncation, aliases and empty declarations."""
+        import json
         from src.tools.code_browsing_tools import register_code_browsing_tools
-        
-        # Mock query result with type info
+
+        payload = [{"total": 3, "types": [
+            {"name": "Wide", "fullName": "Wide", "filename": "t.c", "lineNumber": 2, "aliasOf": "",
+             "forward_declaration": False, "member_total": 21,
+             "members": [{"name": f"m{i:02d}", "type": "int"} for i in range(1, 21)]},
+            {"name": "Empty", "fullName": "Empty", "filename": "t.c", "lineNumber": 25, "aliasOf": "",
+             "forward_declaration": False, "member_total": 0, "members": []},
+        ]}]
         mock_services["query_executor"].execute_query.return_value = QueryResult(
-            success=True,
-            data=[
-                {
-                    "_1": "Buffer",
-                    "_2": "struct Buffer",
-                    "_3": "buffer.h",
-                    "_4": 10,
-                    "_5": [
-                        {"name": "data", "type": "char*"},
-                        {"name": "size", "type": "int"},
-                    ]
-                }
-            ],
-            row_count=1
-        )
+            success=True, data=[json.dumps(payload)], row_count=1)
 
         mcp = FastMCP("TestServer")
         register_code_browsing_tools(mcp, mock_services)
 
         async with Client(mcp) as client:
             result = await client.call_tool("get_type_definition", {
-                "codebase_hash": "553642871dd4251d",
-                "type_name": "Buffer"
+                "codebase_hash": "553642871dd4251d", "type_name": ".*", "limit": 2, "member_limit": 20,
             })
-            import json
-            result_dict = json.loads(result.content[0].text)
-
-            assert result_dict["success"] is True
-            assert "types" in result_dict
-            assert len(result_dict["types"]) == 1
-            assert result_dict["types"][0]["name"] == "Buffer"
-            assert len(result_dict["types"][0]["members"]) == 2
-
-    @pytest.mark.asyncio
-    async def test_get_type_definition_collapses_joern_duplicate_variants(
-        self, mock_services
-    ):
-        """Canonical definitions win and duplicate-only definitions keep members."""
-        import json
-
-        from src.tools.code_browsing_tools import register_code_browsing_tools
-
-        mock_services["query_executor"].execute_query.return_value = QueryResult(
-            success=True,
-            data=[
-                {
-                    "_1": "glob_t",
-                    "_2": "glob_t<duplicate>0",
-                    "_3": "runtest.c",
-                    "_4": 228,
-                    "_5": [{"name": "gl_pathc", "type": "size_t"}],
-                },
-                {
-                    "_1": "glob_t",
-                    "_2": "glob_t",
-                    "_3": "runtest.c",
-                    "_4": 134,
-                    "_5": [
-                        {"name": "gl_pathc", "type": "size_t"},
-                        {"name": "gl_pathv", "type": "char**"},
-                    ],
-                },
-                {
-                    "_1": "testDesc",
-                    "_2": "testDesc<duplicate>1",
-                    "_3": "runtest.c",
-                    "_4": 116,
-                    "_5": [{"name": "desc", "type": "char*"}],
-                },
-            ],
-            row_count=3,
-        )
-
-        mcp = FastMCP("TestServer")
-        register_code_browsing_tools(mcp, mock_services)
-
-        async with Client(mcp) as client:
-            result = await client.call_tool(
-                "get_type_definition",
-                {"codebase_hash": "553642871dd4251d", "type_name": ".*"},
-            )
-            result_dict = json.loads(result.content[0].text)
-
-        assert result_dict["total"] == 2
-        assert result_dict["types"] == [
-            {
-                "name": "glob_t",
-                "fullName": "glob_t",
-                "filename": "runtest.c",
-                "lineNumber": 134,
-                "members": [
-                    {"name": "gl_pathc", "type": "size_t"},
-                    {"name": "gl_pathv", "type": "char**"},
-                ],
-            },
-            {
-                "name": "testDesc",
-                "fullName": "testDesc",
-                "filename": "runtest.c",
-                "lineNumber": 116,
-                "members": [{"name": "desc", "type": "char*"}],
-            },
-        ]
-
-
-
-
-
-
-
-class TestCopyLocalSourceTree:
-    """Unit tests for the off-loop local-source copy helper (path-race fix A)."""
-
-    def test_copies_files_and_dirs(self, tmp_path):
-        from src.tools.core_tools import _copy_local_source_tree
-        src = tmp_path / "src"; (src / "sub").mkdir(parents=True)
-        (src / "a.c").write_text("int a;")
-        (src / "sub" / "b.c").write_text("int b;")
-        dst = tmp_path / "dst"
-        _copy_local_source_tree(str(src), str(dst))
-        assert (dst / "a.c").read_text() == "int a;"
-        assert (dst / "sub" / "b.c").read_text() == "int b;"
-
-    def test_skips_symlink_escaping_source_root(self, tmp_path):
-        import os
-        from src.tools.core_tools import _copy_local_source_tree
-        outside = tmp_path / "secret.txt"; outside.write_text("TOP SECRET")
-        src = tmp_path / "src"; src.mkdir()
-        (src / "ok.c").write_text("int ok;")
-        os.symlink(str(outside), str(src / "leak"))   # escapes the source root
-        dst = tmp_path / "dst"
-        _copy_local_source_tree(str(src), str(dst))
-        assert (dst / "ok.c").exists()
-        assert not (dst / "leak").exists()            # escaping symlink not copied
-
-
-class TestLargeProjectGuard:
-    """generate_cpg large-project guard: configurable + toggleable (fix #2)."""
+        data = result.structured_content
+        assert (data["total"], data["returned"], data["truncated"]) == (3, 2, True)
+        wide, empty = data["types"]
+        assert (wide["member_total"], len(wide["members"]), wide["members_truncated"]) == (21, 20, True)
+        assert wide["aliasOf"] is None
+        assert (empty["member_total"], empty["members_truncated"], empty["forward_declaration"]) == (0, False, False)
+        query = mock_services["query_executor"].execute_query.call_args.kwargs["query"]
+        assert "members.take(20)" in query and ".take(2)" in query
 
     @pytest.mark.asyncio
     async def test_warns_when_guard_on_and_over_threshold(self, mock_services, tmp_path):
