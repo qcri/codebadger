@@ -216,6 +216,8 @@ def test_list_parameters_decodes_current_joern_method_keyed_json():
             }
         ],
         "total": 1,
+        "returned": 1,
+        "truncated": False,
     }
 
 
@@ -252,7 +254,7 @@ def test_list_parameters_versions_its_cache_key():
 
     service.list_parameters(CODEBASE_HASH, "parse")
 
-    expected_params = {"method_name": "parse", "result_schema_version": 2}
+    expected_params = {"method_name": "parse", "method_id": -1, "limit": 1000, "result_schema_version": 3}
     db_manager.get_cached_tool_output.assert_called_once_with(
         "list_parameters", CODEBASE_HASH, expected_params, cache_ttl=300
     )
@@ -323,3 +325,32 @@ def test_list_calls_keeps_same_line_calls_apart_by_node_and_column():
     calls = service.list_calls(CODEBASE_HASH, caller_pattern="twice")["calls"]
     assert [(c["node_id"], c["columnNumber"], c["caller_id"]) for c in calls] == [
         ("30064771081", 25, "107374182400"), ("30064771082", 40, "107374182400")]
+
+
+def _py_size(node, owner, param):
+    return {"_1": "size", "_2": node, "_3": f"{owner}.size", "_4": owner, "_5": "model.py", "_6": 2,
+            "_7": [{"_1": "self", "_2": "ANY", "_3": 0}, {"_1": param, "_2": "ANY", "_3": 1}]}
+
+
+def test_list_parameters_attributes_same_named_methods_to_their_owner():
+    # Audit case py_params: A.size(self, width) and B.size(self, height).
+    service, _ = _service([_py_size(107374182402, "model.py:<module>.A", "width"),
+                           _py_size(107374182407, "model.py:<module>.B", "height")])
+    methods = service.list_parameters(CODEBASE_HASH, "size")["methods"]
+    assert [(m["node_id"], m["owner"], m["parameters"][1]["name"]) for m in methods] == [
+        ("107374182402", "model.py:<module>.A", "width"), ("107374182407", "model.py:<module>.B", "height")]
+
+
+def test_list_parameters_selects_by_method_id():
+    service, executor = _service([_py_size(107374182407, "model.py:<module>.B", "height")])
+    result = service.list_parameters(CODEBASE_HASH, "size", method_id=107374182407)
+    query = executor.execute_query.call_args.kwargs["query"]
+    assert ".filter(_.id == 107374182407L)" in query and '.name("size")' not in query
+    assert result["methods"][0]["owner"] == "model.py:<module>.B"
+
+
+def test_list_parameters_reports_a_capped_list():
+    service, executor = _service([_py_size(i, "m.C", "x") for i in range(3)])
+    result = service.list_parameters(CODEBASE_HASH, "size", limit=2)
+    assert executor.execute_query.call_args.kwargs["query"].endswith(".take(3).l")
+    assert (result["returned"], result["truncated"]) == (2, True) and "method_id" in result["hint"]
