@@ -25,9 +25,19 @@ import uuid
 import pytest
 from fastmcp.exceptions import ToolError
 
+import json
+
 from src.models import Config, CPGConfig, QueryResult, CodebaseInfo
 from src.tools.mcp_tools import register_tools
 from fastmcp import FastMCP, Client
+
+
+def _template_reply(text: str) -> str:
+    """What program_slice.scala returns once the executor strips the markers:
+    plain ANCHOR_NOT_FOUND text on failure, else a JSON envelope with the summary."""
+    if text.startswith("ANCHOR_NOT_FOUND:"):
+        return text
+    return json.dumps([{"summary": text, "backward": [], "forward": [], "control": [], "truncated": False}])
 
 
 def _make_services(text_output: str) -> dict:
@@ -53,7 +63,7 @@ def _make_services(text_output: str) -> dict:
             query_executor.last_query = kwargs['query']
         elif len(args) > 2:
             query_executor.last_query = args[2]
-        return QueryResult(success=True, data=[text_output], row_count=1)
+        return QueryResult(success=True, data=[_template_reply(text_output)], row_count=1)
 
     query_executor.execute_query = execute_query_with_tracking
 
@@ -112,7 +122,7 @@ Arguments: &ret[0], prefix, lenp
 """
         return QueryResult(
             success=True,
-            data=[text_output],
+            data=[_template_reply(text_output)],
             row_count=1,
         )
 
@@ -176,7 +186,7 @@ Arguments: fd, buffer, len
 """
         return QueryResult(
             success=True,
-            data=[text_output],
+            data=[_template_reply(text_output)],
             row_count=1,
         )
 
@@ -867,8 +877,7 @@ async def test_slice_error_text_surfaced():
     produce a zero-dependency result tagged [ok].
     """
     error_text = """\
-ERROR: No anchor node found on line 999 in method compute_top
-No calls, assignments, or control structures found on line 999.
+ANCHOR_NOT_FOUND: no call, assignment, or condition on or within 3 lines of line 999 in method compute_top
 Nearby lines with calls: 43
 """
     services = _make_services(error_text)
@@ -880,11 +889,10 @@ Nearby lines with calls: 43
             "codebase_hash": services["codebase_hash"],
             "location": "src/slice_scenarios.c:999",
             "direction": "backward",
-        })).content[0].text
+        }, raise_on_error=False)).content[0].text
 
-    # The ERROR message must be surfaced — not swallowed into empty output
-    assert "ERROR" in res_text
-    assert "No anchor" in res_text
+    # A missing anchor is a coded failure carrying the diagnostics, not an empty slice
+    assert res_text.startswith("VALIDATION_ERROR: no call, assignment, or condition")
     # Nearby-lines hint must also pass through
     assert "Nearby lines" in res_text
 
@@ -898,7 +906,7 @@ async def test_slice_no_method_error_surfaced():
     listing matching files and methods.  This must reach the caller.
     """
     error_text = """\
-ERROR: No method found containing line 200 in 'unknown_file.c'
+ANCHOR_NOT_FOUND: no method contains line 200 in 'unknown_file.c'
 
 Sample files in CPG (first 5):
   - src/slice_scenarios.c
@@ -914,7 +922,7 @@ Sample files in CPG (first 5):
             "codebase_hash": services["codebase_hash"],
             "location": "unknown_file.c:200",
             "direction": "backward",
-        })).content[0].text
+        }, raise_on_error=False)).content[0].text
 
-    assert "ERROR: No method found" in res_text
+    assert res_text.startswith("VALIDATION_ERROR: no method contains line 200")
     assert "unknown_file.c" in res_text
