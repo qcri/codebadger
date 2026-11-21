@@ -36,6 +36,9 @@ _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 _MAX_COMPILE_ERROR_CHARS = 2000
 
 
+_SCALAR_OPEN = "<codebadger_scalar>"
+_SCALAR_CLOSE = "</codebadger_scalar>"
+
 class QueryExecutor:
     """Service for executing CPGQL queries against CPGs using Joern HTTP server"""
 
@@ -240,13 +243,12 @@ class QueryExecutor:
         the cap cut results off. An explicit caller limit within bounds is authoritative and
         yields server_cap=None.
 
-        The result is serialized with `.toJsonPretty` (parsed back by _parse_output) — the
-        JSON path is kept as the default. The one fix over the naive version is that the
-        base query is PARENTHESISED before `.take`/`.toJsonPretty`/`.toString` are appended:
-        without it, a trailing serializer binds only to the last operand of a `++` chain
-        (e.g. `a.l ++ b.l ++ c.name.toJsonPretty`), so the String from toJsonPretty
-        concatenates into the list as `List[String | Char]` and prints as raw characters
-        instead of JSON — the run_cpgql_query char-explosion bug.
+        A collection result is capped and serialized with `.toJsonPretty`; a single
+        value (`.size`, `.id.head`) is wrapped in a scalar envelope that _parse_output
+        turns back into a number or string. Which one applies is decided at run time.
+        The base query is PARENTHESISED first: otherwise a trailing serializer binds only
+        to the last operand of a `++` chain, so the String from toJsonPretty concatenates
+        into the list as `List[String | Char]` — the run_cpgql_query char-explosion bug.
 
         Block queries ({ ... }) that already manage their own output are left untouched: a
         self-emitting <codebadger_result> envelope (the analysis templates — where the marker
@@ -275,30 +277,30 @@ class QueryExecutor:
 
         # Auto-cap dataflow queries that are not already limited — they fan out over the
         # entire identifier set and return enormous result sets if unconstrained.
-        is_size_query = bool(re.search(r"\.size\s*$", base_query))
         server_cap: Optional[int] = None
-        if not is_size_query:
-            if limit is None:
-                # Dataflow queries fan out over the whole identifier set; anything else
-                # unbounded (e.g. a raw `cpg.method.l`) could stream the whole graph back.
-                if any(p in base_query for p in _DATAFLOW_PATTERNS):
-                    server_cap = _DATAFLOW_RESULT_LIMIT
-                else:
-                    server_cap = MAX_RESULT_ROWS
-            elif limit > MAX_RESULT_ROWS:
+        if limit is None:
+            # Dataflow queries fan out over the whole identifier set; anything else
+            # unbounded (e.g. a raw `cpg.method.l`) could stream the whole graph back.
+            if any(p in base_query for p in _DATAFLOW_PATTERNS):
+                server_cap = _DATAFLOW_RESULT_LIMIT
+            else:
                 server_cap = MAX_RESULT_ROWS
+        elif limit > MAX_RESULT_ROWS:
+            server_cap = MAX_RESULT_ROWS
+        cap = server_cap + 1 if server_cap is not None else max(int(limit), 1)
 
-        # Parenthesise so the appended .take/.toJsonPretty/.toString bind to the WHOLE
-        # expression (a `++` chain otherwise binds them to its last operand only).
-        base_query = f"({base_query})"
-        if server_cap is not None:
-            base_query = f"{base_query}.take({server_cap + 1})"
-        elif limit is not None and limit > 0 and not is_size_query:
-            base_query = f"{base_query}.take({limit})"
-
-        if is_size_query:
-            return f"{base_query}.toString", None
-        return f"{base_query}.toJsonPretty", server_cap
+        # Whether the result is a collection or a single value (`.size`, `.id.head`,
+        # `.name.head`) is decided when it runs, not guessed from the text: a
+        # collection is capped and serialized as a JSON array; anything else comes
+        # back in a scalar envelope so numbers stay numbers. Parenthesising binds the
+        # whole expression (a `++` chain would otherwise bind only its last operand),
+        # and a single match expression (no `val`) keeps the REPL from echoing it.
+        return (
+            f"(({base_query}): Any) match {{\n"
+            f"  case __cbIt: IterableOnce[?] => __cbIt.iterator.take({cap}).toList.toJsonPretty\n"
+            f'  case __cbValue => "{_SCALAR_OPEN}\\n" + List(__cbValue).toJson + "\\n{_SCALAR_CLOSE}"\n'
+            f"}}"
+        ), server_cap
 
     def _execute_via_client(
         self,
@@ -379,6 +381,17 @@ class QueryExecutor:
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         output = ansi_escape.sub('', output)
 
+        # A single value (count, first ID, one name) from a normalized raw query.
+        scalar_match = re.search(
+            re.escape(_SCALAR_OPEN) + r"\s*(.*?)\s*" + re.escape(_SCALAR_CLOSE), output, re.DOTALL)
+        if scalar_match:
+            try:
+                values = json.loads(scalar_match.group(1))
+                if isinstance(values, list) and len(values) == 1:
+                    return values[0]
+            except json.JSONDecodeError:
+                pass
+
         # codebadger_result markers wrap text output from non-JSON queries
         marker_match = re.search(r'<codebadger_result>\s*(.*?)\s*</codebadger_result>', output, re.DOTALL)
         if marker_match:
@@ -397,6 +410,19 @@ class QueryExecutor:
                 else:
                     return [{"value": str(data)}]
             except json.JSONDecodeError:
+                pass
+
+        # A short JSON value prints on one line as a quoted REPL string
+        # (`val res8: String = "[]"`); decode the string literal, then the JSON.
+        single = re.search(r'^val \w+: String = (".*")\s*$', output.strip(), re.DOTALL)
+        if single:
+            try:
+                data = json.loads(json.loads(single.group(1)))
+                if isinstance(data, dict):
+                    return [data]
+                if isinstance(data, list):
+                    return data
+            except (json.JSONDecodeError, TypeError):
                 pass
 
         # Try direct JSON parsing
