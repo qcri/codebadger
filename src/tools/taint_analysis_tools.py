@@ -979,17 +979,32 @@ Examples:
     @mcp.tool(
         title="Get Program Slice",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
+        output_schema={"type": "object", "properties": {
+            "success": {"type": "boolean"}, "summary": {"type": "string"},
+            "anchor": {"type": "object"}, "method": {"type": "object"},
+            "backward": {"type": "array", "items": {"type": "object"}}, "backward_total": {"type": "integer"},
+            "control": {"type": "array", "items": {"type": "object"}},
+            "forward": {"type": "array", "items": {"type": "object"}}, "forward_total": {"type": "integer"},
+            "stored_in": {"type": "array", "items": {"type": "string"}},
+            "affected_control": {"type": "array", "items": {"type": "object"}},
+            "truncated": {"type": "boolean"}, "warnings": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["success"], "additionalProperties": False},
         description="""Build a program slice from a specific call location.
 
 Creates a program slice showing code that affects (backward) or is affected by (forward)
 a specific call, including dataflow and control dependencies. Optimized for static code analysis.
 
 Returns:
-    Human-readable text summary showing:
-    - Target call info (name, code, location)
-    - Backward slice: data dependencies, control dependencies, parameters
-    - Forward slice: propagations, affected control flow
+    {"success": true, "summary": "<the slice as text>",
+     "anchor": {"node_id", "name", "code", "filename", "line", "requested_line", "moved", "variables"},
+     "method": {"node_id", "name", "full_name"},
+     "backward": [{"filename", "line", "variable", "code", "depends_on", "kind"}],
+     "backward_total": 1, "control": [{"filename", "line", "condition"}],
+     "forward": [{"filename", "line", "kind", "variable", "code"}], "forward_total": 0,
+     "stored_in": [...], "affected_control": [...], "truncated": false, "warnings": []}
+    Backward kinds: definition, parameter, caller, candidate, call_argument.
+    Forward kinds: usage, propagation, passed_to_func. Lists hold at most 60 rows;
+    *_total counts all and truncated flags a cut.
 
 Notes:
     - Backward slice shows data origins and control conditions.
@@ -1043,7 +1058,7 @@ Examples:
                 "max_depth": max_depth,
                 "include_control_flow": include_control_flow,
                 # v3: reaching definitions + control dependence, authoritative anchors.
-                "analysis_version": 3,
+                "analysis_version": 4,
             }
 
             def _execute():
@@ -1070,13 +1085,20 @@ Examples:
 
                 return unwrap_result(result)
 
-            summary = str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))
-            if summary.startswith("ANCHOR_NOT_FOUND:"):
+            raw = str(_cached_taint_query(services, "get_program_slice", codebase_hash, cache_params, _execute))
+            if raw.startswith("ANCHOR_NOT_FOUND:"):
                 # A missing anchor is not an empty slice: fail with the diagnostics.
-                raise ValidationError(summary.split("ANCHOR_NOT_FOUND:", 1)[1].strip())
+                raise ValidationError(raw.split("ANCHOR_NOT_FOUND:", 1)[1].strip())
+            evidence = parse_json_result(raw)
+            summary = str(evidence.get("summary", ""))
             if detail == "compact" and len(summary) > 3000:
                 summary = summary[:3000].rstrip() + "\n...[truncated; use detail='full']"
-            return {"success": True, "summary": summary}
+            response = {"success": True, "summary": summary}
+            for key in ("anchor", "method", "backward", "backward_total", "control", "forward",
+                        "forward_total", "stored_in", "affected_control", "truncated", "warnings"):
+                if key in evidence:
+                    response[key] = evidence[key]
+            return response
 
         except ValidationError as e:
             logger.error(f"Error getting program slice: {e}")

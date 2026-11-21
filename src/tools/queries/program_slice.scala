@@ -19,6 +19,11 @@
   val direction = "{{direction}}"
 
   val output = new StringBuilder()
+  // A failed selection is returned as plain text (ANCHOR_NOT_FOUND: ...); a slice
+  // returns the text summary together with the same rows as structured evidence.
+  val errorOut = new StringBuilder()
+  val evidence = mutable.LinkedHashMap[String, Any]()
+  val warnings = mutable.ListBuffer[String]()
 
   // Per-node code clip: one macro-expanded statement can be enormous.
   def clip(s: String, n: Int = 200): String =
@@ -98,10 +103,12 @@
 
   targetMethodOpt match {
     case Some(method) => {
-      if (method.call.size == 0 && (method.lineNumberEnd.getOrElse(0) - method.lineNumber.getOrElse(0)) <= 1)
-        output.append(
-          s"WARNING: method '${method.name}' is present but has no body in this CPG — likely #ifdef/feature-gated. " +
-          "Rebuild with generate_cpg(defines=[...], include_paths=[...]) before trusting this slice.\n")
+      if (method.call.size == 0 && (method.lineNumberEnd.getOrElse(0) - method.lineNumber.getOrElse(0)) <= 1) {
+        val w = s"method '${method.name}' is present but has no body in this CPG — likely #ifdef/feature-gated. " +
+          "Rebuild with generate_cpg(defines=[...], include_paths=[...]) before trusting this slice."
+        warnings += w
+        output.append(s"WARNING: $w\n")
+      }
 
       findAnchor(method) match {
         case Some(anchor) => {
@@ -115,6 +122,11 @@
           output.append(s"Method: ${method.fullName}\n")
           val anchorVars = anchor.operands.map(_.name).distinct
           if (anchorVars.nonEmpty) output.append(s"Variables: ${anchorVars.mkString(", ")}\n")
+          evidence("anchor") = Map(
+            "node_id" -> anchor.node.id.toString, "name" -> anchor.name, "code" -> clip(anchor.code),
+            "filename" -> targetFile, "line" -> anchor.line, "requested_line" -> lineNum,
+            "moved" -> (anchor.line != lineNum), "variables" -> anchorVars)
+          evidence("method") = Map("node_id" -> method.id.toString, "name" -> method.name, "full_name" -> method.fullName)
 
           // === BACKWARD SLICE: reaching definitions (dataflow overlay) ===
           if (includeBackward) {
@@ -183,6 +195,10 @@
             backward(anchor.operands, maxDepth)
 
             val sortedDeps = deps.toList.distinct.sortBy(d => (d._2, d._1))
+            evidence("backward") = sortedDeps.take(maxNodes).map { case (line, file, vn, code, depVars, kind) =>
+              Map("filename" -> file, "line" -> line, "variable" -> vn, "code" -> clip(code),
+                  "depends_on" -> depVars, "kind" -> kind) }
+            evidence("backward_total") = sortedDeps.size
             output.append(s"\n[BACKWARD SLICE] (${sortedDeps.size} data dependencies, reaching definitions)\n")
             if (sortedDeps.nonEmpty) {
               output.append("\n  Data Dependencies:\n")
@@ -206,6 +222,8 @@
               // anchor executes, not every earlier branch in the method.
               val controllers = anchor.node.controlledBy.l
                 .map(c => (lineOf(c), fileOf(c), c.code)).distinct.sortBy(_._1).take(30)
+              evidence("control") = controllers.map { case (line, file, cond) =>
+                Map("filename" -> file, "line" -> line, "condition" -> clip(cond)) }
               output.append("\n  Control Dependencies (Target Method):\n")
               if (controllers.isEmpty) output.append("    (none: the anchor runs on every path through the method)\n")
               controllers.foreach { case (line, file, cond) =>
@@ -273,6 +291,10 @@
             forward(definedAt, maxDepth)
 
             val sortedProps = props.toList.distinct.sortBy(p => (p._2, p._1))
+            evidence("forward") = sortedProps.take(maxNodes).map { case (line, file, kind, vn, code) =>
+              Map("filename" -> file, "line" -> line, "kind" -> kind, "variable" -> vn, "code" -> clip(code)) }
+            evidence("forward_total") = sortedProps.size
+            evidence("stored_in") = definedAt.map(_.code).distinct
             output.append(s"\n[FORWARD SLICE] (${sortedProps.size} propagations, uses reached by the anchor's value)\n")
             if (definedAt.nonEmpty) output.append(s"  Result stored in: ${definedAt.map(_.code).distinct.mkString(", ")}\n")
             if (sortedProps.nonEmpty) {
@@ -294,6 +316,8 @@
                 .filter(cs => cs.condition.ast.isIdentifier.l.exists(i => reachedUses.contains(i.id)))
                 .map(cs => (lineOf(cs), fileOf(cs), cs.controlStructureType, cs.condition.code.headOption.getOrElse("")))
                 .l.distinct.sortBy(_._1).take(20)
+              evidence("affected_control") = affected.map { case (line, file, ctrlType, cond) =>
+                Map("filename" -> file, "line" -> line, "type" -> ctrlType, "condition" -> cond) }
               if (affected.nonEmpty) {
                 output.append("\n  Control Flow Affected (Target Method):\n")
                 affected.foreach { case (line, file, ctrlType, cond) =>
@@ -308,12 +332,12 @@
           val callsOnLine = method.call.filter(c => c.lineNumber.getOrElse(-1) == lineNum).l
           val callNames = callsOnLine.map(_.name).filterNot(_.startsWith("<operator>")).distinct
           if (callName.nonEmpty)
-            output.append(s"ANCHOR_NOT_FOUND: no call to '$callName' on line $lineNum in method ${method.name}\n")
+            errorOut.append(s"ANCHOR_NOT_FOUND: no call to '$callName' on line $lineNum in method ${method.name}\n")
           else
-            output.append(s"ANCHOR_NOT_FOUND: no call, assignment, or condition on or within 3 lines of line $lineNum in method ${method.name}\n")
-          if (callNames.nonEmpty) output.append(s"Calls on line $lineNum: ${callNames.mkString(", ")}\n")
+            errorOut.append(s"ANCHOR_NOT_FOUND: no call, assignment, or condition on or within 3 lines of line $lineNum in method ${method.name}\n")
+          if (callNames.nonEmpty) errorOut.append(s"Calls on line $lineNum: ${callNames.mkString(", ")}\n")
           val nearbyLines = method.call.lineNumber.l.filter(l => Math.abs(l - lineNum) <= 5).distinct.sorted
-          if (nearbyLines.nonEmpty) output.append(s"Nearby lines with calls: ${nearbyLines.mkString(", ")}\n")
+          if (nearbyLines.nonEmpty) errorOut.append(s"Nearby lines with calls: ${nearbyLines.mkString(", ")}\n")
         }
       }
     }
@@ -321,21 +345,29 @@
     case None => {
       val matchingFiles = cpg.file.name.l.filter(f => f.contains(filename) || filename.split("/").lastOption.exists(f.endsWith(_))).distinct.take(10)
       val methodsInFile = cpg.method.filter(m => normalizeFilename(m.file.name.headOption.getOrElse(""), filename)).l.take(10)
-      output.append(s"ANCHOR_NOT_FOUND: no method contains line $lineNum in '$filename'\n")
+      errorOut.append(s"ANCHOR_NOT_FOUND: no method contains line $lineNum in '$filename'\n")
       if (matchingFiles.nonEmpty) {
-        output.append(s"Matching files in CPG:\n")
-        matchingFiles.foreach(f => output.append(s"  - $f\n"))
+        errorOut.append(s"Matching files in CPG:\n")
+        matchingFiles.foreach(f => errorOut.append(s"  - $f\n"))
       }
       if (methodsInFile.nonEmpty) {
-        output.append(s"Methods in matching file(s):\n")
-        methodsInFile.foreach(m => output.append(s"  - ${m.name}: lines ${m.lineNumber.getOrElse(-1)}-${m.lineNumberEnd.getOrElse(-1)}\n"))
+        errorOut.append(s"Methods in matching file(s):\n")
+        methodsInFile.foreach(m => errorOut.append(s"  - ${m.name}: lines ${m.lineNumber.getOrElse(-1)}-${m.lineNumberEnd.getOrElse(-1)}\n"))
       }
       if (matchingFiles.isEmpty && methodsInFile.isEmpty) {
-        output.append(s"Sample files in CPG (first 5):\n")
-        cpg.file.name.l.distinct.take(5).foreach(f => output.append(s"  - $f\n"))
+        errorOut.append(s"Sample files in CPG (first 5):\n")
+        cpg.file.name.l.distinct.take(5).foreach(f => errorOut.append(s"  - $f\n"))
       }
     }
   }
 
-  "<codebadger_result>\n" + output.toString() + "</codebadger_result>"
+  if (errorOut.nonEmpty) "<codebadger_result>\n" + errorOut.toString() + "</codebadger_result>"
+  else {
+    val backwardTotal = evidence.getOrElse("backward_total", 0).asInstanceOf[Int]
+    val forwardTotal = evidence.getOrElse("forward_total", 0).asInstanceOf[Int]
+    evidence("truncated") = backwardTotal > maxNodes || forwardTotal > maxNodes
+    evidence("warnings") = warnings.toList
+    evidence("summary") = output.toString()
+    "<codebadger_result>\n" + List(evidence.toMap).toJson + "\n</codebadger_result>"
+  }
 }
