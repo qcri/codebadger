@@ -45,6 +45,76 @@ def _resolve_method_selector(method_name: Optional[str], method_id) -> tuple[str
     return method_name.strip(), -1
 
 
+def _raise_for_selection(graph: dict, method_name: str, node_id: int) -> None:
+    """Turn a template's not_found/ambiguous method status into a ValidationError."""
+    status = graph.get("status")
+    if status == "not_found":
+        what = f"method_id {node_id}" if node_id >= 0 else f"method_name '{method_name}'"
+        similar = graph.get("suggestions") or []
+        extra = f" Similar names: {', '.join(similar)}." if similar else ""
+        raise ValidationError(f"no method matches {what}.{extra}")
+    if status == "ambiguous":
+        choices = "; ".join(
+            f"method_id={c['node_id']} {c['full_name']} ({c['filename']}:{c['line']})"
+            for c in graph.get("candidates", [])
+        )
+        raise ValidationError(
+            f"method_name '{method_name}' matches {graph.get('count')} methods; "
+            f"re-run with method_id set to one of: {choices}"
+        )
+
+
+def _call_graph_response(graph: dict) -> Dict[str, Any]:
+    """Structured call graph plus the text rendering existing clients read."""
+    root = graph.get("root") or {}
+    edges = graph.get("edges") or []
+    direction = graph.get("direction", "outgoing")
+    capped = graph.get("capped_methods") or []
+    address_taken = graph.get("address_taken_sites") or []
+    warnings = list(graph.get("warnings") or [])
+    recursive = sum(1 for e in edges if e.get("recursive"))
+
+    lines = [f"Call Graph for {root.get('name')} ({direction})", "=" * 60,
+             f"Root: {root.get('name')} at {root.get('filename')}:{root.get('line')} (method_id={root.get('node_id')})"]
+    lines += [f"WARNING: {w}" for w in warnings]
+    for depth in sorted({e["depth"] for e in edges}):
+        lines.append(f"\n[DEPTH {depth}]")
+        for e in (e for e in edges if e["depth"] == depth):
+            sites = e.get("call_sites") or []
+            at = ", ".join(f"{c['filename']}:{c['line']}" for c in sites[:3]) or "unresolved"
+            if len(sites) > 3:
+                at += f" +{len(sites) - 3} more"
+            d = e.get("definition") or {}
+            tag = " [RECURSIVE]" if e.get("recursive") else ""
+            lines.append(f"  {e['from']} → {e['to']} (call at {at}; {e['to']} defined at "
+                         f"{d.get('filename')}:{d.get('line')}){tag}")
+    lines.append(f"\nTotal: {len(edges)} edges" + (f" ({recursive} recursive)" if recursive else ""))
+    for c in capped:
+        lines.append(f"CAPPED: {c['name']} (method_id={c['method_id']}) has {c['total']} "
+                     f"{'callees' if direction == 'outgoing' else 'callers'}; {c['shown']} shown.")
+    if graph.get("edge_cap_hit"):
+        lines.append(f"TRUNCATED: stopped at {graph.get('edge_cap')} edges; lower depth or start deeper.")
+    if address_taken:
+        lines.append(f"\nNo direct callers (likely indirect/callback dispatch). {len(address_taken)} site(s) "
+                     "take this method's address:")
+        lines += [f"  {a['method']} ({a['filename']}:{a['line']})" for a in address_taken]
+
+    return {
+        "success": True,
+        "root": root,
+        "direction": direction,
+        "edges": edges,
+        "total": len(edges),
+        "returned": len(edges),
+        "recursive_edges": recursive,
+        "truncated": bool(graph.get("truncated")),
+        "capped_methods": capped,
+        "address_taken_sites": address_taken,
+        "warnings": warnings,
+        "summary": "\n".join(lines),
+    }
+
+
 def _cfg_response(graph: dict) -> Dict[str, Any]:
     """Structured CFG result plus the text rendering existing clients read."""
     method = graph.get("method") or {}
@@ -252,41 +322,55 @@ Examples:
     @mcp.tool(
         title="Get Call Graph",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "summary": {"type": "string"}}, "required": ["success"], "additionalProperties": False},
-        description="""Get the call graph for a specific method.
-
-Understand what functions a method calls (outgoing) or what functions
-call it (incoming).
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "root": {"type": "object"},
+                "direction": {"type": "string"},
+                "edges": {"type": "array", "items": {"type": "object"}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "recursive_edges": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "capped_methods": {"type": "array", "items": {"type": "object"}},
+                "address_taken_sites": {"type": "array", "items": {"type": "object"}},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "string"},
+            },
+            "required": ["success", "root", "edges", "total", "truncated", "summary"],
+            "additionalProperties": False,
+        },
+        description="""Get the call graph of one method: what it calls (outgoing) or what calls it (incoming).
 
 Returns:
-    A human-readable text summary:
-    
-    Call Graph for main (outgoing)
-    ============================================================
-    Root: main at main.c:10
-    
-    [DEPTH 1]
-      main → init (config.c:25)
-      main → process (core.c:50)
-    
-    [DEPTH 2]
-      init → load_config (config.c:100)
-      process → validate (core.c:120)
-    
-    Total: 4 edges
+    {"success": true,
+     "root": {"node_id", "name", "full_name", "filename", "line", "external"},
+     "direction": "outgoing",
+     "edges": [{"from_id", "from", "to_id", "to", "depth",
+                "call_sites": [{"node_id", "filename", "line", "column"}],
+                "definition": {"filename", "line"},
+                "recursive": false}],
+     "total": 3, "returned": 3, "recursive_edges": 0, "truncated": false,
+     "capped_methods": [], "address_taken_sites": [], "warnings": [],
+     "summary": "<the same graph as text>"}
 
 Notes:
-    - Essential for impact analysis and understanding code dependencies.
-    - Returns plain text.
-    - Includes file and line number for each call target.
-    - Line numbers refer to where the caller function starts, not the specific call site.
-    - If method_name matches several methods (overloads, file-static helpers), the
-      summary lists up to 10 candidates with their method_id; re-run with one.
+    - Edges always point caller -> callee. call_sites are where the call is made
+      (in the caller); definition is where the callee is defined.
+    - recursive=true only when the callee reaches the caller again through the
+      edges found (recursion or mutual recursion), not when a callee is shared by
+      several callers.
+    - Each method lists at most 50 neighbours and the graph at most 500 edges;
+      capped_methods names methods whose neighbours were cut, and truncated=true
+      flags either cap. Depth is limited by the depth argument.
+    - Incoming with no callers lists address_taken_sites: places the method is
+      used as a function pointer or callback (likely indirect callers).
+    - An unknown method, or a method_name matching several methods, is a
+      VALIDATION_ERROR; the ambiguous case lists each candidate's method_id.
 
 Examples:
     get_call_graph(codebase_hash="abc", method_name="main", direction="outgoing")
-    get_call_graph(codebase_hash="abc", method_id="12345", direction="incoming")
-    get_call_graph(codebase_hash="abc", method_name="vuln_func", direction="incoming")""",
+    get_call_graph(codebase_hash="abc", method_id="12345", direction="incoming")""",
     )
     def get_call_graph(
         codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
@@ -297,6 +381,7 @@ Examples:
         method_id: Annotated[Optional[str], Field(description="Exact method node_id from list_methods; overrides method_name")] = None,
     ) -> Dict[str, Any]:
         """Build the call graph showing callers or callees for a method."""
+        hint = "pass method_name or a numeric method_id, check direction, and keep depth between 1 and 15."
         try:
             validate_codebase_hash(codebase_hash)
 
@@ -325,19 +410,17 @@ Examples:
                 cpg_path=codebase_info.cpg_path,
                 query=query,
                 timeout=120,
-                limit=500,
             )
-
-            if not result.success:
-                raise ToolError(f"{result.error_code or 'QUERY_ERROR'}: {result.error or 'Call graph query failed'} Hint: verify the CPG is ready and narrow the method/depth filters.")
-            summary = unwrap_result(result)
-            if detail == "compact" and len(summary) > 2000:
-                summary = summary[:2000].rstrip() + "\n...[truncated; use detail='full']"
-            return {"success": True, "summary": summary}
+            graph = _parse_json_result(unwrap_result(result))
+            _raise_for_selection(graph, method_name, node_id)
+            response = _call_graph_response(graph)
+            if detail == "compact" and len(response["summary"]) > 2000:
+                response["summary"] = response["summary"][:2000].rstrip() + "\n...[truncated; use detail='full']"
+            return response
 
         except ValidationError as e:
             logger.error(f"Error getting call graph: {e}")
-            raise ToolError(f"VALIDATION_ERROR: {str(e)} Hint: pass method_name or a numeric method_id, check direction, and keep depth between 1 and 15.") from e
+            raise tool_error("VALIDATION_ERROR", str(e), hint) from e
         except ToolError:
             raise
         except Exception as e:
@@ -796,21 +879,7 @@ Examples:
                 timeout=30,
             )
             graph = _parse_json_result(unwrap_result(result))
-            status = graph.get("status")
-            if status == "not_found":
-                what = f"method_id {node_id}" if node_id >= 0 else f"method_name '{method_name}'"
-                similar = graph.get("suggestions") or []
-                extra = f" Similar names: {', '.join(similar)}." if similar else ""
-                raise ValidationError(f"no method matches {what}.{extra}")
-            if status == "ambiguous":
-                choices = "; ".join(
-                    f"method_id={c['node_id']} {c['full_name']} ({c['filename']}:{c['line']})"
-                    for c in graph.get("candidates", [])
-                )
-                raise ValidationError(
-                    f"method_name '{method_name}' matches {graph.get('count')} methods; "
-                    f"re-run with method_id set to one of: {choices}"
-                )
+            _raise_for_selection(graph, method_name, node_id)
             return _cfg_response(graph)
 
         except ValidationError as e:

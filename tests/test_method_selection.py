@@ -13,6 +13,10 @@ from src.tools.code_browsing_tools import _resolve_method_selector, register_cod
 from src.tools.queries import QueryLoader
 
 CODEBASE_HASH = "553642871dd4251d"
+CALL_GRAPH_JSON = json.dumps([{
+    "status": "ok", "direction": "outgoing", "edges": [], "truncated": False,
+    "root": {"node_id": "4242", "name": "init", "full_name": "init", "filename": "a.c", "line": 1},
+}])
 CFG_JSON = json.dumps([{
     "status": "ok", "total_nodes": 1, "total_edges": 0, "edges": [],
     "method": {"node_id": "4242", "name": "init", "full_name": "init", "filename": "a.c", "line": 1},
@@ -45,8 +49,8 @@ def test_templates_render_method_id_and_resolve_unique_or_list_choices(template)
 
 def test_call_graph_tracks_visits_by_node_id():
     query = QueryLoader.load("call_graph", method_name="init", method_id=-1, depth=3, direction="outgoing")
-    assert "Set[Long]()" in query
-    assert "visited.contains(current.id)" in query
+    assert "visited.add(current.id)" in query
+    assert "reaches(to, from)" in query  # recursion is reachability, not "seen before"
     assert "nameExact(methodName)" not in query
 
 
@@ -69,7 +73,7 @@ def _server(executor):
 async def test_tools_send_method_id_to_joern(tool):
     executor = MagicMock()
     # The executor strips the <codebadger_result> envelope before tools see it.
-    body = CFG_JSON if tool == "get_cfg" else "ok"
+    body = CFG_JSON if tool == "get_cfg" else CALL_GRAPH_JSON
     executor.execute_query.return_value = QueryResult(success=True, data=[body], row_count=1)
     async with Client(_server(executor)) as client:
         result = await client.call_tool(tool, {"codebase_hash": CODEBASE_HASH, "method_id": "4242"})
@@ -95,13 +99,14 @@ async def test_tools_require_a_method_selector(tool):
         {"node_id": "1", "full_name": "a.init", "filename": "a.c", "line": 3},
         {"node_id": "2", "full_name": "b.init", "filename": "b.c", "line": 9}]}, "method_id=2 b.init (b.c:9)"),
 ])
-async def test_cfg_selection_failures_are_validation_errors(payload, needle):
+@pytest.mark.parametrize("tool", ["get_cfg", "get_call_graph"])
+async def test_selection_failures_are_validation_errors(tool, payload, needle):
     executor = MagicMock()
     executor.execute_query.return_value = QueryResult(
         success=True, data=[json.dumps([payload])], row_count=1
     )
     async with Client(_server(executor)) as client:
-        result = await client.call_tool("get_cfg", {"codebase_hash": CODEBASE_HASH, "method_name": "init"},
+        result = await client.call_tool(tool, {"codebase_hash": CODEBASE_HASH, "method_name": "init"},
                                         raise_on_error=False)
     assert result.is_error
     assert result.content[0].text.startswith("VALIDATION_ERROR: ")
