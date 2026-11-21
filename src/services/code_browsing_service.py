@@ -1,6 +1,7 @@
 import logging
 import re
 from typing import Any, Dict, Optional
+from ..defaults import MAX_RESULT_ROWS
 from ..exceptions import ValidationError
 from ..utils.validators import validate_codebase_hash
 from ..utils.query_rendering import escape_scala_string
@@ -105,6 +106,26 @@ def _decode_parameter_method(raw: Any) -> Optional[Dict[str, Any]]:
     return {"method": method_name, "parameters": parameters}
 
 
+def _paging_hint(total: int, available: int, limit: int, page: int, page_size: int, total_pages: int) -> Optional[str]:
+    """How to reach matches this reply does not show, or None when nothing is hidden.
+
+    Pages cover only the `available` matches kept under `limit`; `total` counts all.
+    """
+    shown_through = min(page * page_size, available)
+    if shown_through < available:
+        return f"More matches on later pages: request page={page + 1} (pages 1-{total_pages})."
+    if available < total:
+        wanted = min(total, MAX_RESULT_ROWS)
+        past = f"page {page} is past the last page ({total_pages}); " if page > max(total_pages, 1) else ""
+        return (
+            f"{past}limit={limit} kept {available} of {total} matches. "
+            f"Raise limit (up to {wanted}) or narrow the filters to see the rest."
+        )
+    if page > max(total_pages, 1):
+        return f"page {page} is past the last page ({total_pages}); all {total} matches fit on pages 1-{total_pages}."
+    return None
+
+
 class CodeBrowsingService:
     """Service for code browsing operations with caching support"""
 
@@ -167,7 +188,8 @@ class CodeBrowsingService:
             "callee_pattern": callee_pattern,
             "include_external": include_external,
             "limit": limit,
-            "result_schema_version": 2,
+            # v3: cyclomaticComplexity is McCabe over the method CFG.
+            "result_schema_version": 3,
         }
 
         def execute_query():
@@ -206,7 +228,7 @@ class CodeBrowsingService:
                 return _query_failure("Joern returned an invalid method count", None)
 
             projection = (
-                ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.controlStructure.size + 1, m.isExternal))"
+                ".map(m => (m.name, m.id, m.fullName, m.signature, m.filename, m.lineNumber.getOrElse(-1), m.lineNumberEnd.getOrElse(-1), m.cfgNode.l.map(_._cfgOut.size).filter(_ > 1).map(_ - 1).sum + 1, m.isExternal))"
             )
 
             query_limit = max(0, min(limit, 10000))
@@ -272,8 +294,9 @@ class CodeBrowsingService:
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
         paged_methods = methods[start_idx:end_idx]
+        total_pages = (available + page_size - 1) // page_size if page_size > 0 else 1
 
-        return {
+        response = {
             "success": True,
             "methods": paged_methods,
             "total": total,
@@ -282,10 +305,12 @@ class CodeBrowsingService:
             "truncated": start_idx + len(paged_methods) < total,
             "page": page,
             "page_size": page_size,
-            "total_pages": (
-                (available + page_size - 1) // page_size if page_size > 0 else 1
-            ),
+            "total_pages": total_pages,
         }
+        hint = _paging_hint(total, available, limit, page, page_size, total_pages)
+        if hint:
+            response["hint"] = hint
+        return response
 
     def list_calls(
         self,

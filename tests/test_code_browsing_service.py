@@ -179,7 +179,7 @@ def test_list_methods_versions_its_cache_key():
         "callee_pattern": None,
         "include_external": False,
         "limit": 1000,
-        "result_schema_version": 2,
+        "result_schema_version": 3,
     }
     db_manager.get_cached_tool_output.assert_called_once_with(
         "list_methods", CODEBASE_HASH, expected_params, cache_ttl=300
@@ -271,3 +271,39 @@ def test_truncated_means_more_results_beyond_this_page(page, returned, truncated
     assert (result["total"], result["returned"], result["truncated"]) == (5, returned, truncated)
     assert result["total_pages"] == 3
     assert not {"available", "result_cap", "has_more"} & set(result)
+
+
+def _methods_service(total, rows):
+    service, executor = _service([])
+    executor.execute_query.side_effect = [
+        QueryResult(success=True, data=total, row_count=1),
+        QueryResult(success=True, data=[_method_row(i) for i in range(rows)], row_count=rows),
+    ]
+    return service
+
+
+def test_list_methods_hint_says_to_raise_limit_past_the_kept_window():
+    # Audit case methods_cap: 3 matches, limit=1, page 2 of size 1.
+    result = _methods_service(3, 1).list_methods(CODEBASE_HASH, limit=1, page=2, page_size=1)
+    assert (result["total"], result["returned"], result["truncated"], result["total_pages"]) == (3, 0, True, 1)
+    assert "page 2 is past the last page (1)" in result["hint"]
+    assert "limit=1 kept 1 of 3 matches. Raise limit (up to 3)" in result["hint"]
+
+
+def test_list_methods_hint_points_to_the_next_page_first():
+    result = _methods_service(3, 3).list_methods(CODEBASE_HASH, limit=10, page=1, page_size=1)
+    assert result["truncated"] is True
+    assert result["hint"].startswith("More matches on later pages: request page=2 (pages 1-3)")
+
+
+def test_list_methods_has_no_hint_when_nothing_is_hidden():
+    result = _methods_service(3, 3).list_methods(CODEBASE_HASH, limit=10)
+    assert result["truncated"] is False and "hint" not in result
+
+
+def test_list_methods_complexity_counts_cfg_branches():
+    service = _methods_service(1, 1)
+    service.list_methods(CODEBASE_HASH, limit=10)
+    query = service.query_executor.execute_query.call_args_list[1].kwargs["query"]
+    assert "m.cfgNode.l.map(_._cfgOut.size).filter(_ > 1).map(_ - 1).sum + 1" in query
+    assert "controlStructure.size" not in query
