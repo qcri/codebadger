@@ -540,6 +540,100 @@ Examples:
 
 
     @mcp.tool(
+        title="Resolve Location",
+        annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "candidates": {"type": "array", "items": {"type": "object", "properties": {
+                    "node_id": {"type": "string"}, "kind": {"type": "string"}, "name": {"type": "string"},
+                    "code": {"type": "string"}, "filename": {"type": "string"},
+                    "line": {"type": "integer"}, "column": {"type": "integer"},
+                    "operator": {"type": "boolean"}, "method": {"type": "string"},
+                    "method_id": {"type": "string"}, "method_full_name": {"type": "string"},
+                }, "additionalProperties": False}},
+                "total": {"type": "integer"}, "returned": {"type": "integer"},
+                "truncated": {"type": "boolean"}, "hint": {"type": "string"},
+            },
+            "required": ["success", "candidates", "total", "truncated"], "additionalProperties": False,
+        },
+        description="""Turn a source location into graph nodes with IDs.
+
+Given 'file:line' or 'file:line:column', list the nodes there with node_id,
+kind, code, column and enclosing method. Use it to pick one of several calls on
+a line, e.g. two identical show_value(9) calls told apart by column.
+
+Returns:
+    {"success": true,
+     "candidates": [{"node_id": "30064771087", "kind": "CALL", "name": "show_value",
+                     "code": "show_value(9)", "filename": "audit.c", "line": 23,
+                     "column": 20, "operator": false, "method": "twice",
+                     "method_id": "107374182406", "method_full_name": "twice"}],
+     "total": 2, "returned": 2, "truncated": false}
+
+Notes:
+    - Default: calls on the line, real calls before operators (`x = ...`, `a < b`).
+      include_all=true adds identifiers, literals, returns and control structures.
+    - With a column, only nodes whose text covers it are listed, innermost first.
+    - Pass node_id to find_taint_flows (source_node_id / sink_node_id); pass
+      method_id to get_cfg, get_call_graph or list_parameters.
+    - An unknown file is a VALIDATION_ERROR; a known line with no nodes
+      (blank, comment, preprocessed out) returns no candidates and a hint.
+
+Examples:
+    resolve_location(codebase_hash="abc", location="audit.c:23")
+    resolve_location(codebase_hash="abc", location="audit.c:23:35")""",
+    )
+    @tool_errors("use 'file:line' or 'file:line:column' with a file in this CPG.")
+    def resolve_location(
+        codebase_hash: Annotated[str, Field(description="The codebase hash from generate_cpg")],
+        location: Annotated[str, Field(description="'file:line' or 'file:line:column' (file relative to the project root)")],
+        include_all: Annotated[bool, Field(description="Also list identifiers, literals, returns and control structures")] = False,
+        limit: Annotated[int, Field(description="Maximum candidates to return", ge=1, le=MAX_RESULT_ROWS)] = 50,
+    ) -> Dict[str, Any]:
+        """Resolve file:line[:column] to node IDs."""
+        validate_codebase_hash(codebase_hash)
+        parts = location.rsplit(":", 2)
+        if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            filename, line, column = parts[0], int(parts[1]), int(parts[2])
+        else:
+            parts = location.rsplit(":", 1)
+            if len(parts) != 2 or not parts[1].isdigit():
+                raise ValidationError(f"location must be 'file:line' or 'file:line:column', got '{location}'")
+            filename, line, column = parts[0], int(parts[1]), -1
+        if not filename or line < 1:
+            raise ValidationError(f"location must name a file and a line >= 1, got '{location}'")
+
+        codebase_info = require_cpg(services, codebase_hash)
+        query = QueryLoader.load("resolve_location", filename=filename, line_num=line, column=column,
+                                 include_all=include_all, max_results=limit)
+        result = services["query_executor"].execute_query(
+            codebase_hash=codebase_hash, cpg_path=codebase_info.cpg_path, query=query, timeout=30,
+        )
+        data = _parse_json_result(unwrap_result(result))
+        if not data.get("files"):
+            raise ValidationError(f"no file in this CPG matches '{filename}'")
+        candidates = data.get("candidates") or []
+        total = int(data.get("total", len(candidates)))
+        response = {
+            "success": True,
+            "candidates": candidates,
+            "total": total,
+            "returned": len(candidates),
+            "truncated": len(candidates) < total,
+        }
+        if total == 0:
+            response["hint"] = (
+                f"no {'node covers column ' + str(column) + ' on' if column > 0 else 'call on'} line {line}; "
+                + ("drop the column to list the line" if column > 0 else
+                   "try include_all=true, a nearby line, or check that the code was compiled into the CPG")
+            )
+        elif len(candidates) < total:
+            response["hint"] = f"{total} candidates; raise limit or add a column to narrow them"
+        return response
+
+    @mcp.tool(
         title="Find Literals",
         annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         output_schema={

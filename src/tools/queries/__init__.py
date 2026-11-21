@@ -40,14 +40,14 @@ class QueryLoader:
     # worst. Coerce to int and fail fast otherwise.
     _INT_PLACEHOLDERS = frozenset({
         "line_num", "source_line", "sink_line", "source_node_id", "sink_node_id",
-        "method_id", "offset",
+        "method_id", "offset", "column",
     })
 
     # Placeholders interpolated as bare Scala booleans (`val includeForward =
     # {{include_forward}}`). Rendered as lowercase true/false so a stray Python
     # `True` (which str()s to "True") can't produce invalid Scala.
     _BOOL_PLACEHOLDERS = frozenset({
-        "include_backward", "include_forward", "include_control_flow",
+        "include_backward", "include_forward", "include_control_flow", "include_all",
     })
 
     _TRUE_STRINGS = frozenset({"true", "1", "yes"})
