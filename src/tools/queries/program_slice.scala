@@ -42,6 +42,9 @@
     case _ => -1
   }
   def isAssignmentOp(name: String): Boolean = name.startsWith("<operator>.assignment")
+  // x++ and --x define their operand without an assignment operator.
+  val incDecOps = Set("<operator>.postIncrement", "<operator>.preIncrement",
+    "<operator>.postDecrement", "<operator>.preDecrement")
 
   // The statement a node belongs to: the nearest enclosing assignment, else the
   // outermost enclosing call (so `use(f(x))` reports the whole statement).
@@ -170,6 +173,13 @@
                             deps += ((lineOf(site), fileOf(site), p.name,
                               s"name-based candidate (unresolved dynamic call): ${clip(site.code)}", Nil, "candidate"))
                           }
+                      case e: Expression if (e.astParent match {
+                            case c: Call => incDecOps.contains(c.name)
+                            case _ => false
+                          }) =>
+                        val c = e.astParent.asInstanceOf[Call]
+                        deps += ((lineOf(c), fileOf(c), e.code, c.code, List(e.code), "definition"))
+                        backward(List(e).collect { case i: Identifier => i }, depth - 1)
                       case e: Expression =>
                         val stmt = statementOf(e)
                         val assignTarget = stmt match {

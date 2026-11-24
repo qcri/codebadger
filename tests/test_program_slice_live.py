@@ -137,3 +137,8 @@ def test_slice_evidence_matches_the_summary(project):
 def test_an_indexed_write_depends_on_its_index(project):
     deps = _deps(_slice(project, 17))
     assert any(d.startswith("[audit.c:16] i: i = n * 2") for d in deps)
+
+
+def test_an_increment_is_a_definition(project):
+    deps = _deps(_slice(project, 22, "show_value"))
+    assert any(d.startswith("[audit.c:21] e: e++") for d in deps)
