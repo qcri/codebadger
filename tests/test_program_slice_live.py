@@ -154,3 +154,31 @@ def test_a_field_read_reaches_its_store_in_another_function(project):
     _slice(project, 29, "show_value")
     stores = [(d["line"], d["variable"]) for d in LAST_EVIDENCE["backward"] if d["kind"] == "field_store"]
     assert stores == [(26, "size")]
+
+WIDE_TERMS = 61
+WIDE_C = (
+    "void show_value(int value);\nvoid wide(int p) {\n"
+    + "".join(f"    int v{i} = p;\n" for i in range(WIDE_TERMS))
+    + "    int t = " + " + ".join(f"v{i}" for i in range(WIDE_TERMS)) + ";\n"
+    + "    show_value(t);\n}\n"
+)
+WIDE_ANCHOR_LINE = WIDE_TERMS + 4
+
+
+@pytest.fixture(scope="module")
+def wide_project(server):
+    proj = "slice_wide_" + uuid.uuid4().hex[:8]
+    _dexec(f"rm -rf /tmp/qh_test/{proj} && mkdir -p /tmp/qh_test/{proj}")
+    _dexec(f"cat > /tmp/qh_test/{proj}/audit.c", WIDE_C)
+    _dexec(f"cat > /tmp/qh_test/{proj}/a.c", "void wide(int p);\nvoid caller(void) { wide(1); }\n")
+    imp = _q(f'importCode(inputPath="/tmp/qh_test/{proj}", projectName="{proj}")', timeout=300)
+    assert imp.get("success"), imp.get("stderr", "")[:500]
+    return proj
+
+
+def test_truncation_keeps_the_dependencies_nearest_the_anchor(wide_project):
+    _slice(wide_project, WIDE_ANCHOR_LINE, "show_value")
+    rows = LAST_EVIDENCE["backward"]
+    assert LAST_EVIDENCE["truncated"] is True
+    assert any(d["variable"] == "t" and d["kind"] == "definition" for d in rows)
+    assert not any(d["filename"].endswith("a.c") for d in rows)

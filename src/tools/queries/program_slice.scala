@@ -148,7 +148,14 @@
           if (includeBackward) {
             val seen = mutable.Set[Long]()
             // (line, file, variable, code, depends-on, kind)
-            val deps = mutable.ListBuffer[(Int, String, String, String, List[String], String)]()
+            type Dep = (Int, String, String, String, List[String], String)
+            val deps = mutable.ListBuffer[Dep]()
+            // Hops from the anchor, so truncation keeps the nearest rows.
+            val distance = mutable.Map[Dep, Int]()
+            def addDep(depth: Int)(d: Dep): Unit = {
+              deps += d
+              distance(d) = math.min(distance.getOrElse(d, maxDepth), maxDepth - depth)
+            }
 
             def backward(uses: List[Identifier], depth: Int): Unit = {
               if (depth <= 0) return
@@ -159,12 +166,12 @@
                     d match {
                       case p: MethodParameterIn =>
                         val m = p.method
-                        deps += ((lineOf(p), fileOf(p), p.name, s"parameter ${p.name} of ${m.name}", Nil, "parameter"))
+                        addDep(depth)((lineOf(p), fileOf(p), p.name, s"parameter ${p.name} of ${m.name}", Nil, "parameter"))
                         // Statically resolved callers pass the argument at the same index.
                         m.callIn.l.foreach { site =>
                           site.argument.filter(_.argumentIndex == p.index).l.foreach { arg =>
                             val argIds = arg.ast.isIdentifier.l
-                            deps += ((lineOf(site), fileOf(site), p.name, s"argument to ${m.name}: ${clip(site.code)}",
+                            addDep(depth)((lineOf(site), fileOf(site), p.name, s"argument to ${m.name}: ${clip(site.code)}",
                               argIds.map(_.name).distinct, "caller"))
                             backward(argIds, depth - 1)
                           }
@@ -172,7 +179,7 @@
                         // Unresolved dynamic calls with the same short name: candidates only.
                         cpg.call.filter(c => c.dispatchType == "DYNAMIC_DISPATCH" && c.name == m.name && c.callee.isEmpty)
                           .l.take(10).foreach { site =>
-                            deps += ((lineOf(site), fileOf(site), p.name,
+                            addDep(depth)((lineOf(site), fileOf(site), p.name,
                               s"name-based candidate (unresolved dynamic call): ${clip(site.code)}", Nil, "candidate"))
                           }
                       case _: Literal => // a constant is not a data source
@@ -181,7 +188,7 @@
                             case _ => false
                           }) =>
                         val c = e.astParent.asInstanceOf[Call]
-                        deps += ((lineOf(c), fileOf(c), e.code, c.code, List(e.code), "definition"))
+                        addDep(depth)((lineOf(c), fileOf(c), e.code, c.code, List(e.code), "definition"))
                         backward(List(e).collect { case i: Identifier => i }, depth - 1)
                       case e: Expression =>
                         val stmt = statementOf(e)
@@ -197,12 +204,12 @@
                         if (assignTarget) {
                           val c = stmt.asInstanceOf[Call]
                           val rhs = c.argument.filter(_.argumentIndex >= 2).ast.isIdentifier.l
-                          deps += ((lineOf(c), fileOf(c), e.code, c.code, rhs.map(_.name).distinct, "definition"))
+                          addDep(depth)((lineOf(c), fileOf(c), e.code, c.code, rhs.map(_.name).distinct, "definition"))
                           backward(rhs, depth - 1)
                         } else if (passedToCall) {
                           // Joern treats a call argument as possibly written by the callee.
                           val call = e.astParent.asInstanceOf[Call]
-                          deps += ((lineOf(call), fileOf(call), e.code, s"may be modified by ${clip(call.code)}", Nil, "call_argument"))
+                          addDep(depth)((lineOf(call), fileOf(call), e.code, s"may be modified by ${clip(call.code)}", Nil, "call_argument"))
                           backward(List(e).collect { case i: Identifier => i }, depth - 1)
                         } else {
                           // A read (e.g. inside a comparison) that Joern chains reaching
@@ -234,13 +241,14 @@
                 .filterNot(a => a.method.id == method.id && lineOf(a) >= anchor.line)
                 .take(maxStoresPerField).l.foreach { a =>
                   val rhs = a.argument.filter(_.argumentIndex >= 2).ast.isIdentifier.l
-                  deps += ((lineOf(a), fileOf(a), f, s"stores field $f: ${clip(a.code)} (in ${a.method.name})",
+                  addDep(maxDepth - 1)((lineOf(a), fileOf(a), f, s"stores field $f: ${clip(a.code)} (in ${a.method.name})",
                     rhs.map(_.name).distinct, "field_store"))
                   backward(rhs, math.max(1, maxDepth - 2))
                 }
             }
 
-            val sortedDeps = deps.toList.distinct.sortBy(d => (d._2, d._1))
+            val byDistance = deps.toList.distinct.sortBy(d => (distance(d), d._2, d._1))
+            val sortedDeps = byDistance.take(maxNodes).sortBy(d => (d._2, d._1)) ++ byDistance.drop(maxNodes)
             evidence("backward") = sortedDeps.take(maxNodes).map { case (line, file, vn, code, depVars, kind) =>
               Map("filename" -> file, "line" -> line, "variable" -> vn, "code" -> clip(code),
                   "depends_on" -> depVars, "kind" -> kind) }
