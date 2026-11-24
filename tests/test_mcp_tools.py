@@ -94,6 +94,9 @@ def mock_services():
     # Mock joern server manager
     joern_server_manager = MagicMock()
     joern_server_manager.get_server_port.return_value = 8080
+    joern_server_manager.get_or_create_client.return_value.execute_query.return_value = {
+        "success": False,
+    }
 
     return {
         "git_manager": git_manager,

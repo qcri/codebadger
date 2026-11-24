@@ -25,6 +25,7 @@ def _services(overlay=True, max_load_mb=2048):
                         update_codebase=MagicMock(side_effect=update))
     manager = MagicMock()
     manager.reload_with_retry.return_value = CPGLoadResult("ok", port=14000, user_method_count=1)
+    manager.get_or_create_client.return_value.execute_query.return_value = {"success": False}
     return {"codebase_tracker": tracker, "config": config, "joern_server_manager": manager}, catalog
 
 

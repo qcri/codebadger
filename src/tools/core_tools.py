@@ -21,7 +21,9 @@ import shlex
 import shutil
 import time
 import tarfile
-from typing import Any, Awaitable, Callable, Dict, Optional, Annotated, Literal, Set
+from typing import (
+    TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Annotated, Literal, Set,
+)
 from pydantic import Field
 
 from ..defaults import (
@@ -57,6 +59,9 @@ from ..utils.validators import (
     resolve_host_path,
     snippet_filename,
 )
+
+if TYPE_CHECKING:
+    from ..services.joern_client import JoernServerClient
 
 logger = logging.getLogger(__name__)
 
@@ -1390,6 +1395,48 @@ def _autodetect_c_includes(codebase_dir: str, max_dirs: int = 24) -> list:
     return out
 
 
+_EMPTY_BODY_QUERY = (
+    'cpg.method.isExternal(false).filterNot(_.name.startsWith("<"))'
+    '.filter(m => m.lineNumberEnd.getOrElse(0) - m.lineNumber.getOrElse(0) > 5)'
+    '.l.groupBy(m => m.block.astChildren.isEmpty).map{case (k, v) => '
+    '(k, v.size, v.sortBy(_.name).take(10).map(m => m.name + "@" + m.filename + ":" '
+    '+ m.lineNumber.getOrElse(-1)))}.l.toJson'
+)
+_EMPTY_BODY_TIMEOUT_SECONDS = 120
+_EMPTY_BODY_WARNING_SAMPLE_SIZE = 5
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+_REPL_STRING_RE = re.compile(r'=\s*(".*")\s*$', re.S)
+
+
+def _count_empty_bodies(client: "JoernServerClient", codebase_hash: str) -> dict[str, Any]:
+    """Count methods that span several lines but have no parsed body.
+
+    Args:
+        client: The Joern server client for the codebase.
+        codebase_hash: The codebase the client serves, used in log messages.
+
+    Returns:
+        {"count", "of", "sample"}, or {} when the probe output is unreadable.
+    """
+    result = client.execute_query(_EMPTY_BODY_QUERY, timeout=_EMPTY_BODY_TIMEOUT_SECONDS)
+    output = _ANSI_ESCAPE_RE.sub("", result.get("stdout", "")) if result.get("success") else ""
+    match = _REPL_STRING_RE.search(output.strip())
+    try:
+        rows = json.loads(json.loads(match.group(1))) if match else None
+    except json.JSONDecodeError:
+        rows = None
+    if not isinstance(rows, list):
+        logger.warning(f"Empty-body probe returned no result for {codebase_hash}")
+        return {}
+    groups = {bool(row.get("_1")): row for row in rows}
+    empty = groups.get(True, {})
+    return {
+        "count": empty.get("_2", 0),
+        "of": sum(row.get("_2", 0) for row in groups.values()),
+        "sample": empty.get("_3", []),
+    }
+
+
 async def _generate_cpg_async(
     codebase_hash: str,
     codebase_dir: str,
@@ -1864,6 +1911,20 @@ async def _generate_cpg_async(
                 codebase_hash=codebase_hash, joern_port=None, metadata=_CPG_LOAD_FAILURE,
             )
             return False
+
+        # Bodies under #if on an undefined macro are dropped silently, so queries
+        # would see empty functions without this warning.
+        client = joern_server_manager.get_or_create_client(codebase_hash)
+        empty = await asyncio.to_thread(_count_empty_bodies, client, codebase_hash)
+        if empty.get("count"):
+            coverage["empty_body_methods"] = empty
+            sample = ", ".join(empty["sample"][:_EMPTY_BODY_WARNING_SAMPLE_SIZE])
+            coverage_warning(
+                f"{empty['count']} of {empty['of']} methods have a source span but no parsed "
+                f"body (e.g. {sample}), likely gated by undefined macros or a parse error. "
+                f"Pass defines, include_paths with the generated config headers, or "
+                f"compile_commands to recover them."
+            )
 
         ready_meta = {
             "status": "ready",
