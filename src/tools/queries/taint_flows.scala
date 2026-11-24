@@ -16,6 +16,7 @@
   val maxBridgedFields = 20
   val maxLoadsPerField = 200
   val maxBridgesPerStore = 3
+  val maxControlConditions = 30
   
   val output = new StringBuilder()
   
@@ -187,6 +188,25 @@
       Map("field" -> field, "struct_type" -> structType, "store" -> loc(store), "load" -> loc(load),
         "sink" -> loc(sink))
     }
+
+  // A tainted value often bounds a loop while the sink writes a constant at an index
+  // advanced inside it, so no data reaches the sink. Report flows from the source into
+  // the conditions that control the sink, directly or through the heap bridge.
+  val controlFlows: List[Map[String, Any]] = if (flows.nonEmpty || bridged.nonEmpty) Nil else {
+    val conditions = sinks.flatMap(_.controlledBy.l).collect { case c: CfgNode => c }
+      .distinctBy(_.id).take(maxControlConditions)
+    // A comparison's result is not tainted by its operands, so aim at the operands.
+    val conditionOf = conditions.flatMap(c => c.ast.collect { case n: CfgNode => n.id -> c }.l).toMap
+    val operands = conditions.flatMap(_.ast.collect { case n: CfgNode => n }.l).distinctBy(_.id)
+    val direct = operands.reachableByFlows(sources).l.take(maxResults)
+      .flatMap(_.elements.lastOption).collect { case n: CfgNode => conditionOf.getOrElse(n.id, n) }
+      .distinctBy(_.id).map(c => Map("condition" -> loc(c), "via" -> "data"))
+    if (operands.isEmpty || direct.nonEmpty || !heapBridge) direct
+    else bridgeTo(operands).map { case (store, field, structType, load, operand) =>
+      Map("condition" -> loc(conditionOf.getOrElse(operand.id, operand)), "via" -> "heap",
+        "field" -> field, "struct_type" -> structType, "store" -> loc(store), "load" -> loc(load))
+    }.distinctBy(_("condition"))
+  }
   locally {
 
     if (flows.isEmpty) {
@@ -199,6 +219,16 @@
       if (srcFile != snkFile) {
         output.append("Note: Source and sink are in different files.\n")
         output.append("  Inter-procedural taint tracking requires call graph connection.\n")
+      }
+      if (controlFlows.nonEmpty) {
+        output.append(s"\nControl-dependent influence (${controlFlows.size}): the source reaches a condition\n")
+        output.append("that controls the sink, so it decides whether and how often the sink runs.\n")
+        controlFlows.foreach { c =>
+          val condition = c("condition").asInstanceOf[Map[String, Any]]
+          val via = if (c("via") == "heap") s" via heap ${c("struct_type")}.${c("field")}" else ""
+          output.append(s"  [${condition("filename")}:${condition("line")}] ${condition("code")} " +
+            s"in ${condition("method")}()$via\n")
+        }
       }
       if (bridged.nonEmpty) {
         output.append(s"\nHeap-bridged flows (${bridged.size}): the source is stored into a struct field\n")
@@ -296,6 +326,7 @@
     "sink_nodes" -> sinks.map(endpointInfo),
     "flows" -> seen.size,
     "heap_bridged_flows" -> bridged,
+    "control_flows" -> controlFlows,
     "truncated" -> (rawFlows.size > maxResults),
     "summary" -> output.toString)
   "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"

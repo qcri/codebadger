@@ -540,6 +540,7 @@ async def test_find_taint_flows_returns_heap_bridged_flows(fake_services):
     envelope = json.loads(_flow_envelope(flows=0))
     bridge = {"field": "val", "struct_type": "dict", "store": {}, "load": {}, "sink": {}}
     envelope[0]["heap_bridged_flows"] = [bridge]
+    envelope[0]["control_flows"] = [{"condition": {}, "via": "data"}]
     execute = MagicMock(return_value=QueryResult(success=True, data=[json.dumps(envelope)], row_count=1))
     fake_services["query_executor"].execute_query = execute
     mcp = FastMCP("TestServer")
@@ -549,6 +550,7 @@ async def test_find_taint_flows_returns_heap_bridged_flows(fake_services):
             "codebase_hash": fake_services["codebase_hash"], "heap_bridge": False,
             "source_node_id": 30064771934, "sink_node_id": 30064780656})).structured_content
     assert res["heap_bridged_flows"] == [bridge]
+    assert res["control_flows"] == [{"condition": {}, "via": "data"}]
     assert "val heapBridge = false" in execute.call_args.kwargs["query"]
 
 

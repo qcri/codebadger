@@ -30,9 +30,21 @@ void encode(char *buf) {
         v++;
     }
 }
+struct cfg { char *name; };
+void cfg_set(struct cfg *c) {
+    c->name = read_input();
+}
+void cfg_encode(struct cfg *c, char *buf) {
+    int e = 0;
+    while (c->name[e]) {
+        buf[e] = 'x';
+        e++;
+    }
+}
 """
 # Lines: 5 d->val[i] = read_input() | 8 escape_value(out, d->val[j])
 #        11 v = read_input() | 13 while (*v) | 14 buf[e++] = 'x'
+#        20 c->name = read_input() | 24 while (c->name[e]) | 25 buf[e] = 'x'
 
 
 @pytest.fixture(scope="module")
@@ -68,3 +80,16 @@ def test_a_heap_field_bridges_two_api_calls(project):
 
 def test_the_heap_bridge_can_be_disabled(project):
     assert _flows(project, 5, 8, heap_bridge=False)["heap_bridged_flows"] == []
+
+
+def test_a_loop_bound_by_the_source_is_control_flow(project):
+    result = _flows(project, 11, 14)
+    controls = [(c["condition"]["line"], c["via"]) for c in result["control_flows"]]
+    assert result["flows"] == 0
+    assert controls == [(13, "data")]
+
+
+def test_a_loop_bound_loaded_from_the_heap_is_control_flow(project):
+    result = _flows(project, 20, 25)
+    controls = [(c["condition"]["line"], c["via"], c.get("field")) for c in result["control_flows"]]
+    assert controls == [(24, "heap", "name")]

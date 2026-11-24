@@ -782,6 +782,7 @@ Examples:
             "sources_matched": {"type": "integer"}, "sinks_matched": {"type": "integer"},
             "counts": {"type": "object"}, "flow_paths": {"type": "array", "items": {"type": "object"}},
             "heap_bridged_flows": {"type": "array", "items": {"type": "object"}},
+            "control_flows": {"type": "array", "items": {"type": "object"}},
         }, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
@@ -807,6 +808,9 @@ Returns:
     "heap_bridged_flows": [{"field", "struct_type", "store", "load", "sink"}] (only when
     no direct flow exists: the source is stored into a struct field and a load of the
     same field reaches the sink, e.g. two API calls on one object),
+    "control_flows": [{"condition", "via": "data"|"heap", ...}] (only when no direct or
+    heap flow exists: the source reaches a condition controlling the sink, e.g. a loop
+    bound over a tainted string while the sink writes a constant at an advancing index),
     "flows": 1, "truncated": false, "summary": "<paths as text>"}. Each endpoint
     node carries node_id, kind, name, code, filename, lineNumber, columnNumber
     and method: exactly the nodes that were searched.
@@ -1040,6 +1044,7 @@ Examples:
                 "sink_nodes": data.get("sink_nodes", []),
                 "flows": int(data.get("flows", 0)),
                 "heap_bridged_flows": data.get("heap_bridged_flows", []),
+                "control_flows": data.get("control_flows", []),
                 "truncated": bool(data.get("truncated", False)),
                 "summary": summary,
             }
