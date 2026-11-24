@@ -1536,6 +1536,10 @@ async def _generate_cpg_async(
             for macro in defines:
                 macro = str(macro).strip()
                 if macro:
+                    # c2cpg defines a bare NAME as empty, but compilers treat -DNAME
+                    # as NAME=1, which `#if NAME == 1` gates rely on.
+                    if "=" not in macro:
+                        macro += "=1"
                     cmd += ["--define", macro]
                     added += 1
             coverage["defines_applied"] = added

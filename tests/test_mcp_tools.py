@@ -1105,6 +1105,13 @@ class TestMCPTools:
         assert "--define" not in py_cmd
 
     @pytest.mark.asyncio
+    async def test_bare_define_is_passed_as_one(self, mock_services, tmp_path):
+        cmd = await self._run_async_build_capture_cmd(
+            mock_services, tmp_path, "c", defines=["FOO", "BAR=2"]
+        )
+        assert "FOO=1" in cmd and "BAR=2" in cmd
+
+    @pytest.mark.asyncio
     async def test_stale_build_attempt_keeps_published_cpg(self, mock_services, tmp_path):
         from src.tools import core_tools
 
