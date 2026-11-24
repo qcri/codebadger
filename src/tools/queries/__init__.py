@@ -48,6 +48,7 @@ class QueryLoader:
     # `True` (which str()s to "True") can't produce invalid Scala.
     _BOOL_PLACEHOLDERS = frozenset({
         "include_backward", "include_forward", "include_control_flow", "include_all",
+        "heap_bridge",
     })
 
     _TRUE_STRINGS = frozenset({"true", "1", "yes"})

@@ -41,6 +41,13 @@ def test_string_valued_integer_is_accepted():
     assert "val sourceLine = 42" in q
 
 
+def test_heap_bridge_renders_as_scala_boolean():
+    q = QueryLoader.load("taint_flows", source_line=1, sink_line=2, source_node_id=-1,
+                         sink_node_id=-1, source_file="a.c", sink_file="b.c",
+                         max_results=10, heap_bridge=False)
+    assert "val heapBridge = false" in q
+
+
 def test_bool_placeholders_render_lowercase_scala():
     q = QueryLoader.load("program_slice", line_num=10, max_depth=5,
                          include_backward=True, include_forward=False,

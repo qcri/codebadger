@@ -10,6 +10,12 @@
   val sourceNodeId = {{source_node_id}}L
   val sinkNodeId = {{sink_node_id}}L
   val maxResults = {{max_results}}
+  val heapBridge = {{heap_bridge}}
+  val maxStores = 5000
+  val maxReachedStores = 200
+  val maxBridgedFields = 20
+  val maxLoadsPerField = 200
+  val maxBridgesPerStore = 3
   
   val output = new StringBuilder()
   
@@ -109,6 +115,78 @@
   }
   val flows = rawFlows.take(maxResults)
   val seen = mutable.Set[String]()
+
+  // Libraries often store a value into a struct field in one API call and load it in
+  // another, joined only by a caller outside the codebase, so no flow connects them.
+  // When there is no direct flow, stitch source to a store of T.f and a load of T.f
+  // to the sink, matching the base struct type when it is known.
+  def isFieldAccess(c: Call): Boolean =
+    c.name == "<operator>.indirectFieldAccess" || c.name == "<operator>.fieldAccess"
+  def fieldOf(c: Call): String = c.argument.filter(_.argumentIndex == 2).code.headOption.getOrElse("")
+  def baseTypeOf(c: Call): String = {
+    val t = c.argument.filter(_.argumentIndex == 1).headOption match {
+      case Some(i: Identifier) => i.typeFullName
+      case Some(x: Call) => x.typeFullName
+      case _ => ""
+    }
+    t.replaceAll("[*&\\[\\]]", "").replace("const ", "").replace("struct ", "").trim
+  }
+  def typesMatch(a: String, b: String): Boolean =
+    a.isEmpty || b.isEmpty || a == "ANY" || b == "ANY" || a == b
+  def loc(n: CfgNode): Map[String, Any] = Map(
+    "filename" -> n.file.name.headOption.getOrElse("?"), "line" -> n.lineNumber.getOrElse(-1),
+    "code" -> n.code.take(120), "method" -> getMethodName(n))
+
+  // (assignment, field access in its target, stored value)
+  lazy val stores = cpg.assignment.l.flatMap { a =>
+    a.argument.filter(_.argumentIndex == 1).ast.isCall.filter(isFieldAccess).headOption
+      .map(fa => (a, fa, a.argument.filter(_.argumentIndex == 2).l))
+  }.take(maxStores)
+  // (store, field, struct type) for the stores whose value the source reaches
+  lazy val reachedStores = {
+    val values = stores.flatMap(_._3).collect { case e: CfgNode => e }
+    val reached = values.reachableByFlows(sources).l.take(maxReachedStores)
+      .flatMap(_.elements.lastOption).map(_.id).toSet
+    stores.filter(_._3.exists(v => reached.contains(v.id)))
+      .map(s => (s._1, fieldOf(s._2), baseTypeOf(s._2))).distinctBy(s => (s._2, s._3)).take(maxBridgedFields)
+  }
+  lazy val storeTargetIds = stores.flatMap(_._1.argument.filter(_.argumentIndex == 1).ast.map(_.id)).toSet
+
+  // Flows start at whole operands (d->val[j]), never at an inner field access, so a
+  // load is lifted through its enclosing operator expressions.
+  def lift(n: CfgNode): CfgNode = n.astParent match {
+    case c: Call if c.name.startsWith("<operator>.") && !c.name.startsWith("<operator>.assignment") => lift(c)
+    case _ => n
+  }
+
+  // (store, field, struct type, load, target). Joern reports no flow from a
+  // sub-expression to the expression containing it, so a load inside a target counts.
+  def bridgeTo(targets: List[CfgNode]): List[(Call, String, String, CfgNode, CfgNode)] = {
+    val targetAst = targets.flatMap(_.ast.map(_.id)).toSet
+    reachedStores.flatMap { case (store, field, structType) =>
+      val loads = cpg.call.filter(isFieldAccess)
+        .filter(c => fieldOf(c) == field && typesMatch(baseTypeOf(c), structType))
+        .filterNot(c => storeTargetIds.contains(c.id)).l.take(maxLoadsPerField)
+      val direct = loads.filter(l => targetAst.contains(l.id)).take(maxBridgesPerStore)
+        .map(l => (l: CfgNode, targets.find(_.ast.exists(_.id == l.id)).get))
+      val viaFlow = if (direct.nonEmpty || loads.isEmpty) Nil else {
+        val loadOf = loads.map(l => lift(l).id -> l).toMap
+        targets.reachableByFlows(loads.map(lift)).l.take(maxBridgesPerStore)
+          .flatMap(p => (p.elements.headOption, p.elements.lastOption) match {
+            case (Some(h: CfgNode), Some(t: CfgNode)) => List((loadOf.getOrElse(h.id, h): CfgNode, t))
+            case _ => Nil
+          })
+      }
+      (direct ++ viaFlow).map { case (load, target) => (store, field, structType, load, target) }
+    }.take(maxResults)
+  }
+
+  val bridged: List[Map[String, Any]] =
+    if (!heapBridge || flows.nonEmpty) Nil
+    else bridgeTo(effectiveSinks).map { case (store, field, structType, load, sink) =>
+      Map("field" -> field, "struct_type" -> structType, "store" -> loc(store), "load" -> loc(load),
+        "sink" -> loc(sink))
+    }
   locally {
 
     if (flows.isEmpty) {
@@ -121,6 +199,16 @@
       if (srcFile != snkFile) {
         output.append("Note: Source and sink are in different files.\n")
         output.append("  Inter-procedural taint tracking requires call graph connection.\n")
+      }
+      if (bridged.nonEmpty) {
+        output.append(s"\nHeap-bridged flows (${bridged.size}): the source is stored into a struct field\n")
+        output.append("and a load of the same field reaches the sink. No call path joins them here.\n")
+        bridged.foreach { b =>
+          val store = b("store").asInstanceOf[Map[String, Any]]
+          val load = b("load").asInstanceOf[Map[String, Any]]
+          output.append(s"  [heap ${b("struct_type")}.${b("field")}] store ${store("filename")}:${store("line")} " +
+            s"in ${store("method")}() => load ${load("filename")}:${load("line")} in ${load("method")}() -> sink\n")
+        }
       }
       
       // --- Fallback: Check for Call Graph Connection ---
@@ -207,6 +295,7 @@
     "source_nodes" -> sources.map(endpointInfo),
     "sink_nodes" -> sinks.map(endpointInfo),
     "flows" -> seen.size,
+    "heap_bridged_flows" -> bridged,
     "truncated" -> (rawFlows.size > maxResults),
     "summary" -> output.toString)
   "<codebadger_result>\n" + List(result).toJson + "\n</codebadger_result>"

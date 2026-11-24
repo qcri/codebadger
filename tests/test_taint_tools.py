@@ -535,6 +535,24 @@ async def test_sinks_report_the_full_match_count_beyond_the_limit(fake_services)
 
 
 @pytest.mark.asyncio
+async def test_find_taint_flows_returns_heap_bridged_flows(fake_services):
+    import json
+    envelope = json.loads(_flow_envelope(flows=0))
+    bridge = {"field": "val", "struct_type": "dict", "store": {}, "load": {}, "sink": {}}
+    envelope[0]["heap_bridged_flows"] = [bridge]
+    execute = MagicMock(return_value=QueryResult(success=True, data=[json.dumps(envelope)], row_count=1))
+    fake_services["query_executor"].execute_query = execute
+    mcp = FastMCP("TestServer")
+    register_tools(mcp, fake_services)
+    async with Client(mcp) as client:
+        res = (await client.call_tool("find_taint_flows", {
+            "codebase_hash": fake_services["codebase_hash"], "heap_bridge": False,
+            "source_node_id": 30064771934, "sink_node_id": 30064780656})).structured_content
+    assert res["heap_bridged_flows"] == [bridge]
+    assert "val heapBridge = false" in execute.call_args.kwargs["query"]
+
+
+@pytest.mark.asyncio
 async def test_find_taint_flows_reports_resolved_endpoints(fake_services):
     fake_services["query_executor"].execute_query = MagicMock(
         return_value=QueryResult(success=True, data=[_flow_envelope(flows=0)], row_count=1))

@@ -781,6 +781,7 @@ Examples:
             "flows": {"type": "integer"}, "truncated": {"type": "boolean"},
             "sources_matched": {"type": "integer"}, "sinks_matched": {"type": "integer"},
             "counts": {"type": "object"}, "flow_paths": {"type": "array", "items": {"type": "object"}},
+            "heap_bridged_flows": {"type": "array", "items": {"type": "object"}},
         }, "required": ["success"], "additionalProperties": False},
         description="""Find taint flows from a source to a sink using Joern's native dataflow analysis.
 
@@ -803,6 +804,9 @@ MODE 2 - Auto (mode="auto"): Batch-test ALL default sources against ALL default 
 
 Returns:
     Manual mode: {"success": true, "source_nodes": [...], "sink_nodes": [...],
+    "heap_bridged_flows": [{"field", "struct_type", "store", "load", "sink"}] (only when
+    no direct flow exists: the source is stored into a struct field and a load of the
+    same field reaches the sink, e.g. two API calls on one object),
     "flows": 1, "truncated": false, "summary": "<paths as text>"}. Each endpoint
     node carries node_id, kind, name, code, filename, lineNumber, columnNumber
     and method: exactly the nodes that were searched.
@@ -849,6 +853,7 @@ Examples:
         sink_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sink function names (e.g., ['system', 'strcpy'])")] = None,
         filename: Annotated[Optional[str], Field(description="(Auto mode) Regex to filter sources/sinks by filename")] = None,
         sanitizer_patterns: Annotated[Optional[list], Field(description="(Auto mode) Override default sanitizer function names. Flows through sanitizers are filtered out.")] = None,
+        heap_bridge: Annotated[bool, Field(description="(Manual mode) When no direct flow exists, join a store of a struct field reached by the source with a load of the same field that reaches the sink. Reported as heap_bridged_flows.")] = True,
     ) -> Dict[str, Any]:
         """Find data flow paths between source and sink using Joern's native taint analysis."""
         try:
@@ -997,6 +1002,7 @@ Examples:
                 "max_results": limit,
                 # v2: endpoints resolved to real calls first, JSON envelope.
                 "result_shape": "endpoints-v2",
+                "heap_bridge": heap_bridge,
             }
 
             def _execute():
@@ -1009,6 +1015,7 @@ Examples:
                     source_node_id=source_node_id if has_source_id else -1,
                     sink_node_id=sink_node_id if has_sink_id else -1,
                     max_results=limit,
+                    heap_bridge=heap_bridge,
                 )
 
                 result = query_executor.execute_query(
@@ -1032,6 +1039,7 @@ Examples:
                 "source_nodes": data.get("source_nodes", []),
                 "sink_nodes": data.get("sink_nodes", []),
                 "flows": int(data.get("flows", 0)),
+                "heap_bridged_flows": data.get("heap_bridged_flows", []),
                 "truncated": bool(data.get("truncated", False)),
                 "summary": summary,
             }
