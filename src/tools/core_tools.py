@@ -7,7 +7,7 @@ Provides core CPG management functionality
 import asyncio
 import inspect
 import uuid
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from datetime import datetime, timedelta, timezone
 from functools import partial
 import docker
@@ -1206,6 +1206,10 @@ def _restart_failure_is_stale(codebase_tracker, codebase_hash: str) -> bool:
         return False
 
 
+def _load_failure_metadata(load_result: CPGLoadResult) -> dict[str, Any]:
+    return {**_CPG_LOAD_FAILURE, "user_method_count": load_result.user_method_count}
+
+
 async def _load_cpg_for_serving(manager, codebase_hash: str, container_cpg_path: str) -> CPGLoadResult:
     if manager is None:
         return CPGLoadResult("error")
@@ -1260,7 +1264,7 @@ async def _restart_server_owned_async(
             codebase_tracker.update_codebase(
                 codebase_hash=codebase_hash,
                 joern_port=None,
-                metadata=_CPG_LOAD_FAILURE,
+                metadata=_load_failure_metadata(load_result),
             )
             return
         logger.info(f"Async: CPG loaded into Joern server on port {joern_port}")
@@ -1911,7 +1915,8 @@ async def _generate_cpg_async(
         joern_port = load_result.port
         if not joern_port:
             codebase_tracker.update_codebase(
-                codebase_hash=codebase_hash, joern_port=None, metadata=_CPG_LOAD_FAILURE,
+                codebase_hash=codebase_hash, joern_port=None,
+                metadata=_load_failure_metadata(load_result),
             )
             return False
 
@@ -2529,6 +2534,12 @@ Examples:
             logger.info(f"Processing codebase with hash: {codebase_hash}")
 
             existing_codebase = codebase_tracker.get_codebase(codebase_hash)
+            # Reloading an empty graph can never succeed, so rebuild it instead.
+            if (existing_codebase and existing_codebase.cpg_path
+                    and existing_codebase.metadata.get("user_method_count") == 0):
+                logger.warning(f"Discarding empty cached CPG for {codebase_hash}")
+                with suppress(FileNotFoundError):
+                    os.remove(existing_codebase.cpg_path)
             if existing_codebase and existing_codebase.cpg_path and os.path.exists(existing_codebase.cpg_path):
                 logger.info(f"Found existing codebase in DB: {codebase_hash}")
 

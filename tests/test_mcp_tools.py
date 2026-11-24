@@ -239,6 +239,33 @@ class TestMCPTools:
                 assert result_dict["cpg_path"] == "<redacted:host-path>"
                 assert result_dict["joern_port"] == 2000
 
+    async def test_generate_cpg_rebuilds_an_empty_cached_graph(self, mock_services, tmp_path):
+        from src.tools import core_tools
+
+        cached = {}
+        mock_services["codebase_tracker"].get_codebase.side_effect = cached.get
+        mock_services["cpg_queue"] = MagicMock(submit=AsyncMock(return_value="submitted"))
+        mcp = FastMCP("TestServer")
+        core_tools.register_core_tools(mcp, mock_services)
+        request = {"source_type": "snippet", "language": "c", "code": "int main(void) { return 0; }"}
+        with patch.object(core_tools, "__file__", str(tmp_path / "src/tools/core_tools.py")):
+            async with Client(mcp) as client:
+                first = json.loads((await client.call_tool("generate_cpg", request)).content[0].text)
+                codebase_hash = first["codebase_hash"]
+                cpg_path = tmp_path / "playground/cpgs" / codebase_hash / "cpg.bin"
+                cpg_path.write_bytes(b"empty")
+                cached[codebase_hash] = CodebaseInfo(
+                    codebase_hash=codebase_hash, source_type="snippet", source_path="snippet",
+                    language="c", cpg_path=str(cpg_path),
+                    metadata={**core_tools._CPG_LOAD_FAILURE, "user_method_count": 0},
+                )
+
+                retry = json.loads((await client.call_tool("generate_cpg", request)).content[0].text)
+
+        assert retry["status"] == "generating"
+        assert not cpg_path.exists()
+        assert mock_services["cpg_queue"].submit.await_count == 2
+
     @pytest.mark.parametrize(("source_type", "first", "second"), [
         ("github", {"include_globs": ["alpha/**"]}, {"include_globs": ["beta/**"]}),
         ("github", {}, {"auto_system_headers": True}),

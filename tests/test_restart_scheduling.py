@@ -203,3 +203,15 @@ async def test_get_cpg_status_preserves_load_owned_by_another_process():
     assert data["status"] == "loading"
     coordinator.codebase_load_active.assert_called_once_with(HASH)
     assert tracker.update_codebase.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_restart_records_the_method_count_of_an_empty_graph():
+    mgr = MagicMock()
+    mgr.reload_with_retry.return_value = CPGLoadResult("empty", user_method_count=0)
+    tracker = MagicMock()
+    services = {"joern_server_manager": mgr, "codebase_tracker": tracker}
+
+    await core_tools._restart_server_async(HASH, "/playground/cpgs/x/cpg.bin", services)
+
+    assert tracker.update_codebase.call_args.kwargs["metadata"]["user_method_count"] == 0
