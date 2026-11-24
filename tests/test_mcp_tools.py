@@ -1112,6 +1112,17 @@ class TestMCPTools:
         assert "FOO=1" in cmd and "BAR=2" in cmd
 
     @pytest.mark.asyncio
+    async def test_harvested_defines_yield_to_caller_defines(self, mock_services, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src/config.h.in").write_text("#undef HAVE_A\n#undef HAVE_B\n")
+        (tmp_path / "src/a.c").write_text("#if HAVE_A && HAVE_B\n#endif\n")
+        cmd = await self._run_async_build_capture_cmd(
+            mock_services, tmp_path, "c", defines=["HAVE_B=0"]
+        )
+        defines = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--define"]
+        assert defines == ["HAVE_A=1", "HAVE_B=0"]
+
+    @pytest.mark.asyncio
     async def test_stale_build_attempt_keeps_published_cpg(self, mock_services, tmp_path):
         from src.tools import core_tools
 

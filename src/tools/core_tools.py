@@ -1289,6 +1289,65 @@ async def _restart_server_owned_async(
             )
 
 
+_TEMPLATE_SUFFIXES = (".h.in", ".h.cmake", ".hin", ".h.meson", ".h.cmakein")
+_C_SOURCE_SUFFIXES = (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp")
+_TEMPLATE_MACRO_RE = re.compile(
+    r"^\s*#\s*(?:cmakedefine01|cmakedefine|mesondefine|undef)\s+([A-Za-z_]\w*)"
+    r"|^\s*#\s*define\s+([A-Za-z_]\w*)\s+@\w+@", re.M)
+_PREPROCESSOR_GATE_RE = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef|elif)\b(.*)$", re.M)
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*")
+# Defining a platform, compiler or ABI selector would pick a foreign branch.
+_PLATFORM_MACRO_RE = re.compile(
+    r"^(?:_|WIN|HAVE_WIN|.*(?:WINDOWS|WIN32|WIN64|MSVC|MINGW|CYGWIN|APPLE|DARWIN|MACOS|"
+    r"BEOS|HAIKU|AMIGA|OS2|VMS|ANDROID|EMSCRIPTEN|BIG_ENDIAN|BIGENDIAN|LITTLE_ENDIAN|"
+    r"SIZEOF_|ALIGNOF_|_BITS$|DEBUG|NDEBUG|STDC_HEADERS))", re.I)
+_MAX_TEMPLATE_BYTES = 200_000
+_MAX_SOURCE_BYTES = 400_000
+_MAX_SCANNED_SOURCES = 4000
+_MAX_HARVESTED_DEFINES = 200
+_HARVESTED_SAMPLE_SIZE = 15
+
+
+def _read_prefix(path: str, size: int) -> str:
+    try:
+        with open(path, errors="replace") as handle:
+            return handle.read(size)
+    except OSError:
+        return ""
+
+
+def _template_macros(path: str, filename: str) -> set[str]:
+    suffix = next(s for s in _TEMPLATE_SUFFIXES if filename.endswith(s))
+    if os.path.exists(path[: -len(suffix)] + ".h"):
+        return set()
+    text = _read_prefix(path, _MAX_TEMPLATE_BYTES)
+    return {m.group(1) or m.group(2) for m in _TEMPLATE_MACRO_RE.finditer(text)}
+
+
+def _harvest_template_defines(codebase_dir: str) -> list[str]:
+    """Return feature macros from config templates whose generated header is absent.
+
+    Without a build the generated config header is missing, every feature switch
+    is undefined, and c2cpg drops the #if-gated function bodies. Only macros the
+    sources test in a preprocessor condition are returned, minus platform selectors.
+    """
+    macros: set[str] = set()
+    tested: set[str] = set()
+    scanned_sources = 0
+    for dirpath, dirnames, filenames in os.walk(codebase_dir):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "node_modules"]
+        for filename in filenames:
+            path = os.path.join(dirpath, filename)
+            if filename.endswith(_TEMPLATE_SUFFIXES):
+                macros |= _template_macros(path, filename)
+            elif filename.endswith(_C_SOURCE_SUFFIXES) and scanned_sources < _MAX_SCANNED_SOURCES:
+                scanned_sources += 1
+                for gate in _PREPROCESSOR_GATE_RE.findall(_read_prefix(path, _MAX_SOURCE_BYTES)):
+                    tested.update(_IDENTIFIER_RE.findall(gate))
+    used = sorted(m for m in macros & tested if not _PLATFORM_MACRO_RE.match(m))
+    return used[:_MAX_HARVESTED_DEFINES]
+
+
 def _autodetect_c_includes(codebase_dir: str, max_dirs: int = 24) -> list:
     """Lightweight C/C++ include-dir discovery for the c2cpg `--include` path.
 
@@ -1529,6 +1588,19 @@ async def _generate_cpg_async(
             coverage_warning(
                 f"include_paths ignored: the {language} frontend does not support --include"
             )
+
+        if language in ("c", "cpp") and frontend_supports(language, "define"):
+            explicit_names = {str(d).split("=")[0].strip() for d in defines or []}
+            harvested = [
+                m for m in await asyncio.to_thread(_harvest_template_defines, codebase_dir)
+                if m not in explicit_names
+            ]
+            if harvested:
+                coverage["defines_harvested"] = {
+                    "count": len(harvested), "sample": harvested[:_HARVESTED_SAMPLE_SIZE],
+                }
+                logger.info(f"Harvested {len(harvested)} feature macro(s) from config templates")
+            defines = harvested + list(defines or [])
 
         # Preprocessor defines: c2cpg and swiftsrc2cpg accept --define.
         if defines and frontend_supports(language, "define"):
