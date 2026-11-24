@@ -32,9 +32,31 @@ int pick(const int *items, int i, int size) {
     if (i < 0 || i >= size) return 0;
     return items[i];
 }
+void fill(char *buf, int n) {
+    int i = n * 2;
+    buf[i] = 0;
+}
+void count(const char *s) {
+    int e = 0;
+    while (s[e]) e++;
+    show_value(e);
+}
+struct box { int size; };
+void set_size(struct box *b, int v) {
+    b->size = v;
+}
+void use_size(struct box *b) {
+    show_value(b->size);
+}
+void log_value(int x) {
+    printf("%d", x);
+    show_value(x);
+}
 """
 # Lines: 4 x = read_value() | 5 if (flag) show_value(0) | 6 show_value(x) | 7 x = 7
 #        8 show_value(x) | 12 early-return guard | 13 return items[i]
+#        16 i = n * 2 | 17 buf[i] = 0 | 21 e++ | 22 show_value(e)
+#        26 b->size = v | 29 show_value(b->size) | 32 printf | 33 show_value(x)
 
 
 @pytest.fixture(scope="module")
@@ -110,3 +132,8 @@ def test_slice_evidence_matches_the_summary(project):
     assert fwd["stored_in"] == ["x"]
     # the read value reaches show_value(x) on line 6 and its parameter (declared line 2), not line 8
     assert sorted((p["line"], p["kind"]) for p in fwd["forward"]) == [(2, "passed_to_func"), (6, "usage")]
+
+
+def test_an_indexed_write_depends_on_its_index(project):
+    deps = _deps(_slice(project, 17))
+    assert any(d.startswith("[audit.c:16] i: i = n * 2") for d in deps)

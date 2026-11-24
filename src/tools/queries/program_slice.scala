@@ -72,6 +72,17 @@
     inFile.filterNot(_.name == "<global>").find(encloses).orElse(inFile.find(encloses))
   }
 
+  // A write through an index, deref or field (buf[i] = c) also uses the base and
+  // index of its target. A plain variable target is the defined value, not a use.
+  def assignmentOperands(a: Call): List[Identifier] = {
+    val target = a.argument.filter(_.argumentIndex == 1).l
+    val targetUses = target match {
+      case List(_: Identifier) => Nil
+      case _ => target.ast.isIdentifier.l
+    }
+    (a.argument.filter(_.argumentIndex >= 2).ast.isIdentifier.l ++ targetUses).distinctBy(_.id)
+  }
+
   // Anchor: (node, code, name, line, operand identifiers).
   // An explicitly named call is authoritative: it must be on the requested line.
   // Without a name, try the line, then the nearest line within ±3 (macro
@@ -87,7 +98,7 @@
       calls.filterNot(_.name.startsWith("<operator>")).headOption
         .map(c => Anchor(c, c.code, c.name, ln, c.argument.ast.isIdentifier.l))
         .orElse(method.assignment.filter(a => a.lineNumber.getOrElse(-1) == ln).headOption
-          .map(a => Anchor(a, a.code, "<assignment>", ln, a.source.ast.isIdentifier.l)))
+          .map(a => Anchor(a, a.code, "<assignment>", ln, assignmentOperands(a))))
         .orElse(method.controlStructure.filter(c => c.lineNumber.getOrElse(-1) == ln).headOption
           .flatMap(ctrl => ctrl.condition.headOption.map(cond =>
             Anchor(cond, cond.code, "<condition>", ln, cond.ast.isIdentifier.l))))
