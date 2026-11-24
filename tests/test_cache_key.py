@@ -96,3 +96,12 @@ def test_key_is_16_hex_chars():
     k = get_cpg_cache_key("github", GH, "c", branch="x")
     assert len(k) == 16
     int(k, 16)  # raises if not hex
+
+
+def test_builder_version_changes_key(monkeypatch):
+    import src.tools.core_tools as core_tools
+
+    before = get_cpg_cache_key("github", GH, "c")
+    monkeypatch.setattr(core_tools, "CPG_BUILDER_VERSION", core_tools.CPG_BUILDER_VERSION + 1)
+
+    assert get_cpg_cache_key("github", GH, "c") != before

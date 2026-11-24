@@ -721,6 +721,10 @@ def _cpg_build_settings(config, language: str, compile_commands: Optional[str]) 
     }
 
 
+# Bump when build logic changes what a CPG contains, so cached graphs rebuild.
+CPG_BUILDER_VERSION = 3
+
+
 def get_cpg_cache_key(
     source_type: str,
     source_path: str,
@@ -769,9 +773,8 @@ def get_cpg_cache_key(
             source_path = os.path.abspath(source_path)
             identifier = f"local:{source_path}:{language}"
 
-    # Older hashes can point to graphs built with unrecorded options.
     key = json.dumps(
-        [2, identifier, branch if source_type == "github" else None, commit_hash, extra],
+        [CPG_BUILDER_VERSION, identifier, branch if source_type == "github" else None, commit_hash, extra],
         sort_keys=True,
     )
     return hashlib.sha256(key.encode()).hexdigest()[:16]
