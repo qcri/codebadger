@@ -29,6 +29,11 @@ def test_finds_dir_with_config_h(tmp_path):
     assert "_build" in out
 
 
+def test_finds_dir_with_prefixed_config_h(tmp_path):
+    _touch(str(tmp_path / "expat" / "expat_config.h"))
+    assert "expat" in _autodetect_c_includes(str(tmp_path))
+
+
 def test_finds_dir_with_generated_version_header(tmp_path):
     # mimics _build_asan/libxml/xmlversion.h
     _touch(str(tmp_path / "_build_asan" / "libxml" / "xmlversion.h"))

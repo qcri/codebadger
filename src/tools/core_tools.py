@@ -1372,8 +1372,9 @@ def _autodetect_c_includes(codebase_dir: str, max_dirs: int = 24) -> list:
                 continue
             if rel != ".":
                 is_include_dir = os.path.basename(dirpath) == "include"
-                has_generated_hdr = ("config.h" in files) or any(
-                    f.endswith(".h") and "version" in f.lower() for f in files
+                has_generated_hdr = any(
+                    f.endswith("config.h") or (f.endswith(".h") and "version" in f.lower())
+                    for f in files
                 )
                 if is_include_dir or has_generated_hdr:
                     found.append(rel)
