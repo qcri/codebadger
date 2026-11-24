@@ -106,5 +106,33 @@ class TestCombineExcludeRegexes:
     def test_none_when_all_empty(self):
         assert combine_exclude_regexes([None, None]) is None
 
-    def test_single_passthrough(self):
-        assert combine_exclude_regexes([None, "x.*"]) == "x.*"
+    def test_single_part_is_anchored(self):
+        assert combine_exclude_regexes([None, "x.*"]) == "^(?:(?:x.*))$"
+
+
+
+INPUT_ROOT = "/playground/codebases/abc123"
+
+
+def _is_excluded_by_find(regex: str, relative_path: str) -> bool:
+    absolute_path = f"{INPUT_ROOT}/{relative_path}"
+    return bool(re.search(regex, relative_path) or re.search(regex, absolute_path))
+
+
+@pytest.mark.parametrize(
+    ("path", "is_excluded"),
+    [("pkg/a/a.go", False), ("main.go", True), ("pkg/b/b.go", True)],
+)
+def test_scope_regex_under_find_semantics(path: str, is_excluded: bool) -> None:
+    scope = scope_exclude_regex(["pkg/a/**"], ["go"], input_root=INPUT_ROOT)
+    regex = combine_exclude_regexes([scope])
+    assert _is_excluded_by_find(regex, path) is is_excluded
+
+
+@pytest.mark.parametrize(
+    ("path", "is_excluded"), [("pkg/testdata/x.go", True), ("pkg/a/a.go", False)]
+)
+def test_junk_patterns_apply_under_find_semantics(path: str, is_excluded: bool) -> None:
+    scope = scope_exclude_regex(["**"], ["go"], input_root=INPUT_ROOT)
+    regex = combine_exclude_regexes([r"(?:^|.*/)(?:tests?|testdata)/.*", scope])
+    assert _is_excluded_by_find(regex, path) is is_excluded

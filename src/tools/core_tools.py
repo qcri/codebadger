@@ -1467,7 +1467,8 @@ async def _generate_cpg_async(
                 language, [LANGUAGE_EXTENSIONS.get(language, language)]
             )
             scope_rx = scope_exclude_regex(
-                [_under_repo_root(repo_prefix, g) for g in include_globs], src_exts
+                [_under_repo_root(repo_prefix, g) for g in include_globs], src_exts,
+                input_root=f"/playground/codebases/{codebase_hash}",
             )
             if scope_rx:
                 exclude_parts.append(scope_rx)

@@ -63,12 +63,14 @@ def glob_to_path_regex(glob: str) -> str:
     return regex
 
 
-def scope_exclude_regex(include_globs: List[str], source_exts: List[str]) -> Optional[str]:
+def scope_exclude_regex(include_globs: List[str], source_exts: List[str],
+                        input_root: Optional[str] = None) -> Optional[str]:
     """Build an `--exclude-regex` that drops out-of-scope SOURCE files.
 
     A path is excluded iff it (a) ends in one of `source_exts` AND (b) does not
     match any of `include_globs`. Header files (any extension not in
     `source_exts`) are never excluded, so #include resolution still works.
+    A non-empty `input_root` also keeps in-scope paths prefixed by that root.
 
     Returns None if there are no usable globs (caller should then not scope).
     """
@@ -79,7 +81,8 @@ def scope_exclude_regex(include_globs: List[str], source_exts: List[str]) -> Opt
     if not exts:
         return None
     ext_alt = "|".join(exts)
-    keep_alt = "|".join(f"(?:{k})" for k in keeps)
+    prefix = f"(?:{re.escape(input_root.rstrip('/'))}/)?" if input_root else ""
+    keep_alt = "|".join(f"(?:{prefix}{k})" for k in keeps)
     # Full-match (.matches) anchored: must be a source file (positive lookahead)
     # AND not in scope (negative lookahead), then consume the whole path.
     return f"(?=.*\\.(?:{ext_alt})$)(?!(?:{keep_alt})$).*"
@@ -94,6 +97,6 @@ def combine_exclude_regexes(parts: List[Optional[str]]) -> Optional[str]:
     usable = [p for p in parts if p]
     if not usable:
         return None
-    if len(usable) == 1:
-        return usable[0]
-    return "|".join(f"(?:{p})" for p in usable)
+    # gosrc2cpg uses find() semantics, so an unanchored scope regex matches at an
+    # inner offset and excludes every file.
+    return "^(?:" + "|".join(f"(?:{p})" for p in usable) + ")$"

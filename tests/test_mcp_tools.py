@@ -300,7 +300,7 @@ class TestMCPTools:
             mock_services, tmp_path, "c",
             build_settings={"exclusion_patterns": ["skip/.*"], "autodetect_compile_db": False},
         )
-        assert cmd[cmd.index("--exclude-regex") + 1] == "(skip/.*)"
+        assert cmd[cmd.index("--exclude-regex") + 1] == "^(?:(?:(skip/.*)))$"
         assert "--compilation-database" not in cmd
 
     @pytest.mark.asyncio
