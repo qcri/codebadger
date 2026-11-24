@@ -166,10 +166,19 @@ EXCLUSION_COMMON = [
     # Vendored dependencies; callers auditing them pass their own patterns.
     _dirs("vendor", "node_modules", "bower_components", "third_party", "third-party",
           "3rdparty", "extern", "external", "deps"),
-    # Build output and environments.
-    _dirs("build", "dist", "out", "target", "obj", "bin", r"cmake-build-[^/]*", "CMakeFiles",
+    # Build output and environments. `bin/` and `target/` hold product code in many
+    # trees (radare2 libr/bin/), so only the toolchains that build there exclude them.
+    _dirs("build", "dist", "out", "obj", r"cmake-build-[^/]*", "CMakeFiles",
           "__pycache__", r"\.?venv", "site-packages", "Pods", "DerivedData"),
 ]
+
+# Below a JVM source root (src/<set>/java|kotlin/) directory names are package
+# names (org/springframework/samples/...). For the JVM frontends (full match) the
+# directory rules therefore consume the path one segment at a time and refuse to
+# step into a source root: `examples/src/main/java/Ex.java` is still excluded, but
+# `src/main/java/org/acme/samples/X.java` is not.
+_JVM_PREFIX = r"(?:(?!src/[^/]+/(?:java|kotlin|scala|groovy)/)[^/]*/)*"
+_JVM_TARGET = _JVM_PREFIX + r"target/.*"
 
 EXCLUSION_BY_LANGUAGE = {
     "c": [r".*_(?:test|unittest|tests)\.[ch]$", _SEG + r"test_[^/]*\.c$"],
@@ -178,22 +187,17 @@ EXCLUSION_BY_LANGUAGE = {
     "go": [r".*_test\.go$"],
     "python": [_SEG + r"test_[^/]*\.py$", r".*_test\.py$", _SEG + r"conftest\.py$"],
     "javascript": [r".*\.(?:test|spec)\.[cm]?[jt]sx?$", r".*\.min\.js$", r".*\.bundle\.js$"],
-    "java": [_SEG + r"src/(?:test|it|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests|IT|TestCase)\.java$"],
-    "kotlin": [_SEG + r"src/(?:test|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests)\.kts?$"],
-    "csharp": [_SEG + r"[^/]*\.(?:Tests?|UnitTests?|IntegrationTests?|Benchmarks?)/.*",
+    "java": [_SEG + r"src/(?:test|it|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests|IT|TestCase)\.java$",
+             _JVM_TARGET],
+    "kotlin": [_SEG + r"src/(?:test|[a-zA-Z]*Test)/.*", r".*(?:Test|Tests)\.kts?$", _JVM_TARGET],
+    "csharp": [_dirs("bin"), _SEG + r"[^/]*\.(?:Tests?|UnitTests?|IntegrationTests?|Benchmarks?)/.*",
                r".*Tests?\.cs$"],
     "php": [r".*Test\.php$"],
     "ruby": [_dirs("spec", "specs", "features"), r".*_(?:spec|test)\.rb$"],
     "swift": [r".*Tests?\.swift$"],
-    "rust": [],
+    "rust": [_dirs("target")],
 }
 
-# Below a JVM source root (src/<set>/java|kotlin/) directory names are package
-# names (org/springframework/samples/...). For the JVM frontends (full match) the
-# directory rules therefore consume the path one segment at a time and refuse to
-# step into a source root: `examples/src/main/java/Ex.java` is still excluded, but
-# `src/main/java/org/acme/samples/X.java` is not.
-_JVM_PREFIX = r"(?:(?!src/[^/]+/(?:java|kotlin|scala|groovy)/)[^/]*/)*"
 _JVM_LANGUAGES = {"java", "kotlin"}
 
 
