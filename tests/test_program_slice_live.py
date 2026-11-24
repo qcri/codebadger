@@ -142,3 +142,9 @@ def test_an_indexed_write_depends_on_its_index(project):
 def test_an_increment_is_a_definition(project):
     deps = _deps(_slice(project, 22, "show_value"))
     assert any(d.startswith("[audit.c:21] e: e++") for d in deps)
+
+
+def test_a_literal_argument_is_not_a_dependency(project):
+    deps = _deps(_slice(project, 33, "show_value"))
+    assert any(d.startswith("[audit.c:32] x: may be modified by") for d in deps)
+    assert not any(d.startswith('[audit.c:32] "%d"') for d in deps)

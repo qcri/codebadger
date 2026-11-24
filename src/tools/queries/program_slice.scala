@@ -173,6 +173,7 @@
                             deps += ((lineOf(site), fileOf(site), p.name,
                               s"name-based candidate (unresolved dynamic call): ${clip(site.code)}", Nil, "candidate"))
                           }
+                      case _: Literal => // a constant is not a data source
                       case e: Expression if (e.astParent match {
                             case c: Call => incDecOps.contains(c.name)
                             case _ => false
