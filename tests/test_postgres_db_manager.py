@@ -17,6 +17,24 @@ def test_construction_does_not_connect():
     assert m.dsn.startswith("postgresql://")
 
 
+def test_tool_cache_key_is_stable_for_the_same_code():
+    from src.utils import postgres_db_manager
+
+    first = postgres_db_manager._tool_cache_key({"b": 2, "a": 1})
+    second = postgres_db_manager._tool_cache_key({"a": 1, "b": 2})
+
+    assert first == second
+
+
+def test_tool_cache_key_changes_with_the_code(monkeypatch):
+    from src.utils import postgres_db_manager
+
+    before = postgres_db_manager._tool_cache_key({"q": 1})
+    monkeypatch.setattr(postgres_db_manager, "_code_fingerprint", lambda: "upgraded")
+
+    assert postgres_db_manager._tool_cache_key({"q": 1}) != before
+
+
 @pytest.fixture
 def db(isolated_pg_dsn):
     from src.utils.postgres_db_manager import PostgresDBManager

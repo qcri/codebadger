@@ -12,10 +12,12 @@ TOAST-compressed out-of-line by Postgres automatically; the MAX_CACHE_OUTPUT_BYT
 cap still applies.
 """
 
+import functools
 import hashlib
 import json
 import logging
 import os
+import pathlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +28,32 @@ logger = logging.getLogger(__name__)
 # Skip caching outputs larger than this (bytes); 0 disables the cap. Keeps the
 # tool_cache from bloating with rarely-reused multi-hundred-KB query dumps.
 MAX_CACHE_OUTPUT_BYTES = int(os.getenv("MAX_CACHE_OUTPUT_BYTES", "262144"))
+
+_SOURCE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_FINGERPRINTED_CODE_GLOBS = (
+    "tools/queries/*.scala", "tools/*.py", "services/*.py", "utils/*.py",
+)
+
+
+@functools.cache
+def _code_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for pattern in _FINGERPRINTED_CODE_GLOBS:
+        for path in sorted(_SOURCE_ROOT.glob(pattern)):
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _tool_cache_key(parameters: Dict[str, Any]) -> tuple[str, str]:
+    """Return the serialized parameters and their tool_cache hash.
+
+    The hash covers the code that produces tool output, so an upgraded server
+    never serves results computed by an older query.
+    """
+    param_str = json.dumps(parameters, sort_keys=True)
+    param_hash = hashlib.sha256(f"{param_str}|{_code_fingerprint()}".encode()).hexdigest()
+    return param_str, param_hash
 
 
 def _now() -> str:
@@ -302,8 +330,7 @@ class PostgresDBManager(PostgresJobStore):
 
     def cache_tool_output(self, tool_name: str, codebase_hash: str, parameters: Dict[str, Any], output: Any):
         try:
-            param_str = json.dumps(parameters, sort_keys=True)
-            param_hash = hashlib.sha256(param_str.encode()).hexdigest()
+            param_str, param_hash = _tool_cache_key(parameters)
             output_str = json.dumps(output)
             if MAX_CACHE_OUTPUT_BYTES and len(output_str) > MAX_CACHE_OUTPUT_BYTES:
                 logger.debug(f"Skipping cache for {tool_name} ({len(output_str)} bytes > cap)")
@@ -325,8 +352,7 @@ class PostgresDBManager(PostgresJobStore):
     def get_cached_tool_output(self, tool_name: str, codebase_hash: str,
                                parameters: Dict[str, Any], cache_ttl: int = 300) -> Optional[Any]:
         try:
-            param_str = json.dumps(parameters, sort_keys=True)
-            param_hash = hashlib.sha256(param_str.encode()).hexdigest()
+            param_str, param_hash = _tool_cache_key(parameters)
             with self._connect() as conn:
                 row = conn.execute(
                     "SELECT output, created_at FROM tool_cache "
