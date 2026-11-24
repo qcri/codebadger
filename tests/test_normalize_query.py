@@ -22,7 +22,7 @@ def test_plus_chain_is_parenthesised_as_a_whole():
     qe = _qe()
     out = qe._normalize_query("cpg.x.l ++ cpg.y.name.l", None)
     # trailing .l stripped, whole expression parenthesised, then capped + serialized
-    assert out.startswith("((cpg.x.l ++ cpg.y.name): Any) match {"), out
+    assert out.startswith("({\ncpg.x.l ++ cpg.y.name\n}: Any) match {"), out
     assert ".take(" in out and ".toJsonPretty" in out
     # the bug signature must NOT appear: a serializer bound to the chain's last operand
     assert "name.toJsonPretty" not in out.replace(" ", "")
@@ -31,7 +31,7 @@ def test_plus_chain_is_parenthesised_as_a_whole():
 def test_simple_query_parenthesised_and_serialized():
     qe = _qe()
     out = qe._normalize_query("cpg.method.name(\"f\").code.l", None)
-    assert out.startswith("((cpg.method.name(\"f\").code): Any) match {")
+    assert out.startswith("({\ncpg.method.name(\"f\").code\n}: Any) match {")
     assert "__cbIt.iterator.take(" in out and ".toList.toJsonPretty" in out
 
 
@@ -41,7 +41,7 @@ def test_scalar_results_are_decided_at_run_time():
     qe = _qe()
     for query in ("cpg.method.size", 'cpg.method.name("leaf").id.head'):
         out = qe._normalize_query(query, None)
-        assert out.startswith(f"(({query}): Any) match {{"), out
+        assert out.startswith(f"({{\n{query}\n}}: Any) match {{"), out
         assert "case __cbIt: IterableOnce[?] =>" in out
         assert 'case __cbValue => "<codebadger_scalar>' in out
         assert f"({query}).take(" not in out
@@ -86,7 +86,7 @@ def test_trailing_tojsonpretty_is_stripped_then_reapplied_once():
     out = qe._normalize_query("cpg.method.name(\"f\").toJsonPretty", None)
     # exactly one .toJsonPretty, applied to the parenthesised base
     assert out.count(".toJsonPretty") == 1
-    assert out.startswith("((cpg.method.name(\"f\")): Any) match {")
+    assert out.startswith("({\ncpg.method.name(\"f\")\n}: Any) match {")
 
 
 def test_single_line_repl_json_is_decoded():
@@ -94,3 +94,8 @@ def test_single_line_repl_json_is_decoded():
     qe = _qe()
     assert qe._parse_output('val res8: String = "[]"') == []
     assert qe._parse_output('val res9: String = "[\\"a\\"]"') == ["a"]
+
+
+def test_multi_statement_query_is_wrapped_in_a_block() -> None:
+    out = _qe()._normalize_query("val ms = cpg.method.l; ms.size", None)
+    assert out.startswith("({\nval ms = cpg.method.l; ms.size\n}: Any) match {"), out

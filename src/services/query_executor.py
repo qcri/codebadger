@@ -292,11 +292,12 @@ class QueryExecutor:
         # Whether the result is a collection or a single value (`.size`, `.id.head`,
         # `.name.head`) is decided when it runs, not guessed from the text: a
         # collection is capped and serialized as a JSON array; anything else comes
-        # back in a scalar envelope so numbers stay numbers. Parenthesising binds the
-        # whole expression (a `++` chain would otherwise bind only its last operand),
-        # and a single match expression (no `val`) keeps the REPL from echoing it.
+        # back in a scalar envelope so numbers stay numbers. A block binds the whole
+        # expression (a `++` chain would otherwise bind only its last operand) and
+        # accepts statements such as `val`. A single match expression keeps the REPL
+        # from echoing it.
         return (
-            f"(({base_query}): Any) match {{\n"
+            f"({{\n{base_query}\n}}: Any) match {{\n"
             f"  case __cbIt: IterableOnce[?] => __cbIt.iterator.take({cap}).toList.toJsonPretty\n"
             f'  case __cbValue => "{_SCALAR_OPEN}\\n" + List(__cbValue).toJson + "\\n{_SCALAR_CLOSE}"\n'
             f"}}"
