@@ -17,6 +17,8 @@
   val includeForward = {{include_forward}}
   val includeControlFlow = {{include_control_flow}}
   val direction = "{{direction}}"
+  val maxBridgedFields = 6
+  val maxStoresPerField = 12
 
   val output = new StringBuilder()
   // A failed selection is returned as plain text (ANCHOR_NOT_FOUND: ...); a slice
@@ -215,6 +217,28 @@
             }
 
             backward(anchor.operands, maxDepth)
+
+            // Joern's dataflow does not join a store to `x->f` in one function with a
+            // read of `y->f` in another, yet C carries sizes and counts that way. Report
+            // stores to each field the anchor reads, including through an index or deref
+            // (x->f[i] = v), and keep slicing from their right-hand sides.
+            def isFieldAccess(c: Call): Boolean =
+              c.name == "<operator>.indirectFieldAccess" || c.name == "<operator>.fieldAccess"
+            def fieldName(c: Call): String = c.argument.filter(_.argumentIndex == 2).code.headOption.getOrElse("")
+            val readFields = anchor.node.ast.isCall.filter(isFieldAccess).l.map(fieldName)
+              .filter(_.length > 1).distinct.take(maxBridgedFields)
+            readFields.foreach { f =>
+              cpg.assignment
+                .filter(a => a.argument.filter(_.argumentIndex == 1).ast.isCall.filter(isFieldAccess)
+                  .exists(t => fieldName(t) == f))
+                .filterNot(a => a.method.id == method.id && lineOf(a) >= anchor.line)
+                .take(maxStoresPerField).l.foreach { a =>
+                  val rhs = a.argument.filter(_.argumentIndex >= 2).ast.isIdentifier.l
+                  deps += ((lineOf(a), fileOf(a), f, s"stores field $f: ${clip(a.code)} (in ${a.method.name})",
+                    rhs.map(_.name).distinct, "field_store"))
+                  backward(rhs, math.max(1, maxDepth - 2))
+                }
+            }
 
             val sortedDeps = deps.toList.distinct.sortBy(d => (d._2, d._1))
             evidence("backward") = sortedDeps.take(maxNodes).map { case (line, file, vn, code, depVars, kind) =>

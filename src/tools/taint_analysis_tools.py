@@ -1071,7 +1071,8 @@ Returns:
      "backward_total": 1, "control": [{"filename", "line", "condition"}],
      "forward": [{"filename", "line", "kind", "variable", "code"}], "forward_total": 0,
      "stored_in": [...], "affected_control": [...], "truncated": false, "warnings": []}
-    Backward kinds: definition, parameter, caller, candidate, call_argument.
+    Backward kinds: definition, parameter, caller, candidate, call_argument,
+    field_store (a store to a field the anchor reads, possibly in another function).
     Forward kinds: usage, propagation, passed_to_func. Lists hold at most 60 rows;
     *_total counts all and truncated flags a cut.
 

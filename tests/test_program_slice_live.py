@@ -148,3 +148,9 @@ def test_a_literal_argument_is_not_a_dependency(project):
     deps = _deps(_slice(project, 33, "show_value"))
     assert any(d.startswith("[audit.c:32] x: may be modified by") for d in deps)
     assert not any(d.startswith('[audit.c:32] "%d"') for d in deps)
+
+
+def test_a_field_read_reaches_its_store_in_another_function(project):
+    _slice(project, 29, "show_value")
+    stores = [(d["line"], d["variable"]) for d in LAST_EVIDENCE["backward"] if d["kind"] == "field_store"]
+    assert stores == [(26, "size")]
