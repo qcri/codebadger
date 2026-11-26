@@ -6,6 +6,7 @@
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt -r requirements-test.txt -r requirements-dev.txt
 docker compose up -d        # Joern container, needed for integration tests
+git config core.hooksPath .githooks   # check commit messages locally
 ```
 
 See [Installation](installation.md) for prerequisites.
@@ -44,12 +45,64 @@ pytest -q tests/test_postgres_db_manager.py tests/test_postgres_job_store.py tes
 DATABASE_URL="$CODEBADGER_TEST_PG_DSN" pytest -q tests/integration
 ```
 
+## Workflow
+
+1. Branch from `main`: `git switch -c fix/short-name`.
+2. Keep one behavior change or one tool repair per commit, with a regression test.
+3. Run the focused tests in Docker:
+   `docker run --rm -v "$PWD:/workspace" -w /workspace codebadger-mcp:latest pytest -q <tests>`.
+4. Open a pull request. Its title follows the commit format below, and CI checks
+   the title and every commit in it.
+5. Pull requests are squash-merged, so the PR title becomes the commit on `main`.
+
+## Commits and pull requests
+
+Commit subjects and PR titles use `type(component): description`:
+
+```
+fix(cpg): stop excluding bin and target directories everywhere
+feat(taint): report sources that control the sink
+```
+
+- **description**: 6-9 words, imperative, starts lowercase, no trailing period.
+- **type**: `feat` (new behavior), `fix` (bug fix), `perf`, `refactor`, `test`,
+  `docs`, `build`, `ci`, `chore`, `revert`. Add `!` before the colon for a
+  breaking change: `feat(tools)!: ...`.
+- **component**:
+
+| Component | Covers |
+|-----------|--------|
+| `cpg` | CPG generation, frontends, build scoping, exclusions, include detection |
+| `query` | Joern query execution, CPGQL templates and validation |
+| `taint` | Taint analysis tools and flows |
+| `slice` | Program slicing |
+| `tools` | MCP tool surface, code browsing, presentation |
+| `detectors` | Vulnerability detectors and custom tools |
+| `cache` | Tool-result and CPG caching, cleanup |
+| `db` | Postgres catalog, job store, schema |
+| `workers` | Joern worker pool, Redis coordination, ports, reaping |
+| `server` | MCP server entry point, health, startup, telemetry, logging |
+| `config` | Configuration files and defaults |
+| `docker` | Images, Compose, deployment |
+| `deps` | Dependencies and the lockfile |
+| `ci` | GitHub workflows |
+| `docs` | README and `docs/` |
+| `tests` | Test infrastructure and fixtures |
+| `release` | Version bumps and release notes |
+| `repo` | Repository tooling, hooks, templates |
+
+Keep the body optional and short. Do not add AI co-author or "Generated with"
+trailers. Check a message by hand with
+`python3 scripts/check_commit_msg.py --title "fix(cpg): ..."`; the list of
+types and components lives in that script.
+
 ## Guidelines
 
 - Follow existing repository conventions.
 - Add tests for behavioral changes.
 - Ensure all tests pass before opening a PR.
-- Write a clear PR description.
+- Fill in the PR template: what changed, why, and how it was tested.
 - Update the relevant doc under [docs/](README.md) when behavior changes.
+- Do not commit `config.yaml`, logs, playground CPGs, or database state.
 
 Adding a new detector? See [Custom Tools](custom-tools.md) - no core changes needed.

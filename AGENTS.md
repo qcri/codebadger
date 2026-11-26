@@ -11,6 +11,9 @@ Redis coordinates queues and pooled Joern workers.
 ## Development workflow
 
 - Keep one behavior change or one tool repair per commit.
+- Write commit subjects as `type(component): 6-9 word description`, with
+  no AI co-author or "Generated with" trailers. Types, components, and the
+  checker are in `docs/contributing.md` and `scripts/check_commit_msg.py`.
 - Add a regression test before or alongside the fix. Prefer the smallest
   focused test file, then run the relevant MCP test through Docker.
 - The standard focused command is:
