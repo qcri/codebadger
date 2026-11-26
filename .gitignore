@@ -150,3 +150,9 @@ scripts/backfill_overlays.sh
 # doesn't create it root-owned when GIT_CLONE_SSH_KEYS_HOST_DIR is unset.
 .ssh-keys/*
 !.ssh-keys/.gitkeep
+
+# Local backups, rotated logs, and private analysis notes
+*.bak
+*.bak-*
+logs/
+docs/program-analysis-*
