@@ -990,6 +990,15 @@ async def root(request):
     })
 
 
+def _http_guard_options() -> dict:
+    """Host/Origin validation for the MCP HTTP endpoint (DNS-rebinding defense)."""
+    raw = os.getenv("MCP_ALLOWED_HOSTS", defaults.MCP_ALLOWED_HOSTS)
+    return {
+        "host_origin_protection": True,
+        "allowed_hosts": [h.strip() for h in raw.split(",") if h.strip()],
+    }
+
+
 if __name__ == "__main__":
     config_data = load_config("config.yaml")
     host = config_data.server.host
@@ -998,4 +1007,6 @@ if __name__ == "__main__":
     logger.info(f"Starting CodeBadger Server with HTTP transport on {host}:{port}")
 
     _http_middleware = [Middleware(ConcurrencyLimitMiddleware, max_concurrent=_max_mcp)]
-    asyncio.run(mcp.run_http_async(host=host, port=port, middleware=_http_middleware))
+    asyncio.run(mcp.run_http_async(
+        host=host, port=port, middleware=_http_middleware, **_http_guard_options()
+    ))

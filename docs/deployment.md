@@ -35,6 +35,7 @@ cp .env.example .env
 #   Set at minimum:
 #     PLAYGROUND_HOST_PATH=/abs/path/to/codebadger/playground   # ABSOLUTE
 #     MCP_HOST=0.0.0.0                                           # or 127.0.0.1 behind a proxy
+#     MCP_ALLOWED_HOSTS=mcp.example.org,10.0.0.5                 # names clients use, if not localhost
 #   Size memory for your host (RAM is the binding constraint):
 python scripts/recommend_config.py        # prints JOERN_MEM_LIMIT / JOERN_MEMORY_BUDGET_MB to set
 

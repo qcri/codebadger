@@ -15,6 +15,7 @@ cp config.example.yaml config.yaml   # start from the template
 | Setting (`config.yaml`) | Env var | Default | Purpose |
 |---|---|---|---|
 | `server.host` / `server.port` | `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `4242` | MCP listen address. |
+| - | `MCP_ALLOWED_HOSTS` | empty | Extra `Host` names the MCP accepts besides `127.0.0.1`/`localhost`, `,`-separated. Others get HTTP 421. |
 | `joern.java_opts` | `JOERN_JAVA_OPTS` | `-Xmx4G …` | Per-query-server JVM heap. |
 | `joern.memory_budget_mb` | `JOERN_MEMORY_BUDGET_MB` | `0` (auto) | Query-pool RAM ceiling; the real concurrency limit. |
 | `joern.rss_eviction_threshold_mb` | - | `0` (auto) | Evict LRU above this container RSS (backstop). |

@@ -104,6 +104,10 @@ services:
       # hard-contains local sources to the given ':'-separated dirs AS SEEN INSIDE
       # this container — local sources live under /app/playground here.
       CHAT_DEPLOY: ${CHAT_DEPLOY:-false}
+      # /mcp answers only to Host 127.0.0.1/localhost (DNS-rebinding defense). Clients
+      # that reach it by another name (LAN IP, DNS name, proxy) are listed here,
+      # ','-separated; anything else gets HTTP 421.
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
       ALLOWED_SOURCE_ROOTS: ${ALLOWED_SOURCE_ROOTS:-}
       # Custom git clone servers (optional) — allowlist your own git host
       # (e.g. a LAN Forgejo) beyond github.com/gitlab.com. ssh:// clones auth

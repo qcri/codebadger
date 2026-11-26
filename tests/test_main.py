@@ -513,3 +513,35 @@ class TestExposureCheck:
         monkeypatch.setenv("ALLOWED_SOURCE_ROOTS", "/srv/code")
         issues = main._check_exposure(self._cfg("0.0.0.0", False))
         assert not any("INSECURE EXPOSURE" in i for i in issues)
+
+
+class TestHostOriginGuard:
+    """DNS rebinding: a browser page must not reach /mcp under its own hostname."""
+
+    INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "1"}}}
+    HEADERS = {"Accept": "application/json, text/event-stream"}
+
+    def _post(self, monkeypatch, host, origin=None, allowed=""):
+        from starlette.testclient import TestClient
+
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", allowed)
+        app = main.mcp.http_app(**main._http_guard_options())
+        headers = {**self.HEADERS, "Host": host, **({"Origin": origin} if origin else {})}
+        # No lifespan (it needs Postgres): the guard answers before the MCP app runs,
+        # and a request it lets through fails later with a status other than 403/421.
+        client = TestClient(app, raise_server_exceptions=False)
+        return client.post("/mcp", json=self.INIT, headers=headers).status_code
+
+    def test_rejects_rebound_hostname(self, monkeypatch):
+        status = self._post(monkeypatch, "rebind.attacker.example:4242",
+                            "http://rebind.attacker.example:4242")
+        assert status == 421
+
+    def test_accepts_loopback_client(self, monkeypatch):
+        assert self._post(monkeypatch, "localhost:4242") not in (403, 421)
+
+    def test_accepts_configured_hostname(self, monkeypatch):
+        status = self._post(monkeypatch, "mcp.lab.example:4242", allowed="mcp.lab.example")
+        assert status not in (403, 421)

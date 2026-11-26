@@ -95,6 +95,12 @@ GIT_CLONE_SSH_COMMAND = ""
 # Set this in trusted batch deployments to hard-contain local source access.
 ALLOWED_SOURCE_ROOTS = ""
 
+# The MCP endpoint rejects any Host header other than loopback (HTTP 421), which
+# stops DNS-rebinding pages from driving the tools from a browser. Deployments
+# reached by another name (a LAN IP, a DNS name, a reverse proxy) list it here as
+# ','-separated hostnames; fnmatch wildcards such as `*.example.com` are allowed.
+MCP_ALLOWED_HOSTS = ""
+
 JOERN_BINARY_PATH = "joern"
 JOERN_JAVA_OPTS = "-Xmx4G -Xms2G -XX:+UseG1GC -XX:+UseStringDeduplication -Dfile.encoding=UTF-8"
 JOERN_SERVER_HOST = "localhost"
